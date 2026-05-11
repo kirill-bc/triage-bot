@@ -10,7 +10,7 @@
 
 ## 2. Core Backend / API
 - [x] Implement `POST /triage` contract accepting `issue_key`, `project`, and `event_type`.
-- [ ] Add request validation for required fields and supported event values.
+- [x] Add request validation for required fields and supported event values.
 - [ ] Implement Jira issue fetcher by issue key (summary, description, type, priority, reporter).
 - [ ] Implement policy context loader for bug and priority definitions.
 - [ ] Build prompt/input composer combining issue data plus policy definitions.

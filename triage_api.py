@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
+
+TriageEventType = Literal["issue_created", "issue_updated"]
 
 
 class TriageRequest(BaseModel):
@@ -11,7 +15,9 @@ class TriageRequest(BaseModel):
 
     issue_key: str = Field(min_length=1, description="Jira issue key, e.g. TJC-123.")
     project: str = Field(min_length=1, description="Jira project key.")
-    event_type: str = Field(min_length=1, description="Automation or webhook event name.")
+    event_type: TriageEventType = Field(
+        description="Jira Automation-style event (issue_created or issue_updated).",
+    )
 
 
 class TriageAccepted(BaseModel):
@@ -19,7 +25,7 @@ class TriageAccepted(BaseModel):
 
     issue_key: str
     project: str
-    event_type: str
+    event_type: TriageEventType
     status: str = Field(default="accepted", description="Processing state placeholder.")
 
 

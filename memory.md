@@ -6,7 +6,8 @@
   `pyproject.toml` uses `[tool.setuptools] py-modules` so `pip install -e ".[dev]"` works; pytest `pythonpath = ["."]`
   still supports running without an editable install.
 - `triage_api.create_app()`: FastAPI app with `POST /triage` JSON body `issue_key`, `project`, `event_type` (required,
-  non-empty); responds with those fields plus `status` placeholder `accepted`. Tests: `tests/unit/test_post_triage.py`.
+  non-empty strings); `event_type` must be `issue_created` or `issue_updated` (422 otherwise). Responds with those fields
+  plus `status` placeholder `accepted`. Tests: `tests/unit/test_post_triage.py`.
 - Runtime deps include `fastapi` and `httpx` (TestClient / future HTTP clients). Prefer `.venv/bin/pip` for installs
   so the project venv is the only target.
 - `settings.AppSettings` / `load_settings()`: load `.env` via `python-dotenv` (non-overriding);
