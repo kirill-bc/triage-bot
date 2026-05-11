@@ -8,7 +8,12 @@ version = "0.1.0"
 description = "AI-assisted Jira triage for support-created issues"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+    "pydantic>=2.6",
+    "pydantic-settings>=2.2",
+    "python-dotenv>=1.0",
+    "typing-extensions>=4.0",
+]
 
 [project.optional-dependencies]
 dev = [
@@ -18,11 +23,9 @@ dev = [
     "mypy>=1.5",
 ]
 
-[tool.setuptools.packages.find]
-where = ["src"]
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 markers = [
     "unit: fast isolated unit tests",
     "integration: integration tests with mocks",
@@ -33,8 +36,8 @@ markers = [
 [tool.mypy]
 python_version = "3.10"
 strict = true
-explicit_package_bases = true
-files = ["src", "tests"]
+files = ["settings.py", "core_config.py", "tests"]
+plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
 module = "tests.*"

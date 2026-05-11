@@ -2,10 +2,10 @@
 
 ## 1. Setup / Environment
 - [x] Initialize Python project tooling and dependency management for runtime and tests.
-- [ ] Configure environment loading for Jira, OpenRouter, and logging credentials.
+- [x] Configure environment loading for Jira, OpenRouter, and logging credentials.
 - [x] Add local run scripts and ensure `.venv`-based execution works (`./scripts/run_tests.sh` entrypoint).
-- [ ] Define core config object for project allowlist (`TJC` first, `BC` next), delay, and feature flags.
-- [ ] Add CI quality gates for `mypy .`, `pytest -m lint`, and `pytest -m "unit or integration"`.
+- [x] Define core config object for project allowlist (`TJC` first, `BC` next), delay, and feature flags.
+- [x] Add CI quality gates for `mypy .`, `pytest -m lint`, and `pytest -m "unit or integration"`.
 - Done when: project boots locally, config validates required env vars, and all baseline gates execute successfully.
 
 ## 2. Core Backend / API
