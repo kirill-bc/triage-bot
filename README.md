@@ -9,6 +9,16 @@
 1. Open [`.cursor/commands/make-specs.prompt.md`](.cursor/commands/make-specs.prompt.md) and run it to shape requirements and specs for this repo.
 2. Open [`.cursor/commands/make-todo.prompt.md`](.cursor/commands/make-todo.prompt.md) and run it to turn specs into an actionable backlog.
 
+## Manual Jira issue fetch (smoke)
+
+With a virtualenv and `.env` configured (`JIRA_API_KEY`, `JIRA_BASE_URL`, `JIRA_USER_EMAIL`, `OPENROUTER_API_KEY`), from the repository root:
+
+```bash
+.venv/bin/python scripts/fetch_jira_issue.py YOUR-123
+```
+
+This calls Jira REST and prints normalized fields (summary, description, type, priority, reporter) as JSON.
+
 ## Scaffold overview
 
 This tree is a **Cursor-first** scaffold: project conventions live under `.cursor/` (commands, rules, and optional skills). As you add application code, align with the rules in `.cursor/rules/` for development workflow, **TDD**, and **testing** expectations. When you introduce a real codebase, add the usual **linting** (for example `flake8` / `ruff`), **type checking** (`mypy`), and **`pytest`** markers your team uses, plus **`docs/architecture/`** and **`docs/user_flows/`** so agents and humans share the same map.

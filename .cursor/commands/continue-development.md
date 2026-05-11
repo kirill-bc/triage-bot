@@ -1,5 +1,7 @@
 description: 'Continue working on the project using TDD (Red → Green → Refactor)'
 
+**Git:** Do not `git add`, `git commit`, `git push`, or otherwise change git state as part of this command. Leave changes unstaged (or as-is) for manual user review; the user commits when ready (e.g. after review, via `.cursor/commands/close-phase.md` if they use that workflow).
+
 1. Read the next task from `TODO.md`; frame the smallest useful change and flag scope creep.
 2. Plan the tests that prove the requirement; pick the right file in `tests/unit/` or `tests/integration/`.
 3. RED: Write the tests first and run them to confirm they FAIL.
@@ -13,4 +15,4 @@ description: 'Continue working on the project using TDD (Red → Green → Refac
    - "LLM validates" → LLM must be called. "Create prompts" → prompts must exist.
    - Run the tests that prove the NAMED functionality works, not just that code runs.
    - **DO NOT update TODO.md until verification passes.**
-7. Document: update UF/docs/memory as needed and run `.cursor/commands/close-phase.md` when stable.
+7. Document: update UF/docs/memory as needed. Do **not** run `.cursor/commands/close-phase.md` from here unless the user explicitly asked to close the phase—`close-phase` stages and commits; that belongs after the user has reviewed the diff.

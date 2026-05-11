@@ -11,7 +11,8 @@
 ## 2. Core Backend / API
 - [x] Implement `POST /triage` contract accepting `issue_key`, `project`, and `event_type`.
 - [x] Add request validation for required fields and supported event values.
-- [ ] Implement Jira issue fetcher by issue key (summary, description, type, priority, reporter).
+- [x] Implement Jira issue fetcher by issue key (summary, description, type, priority, reporter).
+- [x] Add smoke script to fetch one issue by key for manual verification (`scripts/fetch_jira_issue.py`).
 - [ ] Implement policy context loader for bug and priority definitions.
 - [ ] Build prompt/input composer combining issue data plus policy definitions.
 - [ ] Implement OpenRouter inference client with model name from configuration.

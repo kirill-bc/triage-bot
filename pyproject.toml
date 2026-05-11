@@ -3,7 +3,7 @@ requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-py-modules = ["core_config", "settings", "triage_api"]
+py-modules = ["core_config", "jira_issue_fetcher", "settings", "triage_api"]
 
 [project]
 name = "jira-triage"
@@ -41,7 +41,7 @@ markers = [
 [tool.mypy]
 python_version = "3.10"
 strict = true
-files = ["settings.py", "core_config.py", "triage_api.py", "tests"]
+files = ["settings.py", "core_config.py", "jira_issue_fetcher.py", "triage_api.py", "tests"]
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
