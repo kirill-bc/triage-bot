@@ -10,11 +10,9 @@ alwaysApply: true
 - Scope to unit work with `pytest -m unit`; keep tests isolated and fast.
 - Cover integrations via `pytest -m integration`; mock external services.
 - Combine coverage with `pytest -m "unit or integration"` when reviewing.
-- Execute `pytest -m e2e` only when end-to-end behavior must be proven.
-- Align `pytest -m e2e` coverage with the flows listed in docs/user_flows/index.md; add scenarios when new UF files appear.
+- Align integration scenarios with flows listed in `docs/user_flows/index.md` when you add or change flows.
 - Prefer `./scripts/run_tests.sh` for repeatable local runs.
-- Launch `./scripts/run_e2e_tests.sh` when browser flows are required; the script automatically starts/stops the server.
-- Configure server startup via E2E_SERVER_COMMAND env var or disable with E2E_SERVER_DISABLED=true for non-web projects.
+- Optional live OpenRouter: `OPENROUTER_LIVE_SMOKE=1` with `tests/integration/test_openrouter_live_smoke.py` (network + cost).
 - Share fixtures through `tests/conftest.py` to avoid duplication.
 - Ensure ALL GATES PASS. Any messages like "this is unrelated to my changes" are EXPLICITLY prohibited. Unless instructed otherwise, fix any error you discover, linting or otherwise.
 

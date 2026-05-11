@@ -21,14 +21,13 @@ Usage: $0 [COMMAND]
 
 Commands:
   unit          Run unit tests only
-  integration   Run integration tests only
+  integration   Run integration tests only (add OPENROUTER_LIVE_SMOKE=1 for live OpenRouter ping)
   fast          Run unit + integration tests
-  e2e           Run E2E tests (requires server)
   lint          Run lint checks
   types         Run mypy type checking
   coverage      Run tests with coverage report
   all           Run all checks (lint, types, unit, integration)
-  full          Run everything including E2E (requires server)
+  full          Same as all (kept for habit; no browser E2E in this Lambda-oriented repo)
   
 EOF
 }
@@ -46,10 +45,6 @@ case "${1:-}" in
         echo "Running unit + integration tests..."
         pytest -m "unit or integration"
         ;;
-    e2e)
-        echo "Running E2E tests..."
-        ./scripts/run_e2e_tests.sh
-        ;;
     lint)
         echo "Running lint checks..."
         pytest -m lint
@@ -65,7 +60,7 @@ case "${1:-}" in
         echo "Coverage report generated in htmlcov/index.html"
         ;;
     all)
-        echo "Running full validation suite (except E2E)..."
+        echo "Running full validation suite..."
         echo ""
         echo "1/4 Running lint checks..."
         pytest -m lint
@@ -82,24 +77,8 @@ case "${1:-}" in
         echo "All checks passed!"
         ;;
     full)
-        echo "Running FULL validation suite including E2E..."
-        echo ""
-        echo "1/5 Running lint checks..."
-        pytest -m lint
-        echo ""
-        echo "2/5 Running type checks..."
-        mypy .
-        echo ""
-        echo "3/5 Running unit tests..."
-        pytest -m unit
-        echo ""
-        echo "4/5 Running integration tests..."
-        pytest -m integration
-        echo ""
-        echo "5/5 Running E2E tests..."
-        ./scripts/run_e2e_tests.sh
-        echo ""
-        echo "All checks passed!"
+        echo "Running full validation suite (same as all)..."
+        bash "${ROOT_DIR}/scripts/run_tests.sh" all
         ;;
     help|--help|-h)
         show_help

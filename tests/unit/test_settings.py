@@ -10,6 +10,7 @@ from settings import AppSettings, load_settings
 _APP_ENV_KEYS = (
     "JIRA_API_KEY",
     "OPENROUTER_API_KEY",
+    "OPENROUTER_MODEL",
     "JIRA_BASE_URL",
     "JIRA_USER_EMAIL",
     "LOG_LEVEL",
@@ -68,6 +69,7 @@ def test_load_settings_loads_required_keys_from_dotenv(
     (tmp_path / ".env").write_text(
         "JIRA_API_KEY=jira-token\n"
         "OPENROUTER_API_KEY=or-token\n"
+        "OPENROUTER_MODEL=openai/gpt-4o\n"
         "JIRA_BASE_URL=https://example.atlassian.net\n"
         "JIRA_USER_EMAIL=triage@example.com\n"
         "LOG_LEVEL=DEBUG\n"
@@ -78,6 +80,7 @@ def test_load_settings_loads_required_keys_from_dotenv(
     settings = load_settings()
     assert settings.jira_api_key == "jira-token"
     assert settings.openrouter_api_key == "or-token"
+    assert settings.openrouter_model == "openai/gpt-4o"
     assert settings.jira_base_url == "https://example.atlassian.net"
     assert settings.jira_user_email == "triage@example.com"
     assert settings.log_level == "DEBUG"
@@ -95,6 +98,7 @@ def test_load_settings_optional_fields_default_when_omitted(
         encoding="utf-8",
     )
     settings = load_settings()
+    assert settings.openrouter_model == "openai/gpt-4o-mini"
     assert settings.jira_base_url is None
     assert settings.jira_user_email is None
     assert settings.log_level == "INFO"

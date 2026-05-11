@@ -8,7 +8,7 @@ alwaysApply: true
 - Frame the smallest useful change before touching code.
 - Confirm the task against `TODO.md` and revise the list if priorities shift.
 - Call out scope creep or overengineering as soon as it appears and wait for approval before expanding the task.
-- Review docs/user_flows/index.md for affected journeys.
+- Review `docs/user_flows/index.md` for affected flows (integration / manual validation).
 
 ### Phase 2: RED - Write Failing Tests First
 - **Before writing ANY implementation code**, write comprehensive tests that:

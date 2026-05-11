@@ -3,7 +3,15 @@ requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-py-modules = ["core_config", "jira_issue_fetcher", "policy_context", "settings", "triage_api"]
+py-modules = [
+    "core_config",
+    "jira_issue_fetcher",
+    "openrouter_inference_client",
+    "policy_context",
+    "prompt_composer",
+    "settings",
+    "triage_api",
+]
 
 [project]
 name = "jira-triage"
@@ -35,7 +43,6 @@ markers = [
     "unit: fast isolated unit tests",
     "integration: integration tests with mocks",
     "lint: lint checks run via pytest",
-    "e2e: end-to-end or system tests",
 ]
 
 [tool.mypy]
@@ -45,7 +52,9 @@ files = [
     "settings.py",
     "core_config.py",
     "jira_issue_fetcher.py",
+    "openrouter_inference_client.py",
     "policy_context.py",
+    "prompt_composer.py",
     "triage_api.py",
     "tests",
 ]

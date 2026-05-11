@@ -19,6 +19,11 @@ class AppSettings(BaseSettings):
 
     jira_api_key: str = Field(min_length=1, description="Jira Cloud API token (or server PAT).")
     openrouter_api_key: str = Field(min_length=1, description="OpenRouter API key.")
+    openrouter_model: str = Field(
+        default="openai/gpt-4o-mini",
+        min_length=1,
+        description="OpenRouter model id, e.g. openai/gpt-4o-mini or anthropic/claude-3-haiku.",
+    )
 
     jira_base_url: str | None = Field(
         default=None,

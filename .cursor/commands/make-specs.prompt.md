@@ -19,7 +19,7 @@ Required sections (use short bullets):
 - Key user scenarios / flows (2–5).
 - API / modules (endpoints, I/O, contracts).
 - Data sources & constraints.
-- Testing strategy (unit, integration, E2E).
+- Testing strategy (unit, integration; note any opt-in live checks or manual Jira validation).
 - Assumptions & open questions.
 
 Template:

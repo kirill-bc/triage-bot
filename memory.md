@@ -2,6 +2,22 @@
 
 ## 2026-05-11
 
+- **Phase close (commit):** OpenRouter inference client + `OPENROUTER_MODEL` settings; optional
+  `OPENROUTER_LIVE_SMOKE` integration ping; `max_tokens` on chat completions; removed Playwright/E2E
+  scaffold (`run_e2e_tests.sh`, `pytest` `e2e` marker, `tests/e2e/`); `run_tests.sh full` delegates to
+  `all`; docs/spec/user flows and Cursor prompts aligned with Lambda-shaped service.
+- **OpenRouter client:** `openrouter_inference_client.py` — `OpenRouterInferenceClient(settings, client=...)`.
+  `chat_completion(messages, temperature=..., max_tokens=...)` POSTs to
+  `https://openrouter.ai/api/v1/chat/completions` with `model=settings.openrouter_model`
+  (`OPENROUTER_MODEL`, default `openai/gpt-4o-mini`) and Bearer `OPENROUTER_API_KEY`. Optional
+  `max_tokens` is forwarded when set. Raises `OpenRouterInferenceError` on HTTP errors or empty
+  assistant `content`.
+  Tests: `tests/unit/test_openrouter_inference_client.py`. Optional live ping:
+  `tests/integration/test_openrouter_live_smoke.py` runs when `OPENROUTER_LIVE_SMOKE=1`
+  (uses `load_settings()` + real HTTPS).
+- **Prompt composer:** `prompt_composer.py` exposes `compose_classification_prompt(policy, issue)` (bug policy + issue
+  context only) and `compose_priority_prompt(policy, issue)` (priority policy + issue only). Unit tests:
+  `tests/unit/test_prompt_composer.py`. Keeps step (1) and step (2) inputs separate so priority text is not always-on.
 - **Triage design (docs):** `specification.md` and `TODO.md` describe **sequential** inference: (1) Bug vs Story using
   bug policy only; (2) if Bug, second call for P0–P4 using priority policy. Story outcome skips priority; Jira-facing
   actions are **advisory** internal comments and labels on mismatch only (no automatic Jira field mutation in Phase 1).
@@ -27,10 +43,12 @@
   (comma-separated, defaults to `TJC,BC`), `TRIAGE_ANALYSIS_DELAY_SECONDS` (int ≥ 0, default 300),
   `TRIAGE_DEDUPE_DEFERRAL_ENABLED` (bool, default False). `allowed_projects` exposed as
   `@computed_field` so pydantic-settings reads it as a plain `str` (no JSON-decode issue).
-- Lint gate: `pytest -m lint` runs flake8 on `settings.py`, `core_config.py`, `jira_issue_fetcher.py`, `policy_context.py`,
-  `triage_api.py`, `scripts/fetch_jira_issue.py`, and `tests/`.
+- Lint gate: `pytest -m lint` runs flake8 on `settings.py`, `core_config.py`, `jira_issue_fetcher.py`,
+  `openrouter_inference_client.py`, `policy_context.py`, `prompt_composer.py`, `triage_api.py`,
+  `scripts/fetch_jira_issue.py`, and `tests/`.
 - Type gate: `mypy .` runs strict on application modules at repo root plus `tests/`; `typing-extensions>=4.0` declared as runtime dep.
-- `scripts/run_tests.sh` and `scripts/run_e2e_tests.sh` prepend `.venv/bin` to `PATH` when present.
+- `scripts/run_tests.sh` prepends `.venv/bin` to `PATH` when present. No Playwright/E2E harness:
+  validation is unit + integration (mocks) plus optional live OpenRouter smoke.
 - CI: `.github/workflows/ci.yml` runs three quality gates on every push/PR: `mypy .`, `pytest -m lint`,
   and `pytest -m "unit or integration"`. Python 3.10, installs with `pip install -e ".[dev]"`.
 - `tests/lint/test_ci_workflow.py` guards that the workflow file exists and contains all three gate commands.

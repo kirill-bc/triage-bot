@@ -23,8 +23,8 @@
      - Jira type Bug + model Bug: compare predicted P0–P4 to current Jira priority.
      - Jira type Story + model Bug: treat as misfiled bug — recommend Bug + suggested priority (compare for mismatch/labels as designed).
   4. Surface guidance via internal comment (and mismatch labels when applicable): suggest reclassification and/or priority with reasoning; advisory only — no automatic Jira field mutation in Phase 1 (see Out-of-scope in `specification.md`).
-- [ ] Build prompt/input composer for step (1) and, when needed, step (2) — do not bundle both model calls into one always-on prompt.
-- [ ] Implement OpenRouter inference client with model name from configuration.
+- [x] Build prompt/input composer for step (1) and, when needed, step (2) — do not bundle both model calls into one always-on prompt.
+- [x] Implement OpenRouter inference client with model name from configuration.
 - [ ] Parse and validate model output to strict schema (per step or merged response), including:
   - [ ] `recommended_issue_type` in `Bug|Story`
   - [ ] When `recommended_issue_type` is `Bug`: `recommended_priority` in `P0|P1|P2|P3|P4`; when `Story`: omit or null `recommended_priority` (no priority model output)
@@ -59,16 +59,7 @@
 - [ ] Add integration tests for mismatch/no-mismatch behavior including label combinations and sequential flow (Story outcome skips priority inference; Bug outcome invokes it).
 - Done when: `pytest -m integration` passes with deterministic mocks and covers service boundaries.
 
-## 5. E2E Tests (Playwright / system flows)
-- [ ] Define E2E scenarios mapped to user flows for support-created bug triage.
-- [ ] Implement E2E: mismatch case produces expected internal comment and labels.
-- [ ] Implement E2E: likely-story case applies story mismatch labeling correctly.
-- [ ] Implement E2E: matching recommendation produces no comment and no labels.
-- [ ] Implement E2E: batch triage entrypoint processes existing open issues.
-- [ ] Wire `./scripts/run_e2e_tests.sh` with server lifecycle settings (`E2E_SERVER_COMMAND` / `E2E_SERVER_DISABLED`).
-- Done when: `pytest -m e2e` validates core user flows in a test Jira project (or equivalent fully mocked end-to-end harness).
-
-## 6. Non-functional (logging, config, error handling)
+## 5. Non-functional (logging, config, error handling)
 - [ ] Implement structured audit logging for input metadata, model output, action taken, and timestamps.
 - [ ] Add trace/correlation IDs across trigger, triage service, and Jira action executor.
 - [ ] Implement retries/timeouts for Jira and model provider calls with safe failure behavior.
@@ -77,7 +68,7 @@
 - [ ] Ensure confidence is treated as advisory metadata in decision paths.
 - Done when: logs and metrics support auditability, debugging, and confidence quality monitoring.
 
-## 7. Polish & Docs
+## 6. Polish & Docs
 - [ ] Document architecture and module responsibilities (`jira_automation_trigger`, `ai_triage_service`, `jira_action_executor`, `audit_log_store`).
 - [ ] Add runbook for local development, env setup, and test execution commands.
 - [ ] Document Jira automation setup, webhook payload expectations, and delay/dedupe behavior.
@@ -85,10 +76,14 @@
 - [ ] Record default model-selection rationale and tuning strategy for confidence calibration in Phase 2.
 - Done when: a new engineer can run, test, and operate the MVP using repository docs alone.
 
-## 8. Deployment (MVP scope)
+## 7. Deployment (MVP scope)
 - [ ] Package app for demo deployment runnable by QA (Docker Compose or equivalent local service process).
 - [ ] Provide `.env` template and startup scripts for reproducible non-cloud demo setup.
 - [ ] Configure deployment gate with lint/type/unit+integration checks before demo release.
 - [ ] Add demo smoke check: send Jira Automation-like event for sample issue and verify expected Jira side effects.
 - [ ] Document optional cloud path as deferred follow-up (not required for MVP demo).
 - Done when: QA can run the automation-driven triage demo as a stable environment without requiring cloud infrastructure.
+
+## 8. Post-MVP
+- [ ] Build a **classification benchmark** (curated, labeled set) so different OpenRouter models can be compared on measurable accuracy, not intuition alone. Target composition: **25** correctly created **Bugs**, **25** correctly created **Stories**, **25** initially misclassified **Bugs**, and **25** initially misclassified **Stories** (for the two misclassified buckets, each row documents **Jira’s starting issue type** vs **human ground truth** so metrics are unambiguous). Each row needs enough summary/description to run the same triage prompts. Deliver a repeatable evaluation harness (script or pytest slice) that runs the pipeline over the set, records type (and Bug-path priority) predictions, and reports aggregate metrics (e.g. accuracy, confusion matrix, cost/latency per model).
+- Done when: at least one baseline model is scored on the full 100-case set and swapping `OPENROUTER_MODEL` reproduces comparable runs with saved result artifacts for A/B comparison.

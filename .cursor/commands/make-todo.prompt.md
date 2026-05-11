@@ -23,10 +23,10 @@ Suggested structure:
 2. Core Backend / API
 3. Frontend / UX (if applicable)
 4. Integration Tests
-5. E2E Tests (Playwright)
-6. Non-functional (logging, config, error handling)
-7. Polish & Docs
-8. Deployment (if in scope)
+5. Non-functional (logging, config, error handling)
+6. Polish & Docs
+7. Deployment (if in scope)
+8. Post-MVP / benchmarks (if any)
 
 Acceptance:
 - File created at `./TODO.md`

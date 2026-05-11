@@ -112,9 +112,10 @@
   - AI service endpoint contract tests (request/response shape).
   - Jira webhook adapter + action executor against mocked Jira API.
   - Confluence policy retrieval adapter with mocked content source.
-- E2E (`pytest -m e2e`, when applicable)
-  - Create sample Jira issues and validate expected comment/labels in test project.
-  - Batch-triage flow for existing open tickets.
+  - Optional opt-in checks (e.g. live OpenRouter smoke) where real calls are explicitly enabled.
+- System validation (no Playwright; service targets Lambda-style invocation)
+  - Manual or scripted checks against a test Jira project (comments/labels) as needed for demos.
+  - Prefer integration tests with mocks for automation in CI.
 - Quality gates
   - `mypy .`
   - `pytest -m lint` (or `flake8` equivalent)
