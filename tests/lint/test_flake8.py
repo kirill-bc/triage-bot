@@ -18,6 +18,7 @@ def test_flake8_passes_on_src_and_tests() -> None:
             str(root / "settings.py"),
             str(root / "core_config.py"),
             str(root / "jira_issue_fetcher.py"),
+            str(root / "policy_context.py"),
             str(root / "triage_api.py"),
             str(root / "scripts" / "fetch_jira_issue.py"),
             str(root / "tests"),

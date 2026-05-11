@@ -9,17 +9,26 @@
 - Done when: project boots locally, config validates required env vars, and all baseline gates execute successfully.
 
 ## 2. Core Backend / API
+- [x] Set up `README.md` from a generic project skeleton description to rough structure we could fill up leading to the final state of this stage
 - [x] Implement `POST /triage` contract accepting `issue_key`, `project`, and `event_type`.
 - [x] Add request validation for required fields and supported event values.
 - [x] Implement Jira issue fetcher by issue key (summary, description, type, priority, reporter).
 - [x] Add smoke script to fetch one issue by key for manual verification (`scripts/fetch_jira_issue.py`).
-- [ ] Implement policy context loader for bug and priority definitions.
-- [ ] Build prompt/input composer combining issue data plus policy definitions.
+- [x] Implement policy context loader for bug and priority definitions.
+- [x] Align `specification.md` and triage backlog with sequential analysis (classification then optional priority), advisory Jira comments, and Story-path nullable `recommended_priority`.
+- Triage logic (sequential, not parallel type+priority):
+  1. Classify Story vs Bug (bug policy only for this step).
+  2. If the model says Story: recommend reclassifying to Story; do not run priority inference; do not compare or suggest P0–P4.
+  3. If the model says Bug: run a second priority inference (priority policy + issue context). Then:
+     - Jira type Bug + model Bug: compare predicted P0–P4 to current Jira priority.
+     - Jira type Story + model Bug: treat as misfiled bug — recommend Bug + suggested priority (compare for mismatch/labels as designed).
+  4. Surface guidance via internal comment (and mismatch labels when applicable): suggest reclassification and/or priority with reasoning; advisory only — no automatic Jira field mutation in Phase 1 (see Out-of-scope in `specification.md`).
+- [ ] Build prompt/input composer for step (1) and, when needed, step (2) — do not bundle both model calls into one always-on prompt.
 - [ ] Implement OpenRouter inference client with model name from configuration.
-- [ ] Parse and validate model output to strict schema:
+- [ ] Parse and validate model output to strict schema (per step or merged response), including:
   - [ ] `recommended_issue_type` in `Bug|Story`
-  - [ ] `recommended_priority` in `P0|P1|P2|P3|P4`
-  - [ ] `confidence` in `[0.0, 1.0]`
+  - [ ] When `recommended_issue_type` is `Bug`: `recommended_priority` in `P0|P1|P2|P3|P4`; when `Story`: omit or null `recommended_priority` (no priority model output)
+  - [ ] `confidence` in `[0.0, 1.0]` (per inference that ran; document whether one or two scores are returned)
   - [ ] `reason` non-empty
   - [ ] `recommended_action` in allowed enum
 - [ ] Implement fallback/error response path for upstream failures and invalid model output.
@@ -27,16 +36,16 @@
 - [ ] Add optional dedupe/recent-update deferral logic behind configuration flag.
 - [ ] Implement local runner entrypoint to execute full triage for a single issue key from CLI (without Jira Automation dependency).
 - [ ] Implement webhook handler for Jira Automation update events to trigger local analysis flow.
-- Done when: service supports both on-command triage and Jira Automation-triggered local analysis.
+- Done when: service supports both on-command triage and Jira Automation-triggered local analysis, using sequential classification then optional priority (never both inferences unconditionally).
 
 ## 3. Frontend / UX (Jira-facing outputs)
-- [ ] Implement mismatch detector comparing recommendation vs current Jira type and priority.
+- [ ] Implement mismatch detector: always compare issue type to `recommended_issue_type`; compare priority to `recommended_priority` only when the triage path ran priority (i.e. model classified as Bug).
 - [ ] Implement Jira action executor to post internal comment only when mismatch exists.
 - [ ] Format comment body with recommended values, numeric confidence, and concise reasoning.
 - [ ] Apply labels only on mismatch:
   - [ ] `ai-reviewed`
   - [ ] `ai-likely-story` when issue type mismatch
-  - [ ] `ai-priority-mismatch` when priority mismatch
+  - [ ] `ai-priority-mismatch` when priority mismatch (Bug path only; N/A when recommendation is Story)
 - [ ] Ensure no visible Jira action is taken when recommendation matches current state.
 - [ ] Add end-to-end local flow task: fetch issue -> analyze -> decide mismatch -> apply Jira comment/labels.
 - [ ] Add automation-driven local flow task: accept Jira Automation update payload -> analyze latest ticket state -> apply Jira comment/labels.
@@ -47,7 +56,7 @@
 - [ ] Add integration tests for Jira webhook adapter invoking async triage pipeline.
 - [ ] Add integration tests for Jira action executor against mocked Jira API.
 - [ ] Add integration tests for policy retrieval adapter using mocked content source.
-- [ ] Add integration tests for mismatch/no-mismatch behavior including label combinations.
+- [ ] Add integration tests for mismatch/no-mismatch behavior including label combinations and sequential flow (Story outcome skips priority inference; Bug outcome invokes it).
 - Done when: `pytest -m integration` passes with deterministic mocks and covers service boundaries.
 
 ## 5. E2E Tests (Playwright / system flows)

@@ -5,7 +5,8 @@
 ## Overview
 - Build an AI-assisted Jira triage system for Support-created issues, focused on validating:
   - Issue type classification (`Bug` vs `Story`)
-  - Priority assignment (`P0` to `P4`) against policy definitions
+  - Priority assignment (`P0` to `P4`) against policy definitions **only when the model classifies the work as a Bug** (priority inference is not run for Story outcomes)
+- Analysis is **sequential**: (1) Story vs Bug using bug policy; (2) if and only if the outcome is Bug, run a second inference for priority using priority policy. Do not run both model calls unconditionally in parallel.
 - Primary users:
   - Support agents (ticket reporters)
   - QA and Engineering triagers
@@ -13,11 +14,11 @@
 - Initial behavior is advisory (non-blocking), with future phases enabling soft and hard enforcement.
 
 ## Scope
-- Phase 1 (MVP): recommendation-only triage for new `Bug` issues in a target project (`TJC` first, `BC` next).
+- Phase 1 (MVP): recommendation-only triage for new issues in a target project (`TJC` first, `BC` next). Primary trigger is Support-created **Bug** tickets; the same pipeline must handle **Story**-typed tickets when analysis shows they are misfiled (model says Bug + suggested priority).
 - Trigger triage from Jira Automation on issue creation, with a stabilization delay to avoid analyzing half-written tickets.
 - Send issue key to AI Triage Service (service fetches latest issue state at analysis time).
-- AI service returns structured recommendation with confidence and reasoning.
-- Jira Automation posts an internal comment and applies mismatch labels only when mismatch is detected (classification and/or priority); otherwise do nothing.
+- AI service returns structured recommendation with confidence and reasoning (fields depend on which inference steps ran; see response contract).
+- Jira Automation posts an **internal comment** with reasoning: suggest reclassification and/or priority when relevant; **advisory only** (no automatic issue type or priority field mutation in Phase 1). Apply mismatch labels only when mismatch is detected (type and/or priority on the Bug path); otherwise do nothing.
 - Persist audit logs of AI inputs/outputs and applied automation actions.
 
 ## Out-of-scope
@@ -27,9 +28,10 @@
 - Enforcement workflows requiring manual override reason (future hard-enforcement phase).
 
 ## Key User Scenarios / Flows
-- New Support-created `Bug` is triaged and receives AI recommendation comment if mismatch is detected.
-- AI detects likely `Story` and labels ticket for product/triage review.
-- AI detects priority mismatch and labels ticket for severity review.
+- New Support-created `Bug` is triaged: classify Story vs Bug; if Bug, predict priority; internal comment + labels only on mismatch (type and/or priority).
+- AI concludes **Story** (ticket filed as Bug): recommend reclassify to Story; **no** priority step, **no** priority labels; comment/labels reflect type mismatch only.
+- AI concludes **Bug** when Jira type is **Story**: misfiled bug — recommend Bug + suggested priority; compare for mismatch and label accordingly.
+- AI detects priority mismatch on the Bug path and labels ticket for severity review.
 - Existing open issues can be batch triaged by AI service outside Jira Automation (manual or scheduled entry point).
 
 ## API / Modules
@@ -42,30 +44,36 @@
 - `ai_triage_service`
   - Responsibilities:
     - Fetch issue content from Jira using issue key (summary, description, fields)
-    - Evaluate against bug and priority definitions
-    - Return recommendation payload
+    - Run **classification** inference with bug definition policy only
+    - If classification is **Story**, return type recommendation only (omit priority fields; do not call the model for priority)
+    - If classification is **Bug**, run **priority** inference with priority definition policy and return suggested `P0`–`P4`
+    - Return a single recommendation payload suitable for mismatch detection and audit (merged or step-scoped fields as implemented)
   - Runtime: AWS Lambda (invoked asynchronously)
   - Model provider: OpenRouter (cost-efficient model selected by configuration)
   - Suggested endpoint/event contract: `POST /triage`
     - Request contract:
       - `{ "issue_key": "BC-123", "project": "BC", "event_type": "issue_created" }`
-    - Response contract:
+    - Response contract (illustrative; exact nullability is enforced in code). Example when classification is Story (no priority step):
       ```json
       {
-        "recommended_issue_type": "Bug | Story",
-        "recommended_priority": "P0 | P1 | P2 | P3 | P4",
+        "recommended_issue_type": "Story",
+        "recommended_priority": null,
         "confidence": 0.0,
         "reason": "Explanation",
         "recommended_action": "comment_only | label | reclassify | update_priority"
       }
       ```
+      When classification is Bug, `recommended_priority` is a string `P0`–`P4` from the second inference step (never null).
+      - When `recommended_issue_type` is `Story`, `recommended_priority` is **not** produced by a priority inference step (`null` or omitted). Mismatch handling compares **type only** on that path.
+      - When `recommended_issue_type` is `Bug`, `recommended_priority` is required. Compare to Jira priority when Jira type is Bug; when Jira type was Story, treat as misfiled bug and compare both type and suggested priority as designed.
+      - `confidence` may represent the last inference that ran, or separate fields per step — document and validate in the parser; at minimum, classification always has a score.
 - `jira_action_executor`
-  - Add internal comment with recommendation summary and reasoning only when mismatch exists.
+  - Add internal comment with recommendation summary and reasoning only when mismatch exists. Comment text is **advisory**: suggest reclassification and/or priority with rationale; Phase 1 does **not** mutate Jira issue type or priority fields via automation.
   - Apply labels when mismatch exists:
     - `ai-reviewed`
     - `ai-likely-story` (if issue type mismatch)
-    - `ai-priority-mismatch` (if priority mismatch)
-  - No comment, label, or issue update when recommendation matches current type and priority.
+    - `ai-priority-mismatch` (if priority mismatch **and** the triage path included priority — i.e. Bug outcome)
+  - No comment, label, or issue update when recommendation matches current type; on the Bug path, also require no priority mismatch vs current Jira priority.
   - If recommendation matches current state, take no visible action.
 - `audit_log_store`
   - Persist request metadata, model output, confidence, action taken, and timestamp.
@@ -96,8 +104,8 @@
 
 ## Testing Strategy
 - Unit (`pytest -m unit`)
-  - Recommendation parser/validator (schema, enums, confidence bounds).
-  - Classification and priority decision orchestration.
+  - Recommendation parser/validator (schema, enums, confidence bounds, nullable `recommended_priority` on Story path).
+  - Classification and priority orchestration: Story path skips priority model; Bug path runs priority second.
   - Label/action mapping logic.
   - Error handling and fallback behavior.
 - Integration (`pytest -m integration`)

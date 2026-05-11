@@ -4,5 +4,6 @@ description: 'Close the current project phase by reviewing, testing, and committ
 - Run `mypy .`.
 - Run `pytest -m "unit or integration"`; add `pytest -m e2e` or `./scripts/run_e2e_tests.sh` if flows demand it.
 - Capture project state in `memory.md` and update any relevant docs.
+- Update `README.md` when the phase introduced new setup steps, CLI commands, scripts, or other information a new contributor needs to run or operate the project.
 - Reconcile TODO.md: mark completed work, add follow-ups, and reorder if needed.
 - Stage the changes and commit the phase outcome.

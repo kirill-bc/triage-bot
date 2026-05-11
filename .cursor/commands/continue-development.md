@@ -15,4 +15,4 @@ description: 'Continue working on the project using TDD (Red → Green → Refac
    - "LLM validates" → LLM must be called. "Create prompts" → prompts must exist.
    - Run the tests that prove the NAMED functionality works, not just that code runs.
    - **DO NOT update TODO.md until verification passes.**
-7. Document: update UF/docs/memory as needed. Do **not** run `.cursor/commands/close-phase.md` from here unless the user explicitly asked to close the phase—`close-phase` stages and commits; that belongs after the user has reviewed the diff.
+7. Document: update UF/docs and `memory.md` as needed. If you added user-facing commands, env vars, or run workflows, update `README.md` as well (a thorough doc pass often fits `.cursor/commands/close-phase.md` after review). Do **not** run `close-phase` from here unless the user explicitly asked to close the phase—`close-phase` stages and commits; that belongs after the user has reviewed the diff.
