@@ -1,4 +1,11 @@
-"""Triage behavior: allowed Jira projects, scheduling delay, and feature flags."""
+"""Triage behavior: allowed Jira projects.
+
+The Jira-side scheduled JQL rule owns stabilization (``created <= -5m``) and
+dedupe (``labels not in (ai-reviewed)``), so the service no longer carries
+``analysis_delay_seconds`` or ``dedupe_deferral_enabled`` config. The project
+allowlist stays as a server-side safety net in case a misconfigured Jira rule
+sends issues from a project we do not intend to triage.
+"""
 
 from __future__ import annotations
 
@@ -11,7 +18,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class TriageCoreConfig(BaseSettings):
-    """Non-secret triage limits: which projects to run on, delay, and toggles."""
+    """Non-secret triage limits: which projects to run on."""
 
     model_config = SettingsConfigDict(
         env_prefix="TRIAGE_",
@@ -26,15 +33,6 @@ class TriageCoreConfig(BaseSettings):
         default="TJC,BC",
         validation_alias="TRIAGE_ALLOWED_PROJECTS",
         description="Comma-separated Jira project keys eligible for triage.",
-    )
-    analysis_delay_seconds: int = Field(
-        default=300,
-        ge=0,
-        description="Wait after trigger before analyzing an issue (MVP default 5 minutes).",
-    )
-    dedupe_deferral_enabled: bool = Field(
-        default=False,
-        description="When true, defer analysis if the issue was updated very recently.",
     )
 
     @computed_field  # type: ignore[prop-decorator]

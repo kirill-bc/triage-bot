@@ -1,4 +1,11 @@
-"""HTTP API surface for triage triggers (MVP: request/response contract only)."""
+"""HTTP API surface for triage triggers (MVP: request/response contract only).
+
+The endpoint is fired by a Jira Automation **scheduled** rule (JQL-driven scan),
+not by an event-driven hook. The request body therefore carries a ``source``
+annotation rather than a Jira event type. ``scheduled_scan`` is the only MVP
+value; future sources (e.g. ``manual_cli`` for the local runner) extend the
+literal without changing the request shape.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +14,7 @@ from typing import Literal
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
-TriageEventType = Literal["issue_created", "issue_updated"]
+TriageSource = Literal["scheduled_scan"]
 
 
 class TriageRequest(BaseModel):
@@ -15,8 +22,8 @@ class TriageRequest(BaseModel):
 
     issue_key: str = Field(min_length=1, description="Jira issue key, e.g. TJC-123.")
     project: str = Field(min_length=1, description="Jira project key.")
-    event_type: TriageEventType = Field(
-        description="Jira Automation-style event (issue_created or issue_updated).",
+    source: TriageSource = Field(
+        description="Origin of the triage call (scheduled_scan for Jira Automation rules).",
     )
 
 
@@ -25,7 +32,7 @@ class TriageAccepted(BaseModel):
 
     issue_key: str
     project: str
-    event_type: TriageEventType
+    source: TriageSource
     status: str = Field(default="accepted", description="Processing state placeholder.")
 
 
@@ -37,7 +44,7 @@ def create_app() -> FastAPI:
         return TriageAccepted(
             issue_key=body.issue_key,
             project=body.project,
-            event_type=body.event_type,
+            source=body.source,
         )
 
     return app

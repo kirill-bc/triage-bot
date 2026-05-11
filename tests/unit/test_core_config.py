@@ -1,4 +1,10 @@
-"""Triage runtime config: project allowlist, analysis delay, feature flags."""
+"""Triage runtime config: project allowlist only.
+
+The stabilization delay and dedupe flag previously held here were retired when
+the integration model shifted to a Jira-side scheduled JQL rule: stabilization
+is enforced by the JQL (``created <= -5m``) and dedupe by the ``ai-reviewed``
+label filter, so neither setting is meaningful service-side anymore.
+"""
 
 from pathlib import Path
 
@@ -7,11 +13,7 @@ from pydantic import ValidationError
 
 from core_config import TriageCoreConfig, load_triage_core_config
 
-_TRIAGE_ENV_KEYS = (
-    "TRIAGE_ALLOWED_PROJECTS",
-    "TRIAGE_ANALYSIS_DELAY_SECONDS",
-    "TRIAGE_DEDUPE_DEFERRAL_ENABLED",
-)
+_TRIAGE_ENV_KEYS = ("TRIAGE_ALLOWED_PROJECTS",)
 
 
 @pytest.fixture(autouse=True)
@@ -50,55 +52,6 @@ def test_load_triage_core_config_allowed_projects_strips_whitespace(
 
 
 @pytest.mark.unit
-def test_load_triage_core_config_analysis_delay_defaults_to_five_minutes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    cfg = load_triage_core_config()
-    assert cfg.analysis_delay_seconds == 300
-
-
-@pytest.mark.unit
-def test_load_triage_core_config_analysis_delay_from_env(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("TRIAGE_ANALYSIS_DELAY_SECONDS", "120")
-    cfg = load_triage_core_config()
-    assert cfg.analysis_delay_seconds == 120
-
-
-@pytest.mark.unit
-def test_load_triage_core_config_analysis_delay_rejects_negative(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("TRIAGE_ANALYSIS_DELAY_SECONDS", "-1")
-    with pytest.raises(ValidationError) as exc:
-        load_triage_core_config()
-    assert "analysis_delay_seconds" in str(exc.value).lower()
-
-
-@pytest.mark.unit
-def test_load_triage_core_config_dedupe_deferral_defaults_false(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    cfg = load_triage_core_config()
-    assert cfg.dedupe_deferral_enabled is False
-
-
-@pytest.mark.unit
-def test_load_triage_core_config_dedupe_deferral_from_env(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("TRIAGE_DEDUPE_DEFERRAL_ENABLED", "true")
-    cfg = load_triage_core_config()
-    assert cfg.dedupe_deferral_enabled is True
-
-
-@pytest.mark.unit
 def test_triage_core_config_rejects_empty_allowlist(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
@@ -115,6 +68,20 @@ def test_triage_core_config_reads_from_process_environment(
 ) -> None:
     """When no .env in cwd tree, OS environment is enough."""
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("TRIAGE_ANALYSIS_DELAY_SECONDS", "60")
+    monkeypatch.setenv("TRIAGE_ALLOWED_PROJECTS", "BC")
     cfg = TriageCoreConfig()
-    assert cfg.analysis_delay_seconds == 60
+    assert cfg.allowed_projects == ["BC"]
+
+
+@pytest.mark.unit
+def test_triage_core_config_ignores_retired_delay_and_dedupe_env_vars(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Retired knobs in someone's .env must not crash config loading."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("TRIAGE_ANALYSIS_DELAY_SECONDS", "120")
+    monkeypatch.setenv("TRIAGE_DEDUPE_DEFERRAL_ENABLED", "true")
+    cfg = load_triage_core_config()
+    assert cfg.allowed_projects == ["TJC", "BC"]
+    assert not hasattr(cfg, "analysis_delay_seconds")
+    assert not hasattr(cfg, "dedupe_deferral_enabled")

@@ -22,7 +22,7 @@ See `TODO.md` for the active implementation backlog.
 - `jira_issue_fetcher.py`: Jira REST client and response normalization
 - `openrouter_inference_client.py`: OpenRouter chat completions using `OPENROUTER_MODEL` (see `settings.py`)
 - `settings.py`: environment-backed runtime settings
-- `core_config.py`: triage policy/config defaults (projects, delay, dedupe flag)
+- `core_config.py`: triage policy/config defaults (project allowlist; stabilization delay and dedupe live in the Jira-side scheduled rule)
 - `policy_context.py`: loads bug and priority definition text from `policy/` for prompts
 - `prompt_composer.py`: builds classification-only and priority-only prompt strings from policy + issue
 - `triage_recommendation_parser.py`: validates merged LLM JSON into `TriageRecommendation` (throws `InvalidTriageRecommendationError` when invalid)
@@ -35,8 +35,8 @@ See `TODO.md` for the active implementation backlog.
 
 ## Current implemented components
 
-- **API layer**: `POST /triage` accepts `issue_key`, `project`, `event_type`
-- **Validation**: rejects missing fields and unsupported event values
+- **API layer**: `POST /triage` accepts `issue_key`, `project`, `source` (`scheduled_scan` for the Jira Automation scheduled-rule webhook; closed `Literal`, extensible to `manual_cli` etc.)
+- **Validation**: rejects missing fields and unsupported `source` values
 - **Jira adapter**: fetches and flattens selected Jira issue fields
 - **OpenRouter adapter**: `OpenRouterInferenceClient` posts chat completions using the configured model id
 - **Recommendation parsing**: `parse_triage_recommendation_text()` enforces the merged triage JSON contract (`Bug`/`Story`, nullable priority on Story path, `P0`–`P4` on Bug path, confidence bounds, `recommended_action` enum)

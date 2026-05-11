@@ -1,4 +1,10 @@
-"""POST /triage request and response contract."""
+"""POST /triage request and response contract.
+
+The webhook is fired by a Jira Automation **scheduled** rule (JQL-driven scan),
+not by an event trigger. The request body carries a ``source`` annotation
+(``scheduled_scan`` for MVP) rather than a Jira event type; this leaves room
+for ``manual_cli`` / future sources without changing the contract shape.
+"""
 
 from __future__ import annotations
 
@@ -14,21 +20,21 @@ def client() -> TestClient:
 
 
 @pytest.mark.unit
-def test_post_triage_accepts_issue_key_project_and_event_type(client: TestClient) -> None:
-    payload = {"issue_key": "TJC-42", "project": "TJC", "event_type": "issue_updated"}
+def test_post_triage_accepts_issue_key_project_and_source(client: TestClient) -> None:
+    payload = {"issue_key": "TJC-42", "project": "TJC", "source": "scheduled_scan"}
     response = client.post("/triage", json=payload)
     assert response.status_code == 200
     data = response.json()
     assert data["issue_key"] == "TJC-42"
     assert data["project"] == "TJC"
-    assert data["event_type"] == "issue_updated"
+    assert data["source"] == "scheduled_scan"
 
 
 @pytest.mark.unit
 def test_post_triage_returns_422_when_issue_key_missing(client: TestClient) -> None:
     response = client.post(
         "/triage",
-        json={"project": "TJC", "event_type": "issue_updated"},
+        json={"project": "TJC", "source": "scheduled_scan"},
     )
     assert response.status_code == 422
 
@@ -37,13 +43,13 @@ def test_post_triage_returns_422_when_issue_key_missing(client: TestClient) -> N
 def test_post_triage_returns_422_when_project_missing(client: TestClient) -> None:
     response = client.post(
         "/triage",
-        json={"issue_key": "TJC-1", "event_type": "issue_updated"},
+        json={"issue_key": "TJC-1", "source": "scheduled_scan"},
     )
     assert response.status_code == 422
 
 
 @pytest.mark.unit
-def test_post_triage_returns_422_when_event_type_missing(client: TestClient) -> None:
+def test_post_triage_returns_422_when_source_missing(client: TestClient) -> None:
     response = client.post(
         "/triage",
         json={"issue_key": "TJC-1", "project": "TJC"},
@@ -52,18 +58,10 @@ def test_post_triage_returns_422_when_event_type_missing(client: TestClient) -> 
 
 
 @pytest.mark.unit
-def test_post_triage_accepts_issue_created_event_type(client: TestClient) -> None:
-    payload = {"issue_key": "BC-9", "project": "BC", "event_type": "issue_created"}
-    response = client.post("/triage", json=payload)
-    assert response.status_code == 200
-    assert response.json()["event_type"] == "issue_created"
-
-
-@pytest.mark.unit
-def test_post_triage_returns_422_when_event_type_not_supported(client: TestClient) -> None:
+def test_post_triage_returns_422_when_source_not_supported(client: TestClient) -> None:
     response = client.post(
         "/triage",
-        json={"issue_key": "TJC-1", "project": "TJC", "event_type": "issue_commented"},
+        json={"issue_key": "TJC-1", "project": "TJC", "source": "issue_created"},
     )
     assert response.status_code == 422
 
@@ -72,7 +70,7 @@ def test_post_triage_returns_422_when_event_type_not_supported(client: TestClien
 def test_post_triage_returns_422_when_issue_key_empty_string(client: TestClient) -> None:
     response = client.post(
         "/triage",
-        json={"issue_key": "", "project": "TJC", "event_type": "issue_updated"},
+        json={"issue_key": "", "project": "TJC", "source": "scheduled_scan"},
     )
     assert response.status_code == 422
 
@@ -81,15 +79,15 @@ def test_post_triage_returns_422_when_issue_key_empty_string(client: TestClient)
 def test_post_triage_returns_422_when_project_empty_string(client: TestClient) -> None:
     response = client.post(
         "/triage",
-        json={"issue_key": "TJC-1", "project": "", "event_type": "issue_updated"},
+        json={"issue_key": "TJC-1", "project": "", "source": "scheduled_scan"},
     )
     assert response.status_code == 422
 
 
 @pytest.mark.unit
-def test_post_triage_returns_422_when_event_type_empty_string(client: TestClient) -> None:
+def test_post_triage_returns_422_when_source_empty_string(client: TestClient) -> None:
     response = client.post(
         "/triage",
-        json={"issue_key": "TJC-1", "project": "TJC", "event_type": ""},
+        json={"issue_key": "TJC-1", "project": "TJC", "source": ""},
     )
     assert response.status_code == 422

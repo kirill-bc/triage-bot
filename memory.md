@@ -2,11 +2,47 @@
 
 ## 2026-05-11
 
+- **Phase close (commit):** pivot the trigger model from an event-driven webhook with a service-side
+  5-minute delay to a **Jira-side scheduled JQL rule** that handles stabilization, dedupe, and
+  retry-on-failure in one JQL expression. API contract: `event_type` → `source: Literal["scheduled_scan"]`.
+  `core_config.py` drops `analysis_delay_seconds` + `dedupe_deferral_enabled`. `specification.md`
+  rewrites `jira_automation_trigger` and `jira_action_executor` (`ai-reviewed` now applied on every
+  successful triage so it can act as the dedupe marker the JQL relies on). `TODO.md` realigned
+  (§2 single synchronous handler, §3 label rules, §5 backstop-window metric, §6 Jira automation
+  runbook). `README.md` + `memory.md` updated. Next backlog focus: synchronous triage handler that
+  composes fetcher → prompt composer → inference client → recommendation parser / fallback →
+  action executor (`TODO.md` §2).
+- **Integration model (locked):** Jira Cloud Automation **scheduled rule** (per-issue, no batching for
+  MVP) is the only production trigger. Rule cadence ~5 min. Reference JQL:
+  `project = <KEY> AND issuetype = Bug AND labels not in (ai-reviewed) AND created >= -30m AND created <= -5m`.
+  `created <= -5m` = stabilization delay; `labels not in (ai-reviewed)` = dedupe (service applies that
+  label on every successful triage); `created >= -30m` = backstop. Service is stateless — no in-process
+  scheduler/queue. Failures (`TriageFailure`) leave the issue unlabeled → next scheduled scan retries
+  automatically until success or ageout.
+- **API contract (current):** `POST /triage` body is `{ issue_key, project, source }` where
+  `source: Literal["scheduled_scan"]`. The old `event_type` field (`issue_created` / `issue_updated`)
+  is gone — nothing fires the webhook on a Jira event under the scheduled-rule model. `source` is a
+  closed enum so future entrypoints (e.g. `manual_cli`) extend the literal without changing request
+  shape. **Thin payload:** Jira sends only `issue_key + project + source`; service re-fetches latest
+  issue state via `JiraIssueFetcher` (we already pay the Jira-auth cost for comment/label writes).
+  Reference Jira Automation Send-web-request → Custom data body:
+  `{ "issue_key": "{{issue.key}}", "project": "{{issue.project.key}}", "source": "scheduled_scan" }`.
+  Tests: `tests/unit/test_post_triage.py`.
+- **Label semantics (locked):** `ai-reviewed` is applied on **every successful triage**, mismatch or
+  not — it is the dedupe marker the scheduled JQL depends on. Mismatch-specific labels keep their
+  original meaning: `ai-likely-story` only when type mismatches; `ai-priority-mismatch` only when
+  priority mismatches on the Bug path. Internal comment is posted only on mismatch. Operators force
+  re-triage by removing `ai-reviewed` on the Jira issue.
+- **Config cleanup:** `TriageCoreConfig` no longer carries `analysis_delay_seconds` or
+  `dedupe_deferral_enabled` — both concerns moved to the Jira-side rule.
+  `TRIAGE_ANALYSIS_DELAY_SECONDS` and `TRIAGE_DEDUPE_DEFERRAL_ENABLED` env vars are silently ignored
+  (`BaseSettings extra="ignore"`). Only `allowed_projects` remains as a server-side allowlist safety
+  net against a misconfigured Jira rule.
 - **Phase close (commit):** strict triage model JSON parsing (`triage_recommendation_parser.py`,
   `TriageRecommendation`, `InvalidTriageRecommendationError`); pipeline failure contract
   (`triage_fallback.py`, `TriageFailure`, `fallback_for_exception`); unit tests for both;
-  `pyproject.toml` / flake8 gate / `TODO.md` / `README.md` updated. Next backlog focus: async
-  trigger handler and local triage runner (`TODO.md` §2).
+  `pyproject.toml` / flake8 gate / `TODO.md` / `README.md` updated. Next backlog focus: scheduled-scan
+  triage handler and local CLI runner (`TODO.md` §2).
 - **Triage fallback:** `triage_fallback.py` — `TriageFailure` (frozen Pydantic, `extra="forbid"`,
   message stripped + non-empty) plus `fallback_for_exception(exc)`. Categories:
   `jira_fetch_failed` (← `JiraIssueFetchError`), `inference_failed` (← `OpenRouterInferenceError`),
@@ -51,18 +87,19 @@
   at the repo root next to `tests/` and `policy/`.
   `pyproject.toml` uses `[tool.setuptools] py-modules` so `pip install -e ".[dev]"` works; pytest `pythonpath = ["."]`
   still supports running without an editable install.
-- `triage_api.create_app()`: FastAPI app with `POST /triage` JSON body `issue_key`, `project`, `event_type` (required,
-  non-empty strings); `event_type` must be `issue_created` or `issue_updated` (422 otherwise). Responds with those fields
-  plus `status` placeholder `accepted`. Tests: `tests/unit/test_post_triage.py`.
+- `triage_api.create_app()`: FastAPI app with `POST /triage` JSON body `issue_key`, `project`, `source` (required,
+  non-empty strings); `source` is `Literal["scheduled_scan"]` (422 otherwise). Responds with those fields plus
+  `status` placeholder `accepted`. Tests: `tests/unit/test_post_triage.py`. *(Superseded the original
+  `event_type: issue_created|issue_updated` shape on 2026-05-11 when the integration model moved to a Jira scheduled rule.)*
 - Runtime deps include `fastapi` and `httpx` (TestClient / future HTTP clients). Prefer `.venv/bin/pip` for installs
   so the project venv is the only target.
 - `settings.AppSettings` / `load_settings()`: load `.env` via `python-dotenv` (non-overriding);
   required `JIRA_API_KEY` and `OPENROUTER_API_KEY`; optional Jira base URL / user email and
   logging endpoint fields. `.env` is gitignored; `.env.example` documents variables.
 - `core_config.TriageCoreConfig` / `load_triage_core_config()`: reads `TRIAGE_ALLOWED_PROJECTS`
-  (comma-separated, defaults to `TJC,BC`), `TRIAGE_ANALYSIS_DELAY_SECONDS` (int ≥ 0, default 300),
-  `TRIAGE_DEDUPE_DEFERRAL_ENABLED` (bool, default False). `allowed_projects` exposed as
-  `@computed_field` so pydantic-settings reads it as a plain `str` (no JSON-decode issue).
+  (comma-separated, defaults to `TJC,BC`). `allowed_projects` exposed as `@computed_field` so pydantic-settings reads it
+  as a plain `str` (no JSON-decode issue). *(2026-05-11: dropped `TRIAGE_ANALYSIS_DELAY_SECONDS` and
+  `TRIAGE_DEDUPE_DEFERRAL_ENABLED`; both concerns moved to the Jira-side scheduled rule.)*
 - Lint gate: `pytest -m lint` runs flake8 on the application modules listed in
   `tests/lint/test_flake8.py`, `scripts/fetch_jira_issue.py`, and `tests/`.
 - Type gate: `mypy .` runs strict on application modules at repo root plus `tests/`; `typing-extensions>=4.0` declared as runtime dep.

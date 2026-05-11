@@ -4,14 +4,14 @@
 - [x] Initialize Python project tooling and dependency management for runtime and tests.
 - [x] Configure environment loading for Jira, OpenRouter, and logging credentials.
 - [x] Add local run scripts and ensure `.venv`-based execution works (`./scripts/run_tests.sh` entrypoint).
-- [x] Define core config object for project allowlist (`TJC` first, `BC` next), delay, and feature flags.
+- [x] Define core config object for project allowlist (`TJC` first, `BC` next). Stabilization delay and dedupe are owned by the Jira-side scheduled rule and are not service config.
 - [x] Add CI quality gates for `mypy .`, `pytest -m lint`, and `pytest -m "unit or integration"`.
 - Done when: project boots locally, config validates required env vars, and all baseline gates execute successfully.
 
 ## 2. Core Backend / API
 - [x] Set up `README.md` from a generic project skeleton description to rough structure we could fill up leading to the final state of this stage
-- [x] Implement `POST /triage` contract accepting `issue_key`, `project`, and `event_type`.
-- [x] Add request validation for required fields and supported event values.
+- [x] Implement `POST /triage` contract accepting `issue_key`, `project`, and `source` (`scheduled_scan` for MVP; closed `Literal` enum, extensible to `manual_cli` etc.).
+- [x] Add request validation for required fields and supported `source` values.
 - [x] Implement Jira issue fetcher by issue key (summary, description, type, priority, reporter).
 - [x] Add smoke script to fetch one issue by key for manual verification (`scripts/fetch_jira_issue.py`).
 - [x] Implement policy context loader for bug and priority definitions.
@@ -32,24 +32,20 @@
   - [x] `reason` non-empty
   - [x] `recommended_action` in allowed enum
 - [x] Implement fallback/error response path for upstream failures and invalid model output.
-- [ ] Add asynchronous trigger handler that accepts webhook event and schedules analysis with default 5-minute delay.
-- [ ] Add optional dedupe/recent-update deferral logic behind configuration flag.
-- [ ] Implement local runner entrypoint to execute full triage for a single issue key from CLI (without Jira Automation dependency).
-- [ ] Implement webhook handler for Jira Automation update events to trigger local analysis flow.
-- Done when: service supports both on-command triage and Jira Automation-triggered local analysis, using sequential classification then optional priority (never both inferences unconditionally).
+- [ ] Implement synchronous triage handler invoked per-issue by the Jira scheduled-scan webhook: validate the request, run the classification → optional priority flow, hand the outcome (recommendation or `TriageFailure`) to the action executor. No internal scheduler/queue (Jira-side JQL owns delay, dedupe, and retry via the `ai-reviewed` label filter and `created >= -30m` window).
+- [ ] Implement local runner entrypoint (`source="manual_cli"`) to execute full triage for a single issue key from CLI (without Jira Automation dependency).
+- Done when: service supports both on-command triage and the Jira scheduled-scan webhook path, using sequential classification then optional priority (never both inferences unconditionally).
 
 ## 3. Frontend / UX (Jira-facing outputs)
 - [ ] Implement mismatch detector: always compare issue type to `recommended_issue_type`; compare priority to `recommended_priority` only when the triage path ran priority (i.e. model classified as Bug).
-- [ ] Implement Jira action executor to post internal comment only when mismatch exists.
-- [ ] Format comment body with recommended values, numeric confidence, and concise reasoning.
-- [ ] Apply labels only on mismatch:
-  - [ ] `ai-reviewed`
-  - [ ] `ai-likely-story` when issue type mismatch
-  - [ ] `ai-priority-mismatch` when priority mismatch (Bug path only; N/A when recommendation is Story)
-- [ ] Ensure no visible Jira action is taken when recommendation matches current state.
-- [ ] Add end-to-end local flow task: fetch issue -> analyze -> decide mismatch -> apply Jira comment/labels.
-- [ ] Add automation-driven local flow task: accept Jira Automation update payload -> analyze latest ticket state -> apply Jira comment/labels.
-- Done when: both manual and automation-driven local execution apply expected Jira updates for mismatch cases and remain silent for match cases.
+- [ ] Implement Jira action executor:
+  - [ ] Apply `ai-reviewed` after every successful triage (mismatch or not). This is the dedupe marker the Jira scheduled rule depends on — without it, the JQL keeps re-matching the issue.
+  - [ ] Post internal comment with recommended values, numeric confidence, and concise reasoning **only when** mismatch exists.
+  - [ ] Apply mismatch-specific labels only when applicable: `ai-likely-story` (type mismatch), `ai-priority-mismatch` (priority mismatch on the Bug path; N/A on the Story path).
+- [ ] On `TriageFailure`, apply **no** labels and post **no** comment. The issue stays unlabeled so the next scheduled scan retries it automatically until success or `created >= -30m` ages it out.
+- [ ] Add end-to-end local flow task: fetch issue -> analyze -> decide mismatch -> apply Jira labels/comment per the rules above.
+- [ ] Add automation-driven local flow task: accept Jira scheduled-scan payload (`issue_key`, `project`, `source="scheduled_scan"`) -> analyze latest ticket state -> apply Jira labels/comment per the rules above.
+- Done when: both manual and automation-driven local execution apply `ai-reviewed` (plus mismatch labels/comment when warranted) on success, and leave the issue untouched on failure so Jira retries.
 
 ## 4. Integration Tests
 - [ ] Add API contract tests for `POST /triage` request/response shape and validation errors.
@@ -64,14 +60,15 @@
 - [ ] Add trace/correlation IDs across trigger, triage service, and Jira action executor.
 - [ ] Implement retries/timeouts for Jira and model provider calls with safe failure behavior.
 - [ ] Add metrics for triage volume, mismatch rate, and confidence distribution.
-- [ ] Add safeguards for stale-event timing and race-condition observability.
+- [ ] Add a metric for issues that aged past the `created >= -30m` JQL window without ever being triaged successfully (manual-QA backlog signal).
 - [ ] Ensure confidence is treated as advisory metadata in decision paths.
 - Done when: logs and metrics support auditability, debugging, and confidence quality monitoring.
 
 ## 6. Polish & Docs
 - [ ] Document architecture and module responsibilities (`jira_automation_trigger`, `ai_triage_service`, `jira_action_executor`, `audit_log_store`).
 - [ ] Add runbook for local development, env setup, and test execution commands.
-- [ ] Document Jira automation setup, webhook payload expectations, and delay/dedupe behavior.
+- [ ] Add Jira Automation setup recipe: the scheduled rule cadence (every 5 min ≤ JQL window length), the reference JQL (`project = ... AND issuetype = Bug AND labels not in (ai-reviewed) AND created >= -30m AND created <= -5m`), and the "Send web request → Custom data" body template (`issue_key`, `project`, `source: scheduled_scan`).
+- [ ] Document the `ai-reviewed` lifecycle: applied on every successful triage; remove the label on an issue to force re-triage; missing label on a >30m-old issue indicates the manual-QA fallback case.
 - [ ] Document known MVP limitations and out-of-scope items (no auto mutation, no Zendesk intake, no full RAG).
 - [ ] Record default model-selection rationale and tuning strategy for confidence calibration in Phase 2.
 - Done when: a new engineer can run, test, and operate the MVP using repository docs alone.
