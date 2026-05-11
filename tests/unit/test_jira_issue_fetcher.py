@@ -38,7 +38,11 @@ def test_fetch_issue_returns_summary_description_type_priority_reporter(
             },
             "issuetype": {"name": "Bug"},
             "priority": {"name": "High"},
-            "reporter": {"displayName": "Alice Support", "emailAddress": "alice@example.com"},
+            "reporter": {
+                "displayName": "Alice Support",
+                "emailAddress": "alice@example.com",
+                "accountId": "61d4a5c6e67ea2006bce3aaa",
+            },
         },
     }
 
@@ -62,6 +66,7 @@ def test_fetch_issue_returns_summary_description_type_priority_reporter(
         issue_type="Bug",
         priority="High",
         reporter="Alice Support",
+        reporter_account_id="61d4a5c6e67ea2006bce3aaa",
     )
 
 
@@ -91,6 +96,7 @@ def test_fetch_issue_uses_reporter_account_id_when_display_name_missing(
     assert issue.description is None
     assert issue.priority is None
     assert issue.reporter == "acc-123"
+    assert issue.reporter_account_id == "acc-123"
 
 
 @pytest.mark.unit

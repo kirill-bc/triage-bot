@@ -2,12 +2,22 @@
 
 ## 2026-05-11
 
-- **Phase close (commit):** §2 core backend is complete for this slice: synchronous
-  `TriageHandler`, sequential classification → optional priority, `POST /triage` with
-  `scheduled_scan` and `manual_cli`, `scripts/run_triage_cli.py`, strict parsing without model
-  `recommended_action`, and `triage_mismatch.compute_mismatch_flags` for executor-bound label/comment
-  rules. Quality gates: `./scripts/run_tests.sh all` (`lint`, `mypy`, `unit`, `integration`). Next
-  focus: §3 Jira action executor (apply flags + `reason` / confidence in comments).
+- **Phase close (commit):** §3 **Jira action executor** is implemented in `jira_action_executor.py`
+  (`JiraTriageActionExecutor`): `ai-reviewed` on every successful triage; mismatch labels
+  (`ai-likely-story` / `ai-likely-bug` / `ai-priority-mismatch`) and a terse **TriageBot** templated
+  ADF comment on mismatch only (no numeric confidence in Jira; optional reporter @mention when
+  `FetchedIssue.reporter_account_id` is set). `TriageFailure` → no labels and no comment.
+  `build_default_triage_handler()` wires the executor when `JIRA_BASE_URL` and `JIRA_USER_EMAIL` are
+  set. `prompt_composer` frames **TriageBot** with direct `reason` guidance for Jira copy.
+  `pytest -m lint`, `mypy .`, `pytest -m "unit or integration"` all green for close-phase.
+- **TODO structure:** New ``TODO.md`` §4 **Forge app (Atlassian Forge)** (scaffold, scopes,
+  integration with triage service, TriageBot identity, secrets, install checklist). Former §4–§8
+  renumbered to §5–§9 (Integration tests through Post-MVP).
+- **Phase close (commit, earlier same day):** §2 core backend: synchronous `TriageHandler`,
+  sequential classification → optional priority, `POST /triage` with `scheduled_scan` and
+  `manual_cli`, `scripts/run_triage_cli.py`, strict parsing without model `recommended_action`, and
+  `triage_mismatch.compute_mismatch_flags`. §3 Jira executor followed in a later commit on this date
+  (see bullet above).
 - **Mismatch flags (no model ``recommended_action``):** ``TriageRecommendation`` drops
   ``recommended_action``; prompts ask only for type/reason or priority/reason. Parser strips legacy
   ``recommended_action`` from LLM JSON. ``triage_mismatch.compute_mismatch_flags`` →

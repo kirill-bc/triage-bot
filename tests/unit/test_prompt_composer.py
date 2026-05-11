@@ -25,6 +25,8 @@ def test_classification_prompt_includes_bug_policy_and_issue_excludes_priority_t
     assert "BUGPOLICY_UNIQUE_ALPHA" in text
     assert "TJC-1" in text and "Login fails" in text
     assert "PRIORITYPOLICY_UNIQUE_BETA" not in text
+    assert "## Role" in text and "TriageBot" in text
+    assert "JSON field `reason`" in text
 
 
 @pytest.mark.unit
@@ -45,6 +47,8 @@ def test_priority_prompt_includes_priority_policy_and_issue_excludes_bug_text() 
     assert "PRIORITYPOLICY_UNIQUE_DELTA" in text
     assert "BC-99" in text and "Crash on save" in text
     assert "BUGPOLICY_UNIQUE_GAMMA" not in text
+    assert "## Role" in text and "TriageBot" in text and "still" in text
+    assert "JSON field `reason`" in text
 
 
 @pytest.mark.unit

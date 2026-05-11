@@ -17,6 +17,7 @@ def test_flake8_passes_on_src_and_tests() -> None:
             "flake8",
             str(root / "settings.py"),
             str(root / "core_config.py"),
+            str(root / "jira_action_executor.py"),
             str(root / "jira_issue_fetcher.py"),
             str(root / "openrouter_inference_client.py"),
             str(root / "policy_context.py"),

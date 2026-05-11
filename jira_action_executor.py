@@ -1,0 +1,198 @@
+"""Apply triage outcomes to Jira (labels, mismatch comments) via REST API v3."""
+
+from __future__ import annotations
+
+import base64
+from typing import Any
+
+import httpx
+
+from jira_issue_fetcher import FetchedIssue
+from settings import AppSettings
+from triage_fallback import TriageFailure
+from triage_mismatch import compute_mismatch_flags
+from triage_recommendation_parser import TriageRecommendation
+
+# Display name for Jira mismatch comments (align with Forge app name when you ship it).
+_TRIAGEBOT_NAME = "TriageBot"
+
+
+class JiraActionExecutorError(RuntimeError):
+    """Raised when a Jira REST call to apply labels or a comment fails."""
+
+
+def _basic_auth_header(email: str, api_token: str) -> str:
+    token_bytes = f"{email}:{api_token}".encode("utf-8")
+    encoded = base64.b64encode(token_bytes).decode("ascii")
+    return f"Basic {encoded}"
+
+
+def _jira_base_and_headers(settings: AppSettings) -> tuple[str, dict[str, str]]:
+    base = settings.jira_base_url
+    if base is None or not str(base).strip():
+        msg = "Jira base URL is required (set JIRA_BASE_URL)."
+        raise JiraActionExecutorError(msg)
+    email = settings.jira_user_email
+    if email is None or not str(email).strip():
+        msg = "Jira user email is required for REST auth (set JIRA_USER_EMAIL)."
+        raise JiraActionExecutorError(msg)
+    base_url = str(base).rstrip("/")
+    headers = {
+        "Authorization": _basic_auth_header(email, settings.jira_api_key),
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+    return base_url, headers
+
+
+def _labels_for_outcome(recommendation: TriageRecommendation, issue: FetchedIssue) -> list[str]:
+    flags = compute_mismatch_flags(issue, recommendation)
+    labels = ["ai-reviewed"]
+    if flags.type_mismatch:
+        if recommendation.recommended_issue_type == "Story":
+            labels.append("ai-likely-story")
+        else:
+            labels.append("ai-likely-bug")
+    if flags.priority_mismatch:
+        labels.append("ai-priority-mismatch")
+    return labels
+
+
+def _mention_attrs(issue: FetchedIssue) -> dict[str, str]:
+    aid = issue.reporter_account_id or ""
+    display = issue.reporter.strip() if issue.reporter.strip() else aid
+    text = f"@{display}" if display else "@Reporter"
+    return {"id": aid, "text": text, "accessLevel": ""}
+
+
+_MENTION_INTRO = (
+    f" — {_TRIAGEBOT_NAME} (automated ticket triage). "
+    "Current fields vs internal definitions: mismatch. "
+    "Advisory only; no issue fields were modified."
+)
+_NO_MENTION_INTRO = (
+    f"{_TRIAGEBOT_NAME} (automated ticket triage). "
+    "Current fields vs internal definitions: mismatch. "
+    "Advisory only; no issue fields were modified."
+)
+
+
+def _opening_paragraph_nodes(issue: FetchedIssue) -> list[dict[str, Any]]:
+    if issue.reporter_account_id:
+        return [
+            {"type": "mention", "attrs": _mention_attrs(issue)},
+            {"type": "text", "text": _MENTION_INTRO},
+        ]
+    return [{"type": "text", "text": _NO_MENTION_INTRO}]
+
+
+def _suggestion_paragraph_text(recommendation: TriageRecommendation) -> str:
+    if recommendation.recommended_issue_type == "Story":
+        return (
+            "Issue type: Story. Per the bug definition in use: not a defect; product or "
+            "enablement work."
+        )
+    pri = recommendation.recommended_priority
+    assert pri is not None  # Bug path: schema requires a P0–P4 priority
+    return f"Issue type: Bug. Priority: {pri}. Map to severity definitions in use."
+
+
+def _context_paragraph_text(recommendation: TriageRecommendation) -> str:
+    return f"Justification: {recommendation.reason}"
+
+
+def _mismatch_comment_body(
+    issue: FetchedIssue,
+    recommendation: TriageRecommendation,
+) -> dict[str, Any]:
+    return {
+        "version": 1,
+        "type": "doc",
+        "content": [
+            {"type": "paragraph", "content": _opening_paragraph_nodes(issue)},
+            {
+                "type": "paragraph",
+                "content": [{"type": "text", "text": _suggestion_paragraph_text(recommendation)}],
+            },
+            {
+                "type": "paragraph",
+                "content": [{"type": "text", "text": _context_paragraph_text(recommendation)}],
+            },
+        ],
+    }
+
+
+def _raise_for_status(response: httpx.Response, action: str) -> None:
+    if response.is_error:
+        snippet = response.text[:300]
+        msg = f"Jira {action} failed with HTTP {response.status_code}: {snippet}"
+        raise JiraActionExecutorError(msg)
+
+
+class JiraTriageActionExecutor:
+    """Apply ``ai-reviewed`` on success; on mismatch, labels plus a templated ADF comment.
+
+    Copy is a terse imperative **TriageBot** template (no confidence in Jira). When
+    ``reporter_account_id`` is set, the comment opens with an ADF ``mention`` of the
+    reporter (Jira REST v3).
+    """
+
+    def __init__(self, settings: AppSettings, *, client: httpx.Client | None = None) -> None:
+        self._settings = settings
+        self._client = client
+
+    def apply_triage_outcome(
+        self,
+        *,
+        issue: FetchedIssue | None,
+        issue_key: str,
+        project: str,
+        source: str,
+        outcome: TriageRecommendation | TriageFailure,
+    ) -> None:
+        _ = (project, source)
+        if isinstance(outcome, TriageFailure):
+            return
+        if issue is None:
+            return
+        flags = compute_mismatch_flags(issue, outcome)
+        labels = _labels_for_outcome(outcome, issue)
+        base_url, headers = _jira_base_and_headers(self._settings)
+        self._apply_labels(base_url, issue_key, labels, headers)
+        if flags.any_mismatch():
+            self._post_comment(base_url, issue_key, issue, outcome, headers)
+
+    def _apply_labels(
+        self,
+        base_url: str,
+        issue_key: str,
+        labels: list[str],
+        headers: dict[str, str],
+    ) -> None:
+        url = f"{base_url}/rest/api/3/issue/{issue_key}"
+        body = {"update": {"labels": [{"add": label} for label in labels]}}
+        if self._client is not None:
+            resp = self._client.put(url, json=body, headers=headers)
+            _raise_for_status(resp, "issue label update")
+            return
+        with httpx.Client(timeout=30.0) as client:
+            resp = client.put(url, json=body, headers=headers)
+            _raise_for_status(resp, "issue label update")
+
+    def _post_comment(
+        self,
+        base_url: str,
+        issue_key: str,
+        issue: FetchedIssue,
+        recommendation: TriageRecommendation,
+        headers: dict[str, str],
+    ) -> None:
+        url = f"{base_url}/rest/api/3/issue/{issue_key}/comment"
+        payload = {"body": _mismatch_comment_body(issue, recommendation)}
+        if self._client is not None:
+            resp = self._client.post(url, json=payload, headers=headers)
+            _raise_for_status(resp, "issue comment")
+            return
+        with httpx.Client(timeout=30.0) as client:
+            resp = client.post(url, json=payload, headers=headers)
+            _raise_for_status(resp, "issue comment")

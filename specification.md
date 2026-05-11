@@ -85,9 +85,9 @@
 - `jira_action_executor`
   - Apply the `ai-reviewed` label **after every successful triage**, mismatch or not. This is the dedupe marker the Jira scheduled rule depends on; without it the rule re-analyzes the same issue every cycle until it ages out of the JQL window.
   - When a mismatch is detected, additionally:
-    - Post an internal comment with the recommendation summary, numeric confidence, and reasoning. Comment text is **advisory**: suggest reclassification and/or priority with rationale; Phase 1 does **not** mutate Jira issue type or priority fields via automation.
-    - Apply mismatch-specific labels:
-      - `ai-likely-story` when the issue type differs from `recommended_issue_type`.
+    - Post an internal comment using a **fixed direct template** as **TriageBot** (recommendation summary + model rationale as context). Numeric **confidence** stays in the API response and audit logs, not in the Jira comment body. Comment text is **advisory**; Phase 1 does **not** mutate Jira issue type or priority fields via automation.
+    - Apply mismatch-specific labels
+      - `ai-likely-story`/`ai-likely-bug` when the issue type differs from `recommended_issue_type`.
       - `ai-priority-mismatch` when the Bug path predicted a priority that differs from the current Jira priority. N/A on the Story path (priority inference does not run).
   - When recommendation matches current state, apply `ai-reviewed` only — no comment, no mismatch labels.
   - When triage returns a `TriageFailure` (Jira fetch error, OpenRouter inference error, invalid model output, unexpected error), apply **no** labels and post **no** comment. The issue keeps matching the JQL and is retried automatically on the next scheduled run, until it succeeds or ages past the backstop window.
@@ -113,7 +113,7 @@
 - Use AI-generated `confidence` (0.0-1.0) directly in the triage response for Phase 1.
 - Jira comment behavior in Phase 1:
   - Post comment when mismatch exists, regardless of confidence value.
-  - Include numeric confidence and short rationale in comment body.
+  - Use direct templated copy plus short rationale from the model (`reason`); do **not** surface numeric confidence in the Jira comment.
 - Reliability guidance for Phase 1:
   - Treat confidence as a ranking signal, not a calibrated probability.
   - Expect score drift across model changes and prompt revisions.

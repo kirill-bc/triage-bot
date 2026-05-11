@@ -38,16 +38,25 @@
 
 ## 3. Frontend / UX (Jira-facing outputs)
 - [x] Implement mismatch detector: always compare issue type to `recommended_issue_type`; compare priority to `recommended_priority` only when the triage path ran priority (i.e. model classified as Bug). (`triage_mismatch.compute_mismatch_flags`; wire into executor when built.)
-- [ ] Implement Jira action executor:
-  - [ ] Apply `ai-reviewed` after every successful triage (mismatch or not). This is the dedupe marker the Jira scheduled rule depends on — without it, the JQL keeps re-matching the issue.
-  - [ ] Post internal comment with recommended values, numeric confidence, and concise reasoning **only when** mismatch exists.
-  - [ ] Apply mismatch-specific labels only when applicable: `ai-likely-story` (type mismatch), `ai-priority-mismatch` (priority mismatch on the Bug path; N/A on the Story path).
-- [ ] On `TriageFailure`, apply **no** labels and post **no** comment. The issue stays unlabeled so the next scheduled scan retries it automatically until success or `created >= -30m` ages it out.
+- [x] Implement Jira action executor (`jira_action_executor.JiraTriageActionExecutor`; default handler uses it when `JIRA_BASE_URL` and `JIRA_USER_EMAIL` are set):
+  - [x] Apply `ai-reviewed` after every successful triage (mismatch or not). This is the dedupe marker the Jira scheduled rule depends on — without it, the JQL keeps re-matching the issue.
+  - [x] Post internal comment with recommended values and concise reasoning **only when** mismatch exists (fixed **TriageBot** template; numeric confidence stays in API/audit only, not in the Jira body; optional reporter @mention when `reporter_account_id` is present on the fetched issue).
+  - [x] Apply mismatch-specific labels only when applicable: `ai-likely-story`/`ai-likely-bug` (type mismatch), `ai-priority-mismatch` (priority mismatch on the Bug path; N/A on the Story path).
+- [x] On `TriageFailure`, apply **no** labels and post **no** comment. The issue stays unlabeled so the next scheduled scan retries it automatically until success or `created >= -30m` ages it out.
 - [ ] Add end-to-end local flow task: fetch issue -> analyze -> decide mismatch -> apply Jira labels/comment per the rules above.
 - [ ] Add automation-driven local flow task: accept Jira scheduled-scan payload (`issue_key`, `project`, `source="scheduled_scan"`) -> analyze latest ticket state -> apply Jira labels/comment per the rules above.
 - Done when: both manual and automation-driven local execution apply `ai-reviewed` (plus mismatch labels/comment when warranted) on success, and leave the issue untouched on failure so Jira retries.
 
-## 4. Integration Tests
+## 4. Forge app (Atlassian Forge)
+- [ ] Scaffold an Atlassian Forge app (e.g. **TriageBot**) in-repo or in a linked package: `manifest.yml`, environment (`development` / `staging` / `production`), and Forge CLI workflow documented in README or runbook.
+- [ ] Declare required **Jira scopes** for the product path (issue read, labels, comments as needed; align with what the Python `jira_action_executor` does today vs what Forge will own).
+- [ ] Decide integration shape: Forge UI/admin only, Forge **scheduled/trigger** module calling the existing triage HTTP API, and/or gradual replacement of REST automation—document the chosen split in `specification.md` or `memory.md`.
+- [ ] Wire **identity & UX**: Forge app display name and listing copy consistent with in-comment **TriageBot** templates; optional custom icon; no duplicate/confusing bot names in the tenant.
+- [ ] Secrets & config: Forge environment variables or app properties for base URLs, API auth to the triage service, and Jira context; no secrets committed to git.
+- [ ] Installation path: site install, version bumps, and a short operator checklist (install → grant scopes → smoke one issue).
+- Done when: the app installs on a target Jira Cloud site, passes Atlassian validation for declared scopes, and a documented smoke path proves Forge + triage behavior end-to-end for at least one real issue.
+
+## 5. Integration Tests
 - [ ] Add API contract tests for `POST /triage` request/response shape and validation errors.
 - [ ] Add integration tests for Jira webhook adapter invoking async triage pipeline.
 - [ ] Add integration tests for Jira action executor against mocked Jira API.
@@ -55,7 +64,7 @@
 - [ ] Add integration tests for mismatch/no-mismatch behavior including label combinations and sequential flow (Story outcome skips priority inference; Bug outcome invokes it).
 - Done when: `pytest -m integration` passes with deterministic mocks and covers service boundaries.
 
-## 5. Non-functional (logging, config, error handling)
+## 6. Non-functional (logging, config, error handling)
 - [ ] Implement structured audit logging for input metadata, model output, action taken, and timestamps.
 - [ ] Add trace/correlation IDs across trigger, triage service, and Jira action executor.
 - [ ] Implement retries/timeouts for Jira and model provider calls with safe failure behavior.
@@ -64,7 +73,7 @@
 - [ ] Ensure confidence is treated as advisory metadata in decision paths.
 - Done when: logs and metrics support auditability, debugging, and confidence quality monitoring.
 
-## 6. Polish & Docs
+## 7. Polish & Docs
 - [ ] Document architecture and module responsibilities (`jira_automation_trigger`, `ai_triage_service`, `jira_action_executor`, `audit_log_store`).
 - [ ] Add runbook for local development, env setup, and test execution commands.
 - [ ] Add Jira Automation setup recipe: the scheduled rule cadence (every 5 min ≤ JQL window length), the reference JQL (`project = ... AND issuetype = Bug AND labels not in (ai-reviewed) AND created >= -30m AND created <= -5m`), and the "Send web request → Custom data" body template (`issue_key`, `project`, `source: scheduled_scan`).
@@ -73,7 +82,7 @@
 - [ ] Record default model-selection rationale and tuning strategy for confidence calibration in Phase 2.
 - Done when: a new engineer can run, test, and operate the MVP using repository docs alone.
 
-## 7. Deployment (MVP scope)
+## 8. Deployment (MVP scope)
 - [ ] Package app for demo deployment runnable by QA (Docker Compose or equivalent local service process).
 - [ ] Provide `.env` template and startup scripts for reproducible non-cloud demo setup.
 - [ ] Configure deployment gate with lint/type/unit+integration checks before demo release.
@@ -81,6 +90,6 @@
 - [ ] Document optional cloud path as deferred follow-up (not required for MVP demo).
 - Done when: QA can run the automation-driven triage demo as a stable environment without requiring cloud infrastructure.
 
-## 8. Post-MVP
+## 9. Post-MVP
 - [ ] Build a **classification benchmark** (curated, labeled set) so different OpenRouter models can be compared on measurable accuracy, not intuition alone. Target composition: **25** correctly created **Bugs**, **25** correctly created **Stories**, **25** initially misclassified **Bugs**, and **25** initially misclassified **Stories** (for the two misclassified buckets, each row documents **Jira’s starting issue type** vs **human ground truth** so metrics are unambiguous). Each row needs enough summary/description to run the same triage prompts. Deliver a repeatable evaluation harness (script or pytest slice) that runs the pipeline over the set, records type (and Bug-path priority) predictions, and reports aggregate metrics (e.g. accuracy, confusion matrix, cost/latency per model).
 - Done when: at least one baseline model is scored on the full 100-case set and swapping `OPENROUTER_MODEL` reproduces comparable runs with saved result artifacts for A/B comparison.

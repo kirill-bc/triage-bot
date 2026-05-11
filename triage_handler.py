@@ -60,7 +60,7 @@ class TriageActionExecutor(Protocol):
 
 
 class NoOpTriageActionExecutor:
-    """Executor stub until :mod:`jira_action_executor` is implemented."""
+    """No-op executor used when Jira REST env (base URL + user email) is not configured."""
 
     def apply_triage_outcome(
         self,
@@ -141,8 +141,9 @@ class TriageHandler:
 
 
 def build_default_triage_handler() -> TriageHandler:
-    """Build a handler from env settings, core config, bundled policy, and no-op executor."""
+    """Build handler from settings, core config, policy, and Jira executor if Jira env is set."""
     from core_config import load_triage_core_config
+    from jira_action_executor import JiraTriageActionExecutor
     from policy_context import load_policy_context
     from settings import load_settings
 
@@ -151,12 +152,21 @@ def build_default_triage_handler() -> TriageHandler:
     policy = load_policy_context()
     fetcher = JiraIssueFetcher(settings)
     inference = OpenRouterInferenceClient(settings)
+    if (
+        settings.jira_base_url
+        and str(settings.jira_base_url).strip()
+        and settings.jira_user_email
+        and str(settings.jira_user_email).strip()
+    ):
+        executor: TriageActionExecutor = JiraTriageActionExecutor(settings)
+    else:
+        executor = NoOpTriageActionExecutor()
     return TriageHandler(
         allowed_projects=core.allowed_projects,
         fetcher=fetcher,
         inference=inference,
         policy=policy,
-        executor=NoOpTriageActionExecutor(),
+        executor=executor,
     )
 
 

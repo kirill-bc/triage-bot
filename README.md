@@ -6,7 +6,7 @@ Jira Triage is an MVP service that accepts a triage trigger, fetches Jira issue 
 
 The repository currently includes:
 
-- a working `POST /triage` API that validates the request, runs synchronous triage (fetch → classify → optional priority), and returns `status: completed|failed` with a recommendation or `TriageFailure` (also invocable locally via `scripts/run_triage_cli.py` with `source=manual_cli`)
+- a working `POST /triage` API that validates the request, runs synchronous triage (fetch → classify → optional priority), and returns `status: completed|failed` with a recommendation or `TriageFailure` (also invocable locally via `scripts/run_triage_cli.py` with `source=manual_cli`). When `JIRA_BASE_URL` and `JIRA_USER_EMAIL` are configured, successful triage applies Jira labels/comments via `jira_action_executor` (see below); failures do not touch the issue.
 - Jira issue fetch support (`summary`, `description`, `issue type`, `priority`, `reporter`)
 - bundled **policy text** for model context (`policy/`) and a **`policy_context`** loader
 - **prompt composer** for separate classification vs priority model inputs (`prompt_composer.py`)
@@ -19,8 +19,9 @@ See `TODO.md` for the active implementation backlog.
 ## Repository layout
 
 - `triage_api.py`: FastAPI app, `POST /triage` request/response contract, and dependency-injectable triage runner
-- `triage_handler.py`: synchronous pipeline, `TriageRunner` / `TriageActionExecutor` protocols, default no-op executor until Jira actions land
-- `jira_issue_fetcher.py`: Jira REST client and response normalization
+- `triage_handler.py`: synchronous pipeline, `TriageRunner` / `TriageActionExecutor` protocols; `build_default_triage_handler()` uses `JiraTriageActionExecutor` when Jira base URL and user email are set, otherwise a no-op executor
+- `jira_issue_fetcher.py`: Jira REST client and response normalization (includes `reporter_account_id` when Jira returns it, for @mentions in mismatch comments)
+- `jira_action_executor.py`: on success, applies `ai-reviewed` plus mismatch labels and a templated **TriageBot** ADF comment when needed; on `TriageFailure`, performs no Jira writes
 - `openrouter_inference_client.py`: OpenRouter chat completions using `OPENROUTER_MODEL` (see `settings.py`)
 - `settings.py`: environment-backed runtime settings
 - `core_config.py`: triage policy/config defaults (project allowlist; stabilization delay and dedupe live in the Jira-side scheduled rule)

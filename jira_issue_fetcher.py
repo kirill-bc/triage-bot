@@ -20,6 +20,7 @@ class FetchedIssue(BaseModel):
     issue_type: str
     priority: str | None = None
     reporter: str
+    reporter_account_id: str | None = None
 
 
 class JiraIssueFetchError(RuntimeError):
@@ -55,6 +56,13 @@ def _normalize_description(raw: Any) -> str | None:
     return None
 
 
+def _reporter_account_id(reporter: dict[str, Any]) -> str | None:
+    raw = reporter.get("accountId")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return None
+
+
 def _reporter_label(reporter: dict[str, Any]) -> str:
     display = reporter.get("displayName")
     if isinstance(display, str) and display.strip():
@@ -82,6 +90,7 @@ def _parse_issue_payload(payload: dict[str, Any]) -> FetchedIssue:
         priority_name = str(priority_obj.get("name") or "").strip() or None
     reporter_obj = fields.get("reporter") or {}
     reporter = _reporter_label(reporter_obj)
+    reporter_aid = _reporter_account_id(reporter_obj)
     return FetchedIssue(
         issue_key=key,
         summary=summary,
@@ -89,6 +98,7 @@ def _parse_issue_payload(payload: dict[str, Any]) -> FetchedIssue:
         issue_type=issue_type,
         priority=priority_name,
         reporter=reporter,
+        reporter_account_id=reporter_aid,
     )
 
 
