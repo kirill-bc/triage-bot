@@ -2,6 +2,9 @@
 requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools]
+py-modules = ["core_config", "settings", "triage_api"]
+
 [project]
 name = "jira-triage"
 version = "0.1.0"
@@ -9,6 +12,8 @@ description = "AI-assisted Jira triage for support-created issues"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "fastapi>=0.110",
+    "httpx>=0.27",
     "pydantic>=2.6",
     "pydantic-settings>=2.2",
     "python-dotenv>=1.0",
@@ -36,7 +41,7 @@ markers = [
 [tool.mypy]
 python_version = "3.10"
 strict = true
-files = ["settings.py", "core_config.py", "tests"]
+files = ["settings.py", "core_config.py", "triage_api.py", "tests"]
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]

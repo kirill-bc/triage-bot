@@ -9,7 +9,7 @@
 - Done when: project boots locally, config validates required env vars, and all baseline gates execute successfully.
 
 ## 2. Core Backend / API
-- [ ] Implement `POST /triage` contract accepting `issue_key`, `project`, and `event_type`.
+- [x] Implement `POST /triage` contract accepting `issue_key`, `project`, and `event_type`.
 - [ ] Add request validation for required fields and supported event values.
 - [ ] Implement Jira issue fetcher by issue key (summary, description, type, priority, reporter).
 - [ ] Implement policy context loader for bug and priority definitions.

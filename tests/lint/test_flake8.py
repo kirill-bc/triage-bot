@@ -17,6 +17,7 @@ def test_flake8_passes_on_src_and_tests() -> None:
             "flake8",
             str(root / "settings.py"),
             str(root / "core_config.py"),
+            str(root / "triage_api.py"),
             str(root / "tests"),
         ],
         cwd=root,
