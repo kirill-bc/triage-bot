@@ -22,6 +22,8 @@ def test_flake8_passes_on_src_and_tests() -> None:
             str(root / "policy_context.py"),
             str(root / "prompt_composer.py"),
             str(root / "triage_api.py"),
+            str(root / "triage_fallback.py"),
+            str(root / "triage_recommendation_parser.py"),
             str(root / "scripts" / "fetch_jira_issue.py"),
             str(root / "tests"),
         ],

@@ -2,6 +2,26 @@
 
 ## 2026-05-11
 
+- **Phase close (commit):** strict triage model JSON parsing (`triage_recommendation_parser.py`,
+  `TriageRecommendation`, `InvalidTriageRecommendationError`); pipeline failure contract
+  (`triage_fallback.py`, `TriageFailure`, `fallback_for_exception`); unit tests for both;
+  `pyproject.toml` / flake8 gate / `TODO.md` / `README.md` updated. Next backlog focus: async
+  trigger handler and local triage runner (`TODO.md` §2).
+- **Triage fallback:** `triage_fallback.py` — `TriageFailure` (frozen Pydantic, `extra="forbid"`,
+  message stripped + non-empty) plus `fallback_for_exception(exc)`. Categories:
+  `jira_fetch_failed` (← `JiraIssueFetchError`), `inference_failed` (← `OpenRouterInferenceError`),
+  `invalid_model_output` (← `InvalidTriageRecommendationError`), `internal_error` (catch-all).
+  Default message used when the source exception has a blank `str(exc)`. Phase 1 contract:
+  action executors treat any `TriageFailure` as "do not post Jira comment/label" — failures are
+  log/metric signal only. Tests: `tests/unit/test_triage_fallback.py`. Wired into pyproject
+  `py-modules` + `mypy.files` and `tests/lint/test_flake8.py`.
+- **Triage recommendation parser:** `triage_recommendation_parser.py` — `parse_triage_recommendation_text`
+  / `parse_triage_recommendation_json` return frozen `TriageRecommendation` (Pydantic, `extra="forbid"`).
+  Validates `Bug|Story`, Story → priority null/omitted only, Bug → `P0`–`P4`, `confidence` ∈ [0, 1],
+  non-empty stripped `reason`, `recommended_action` ∈ `comment_only|label|reclassify|update_priority`.
+  Module docstring documents merged `confidence` as the last inference that ran when the service
+  merges two steps. Errors: `InvalidTriageRecommendationError`. Tests:
+  `tests/unit/test_triage_recommendation_parser.py`.
 - **Phase close (commit):** OpenRouter inference client + `OPENROUTER_MODEL` settings; optional
   `OPENROUTER_LIVE_SMOKE` integration ping; `max_tokens` on chat completions; removed Playwright/E2E
   scaffold (`run_e2e_tests.sh`, `pytest` `e2e` marker, `tests/e2e/`); `run_tests.sh full` delegates to
@@ -43,9 +63,8 @@
   (comma-separated, defaults to `TJC,BC`), `TRIAGE_ANALYSIS_DELAY_SECONDS` (int ≥ 0, default 300),
   `TRIAGE_DEDUPE_DEFERRAL_ENABLED` (bool, default False). `allowed_projects` exposed as
   `@computed_field` so pydantic-settings reads it as a plain `str` (no JSON-decode issue).
-- Lint gate: `pytest -m lint` runs flake8 on `settings.py`, `core_config.py`, `jira_issue_fetcher.py`,
-  `openrouter_inference_client.py`, `policy_context.py`, `prompt_composer.py`, `triage_api.py`,
-  `scripts/fetch_jira_issue.py`, and `tests/`.
+- Lint gate: `pytest -m lint` runs flake8 on the application modules listed in
+  `tests/lint/test_flake8.py`, `scripts/fetch_jira_issue.py`, and `tests/`.
 - Type gate: `mypy .` runs strict on application modules at repo root plus `tests/`; `typing-extensions>=4.0` declared as runtime dep.
 - `scripts/run_tests.sh` prepends `.venv/bin` to `PATH` when present. No Playwright/E2E harness:
   validation is unit + integration (mocks) plus optional live OpenRouter smoke.

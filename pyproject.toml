@@ -11,6 +11,8 @@ py-modules = [
     "prompt_composer",
     "settings",
     "triage_api",
+    "triage_fallback",
+    "triage_recommendation_parser",
 ]
 
 [project]
@@ -56,6 +58,8 @@ files = [
     "policy_context.py",
     "prompt_composer.py",
     "triage_api.py",
+    "triage_fallback.py",
+    "triage_recommendation_parser.py",
     "tests",
 ]
 plugins = ["pydantic.mypy"]

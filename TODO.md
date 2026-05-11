@@ -25,13 +25,13 @@
   4. Surface guidance via internal comment (and mismatch labels when applicable): suggest reclassification and/or priority with reasoning; advisory only — no automatic Jira field mutation in Phase 1 (see Out-of-scope in `specification.md`).
 - [x] Build prompt/input composer for step (1) and, when needed, step (2) — do not bundle both model calls into one always-on prompt.
 - [x] Implement OpenRouter inference client with model name from configuration.
-- [ ] Parse and validate model output to strict schema (per step or merged response), including:
-  - [ ] `recommended_issue_type` in `Bug|Story`
-  - [ ] When `recommended_issue_type` is `Bug`: `recommended_priority` in `P0|P1|P2|P3|P4`; when `Story`: omit or null `recommended_priority` (no priority model output)
-  - [ ] `confidence` in `[0.0, 1.0]` (per inference that ran; document whether one or two scores are returned)
-  - [ ] `reason` non-empty
-  - [ ] `recommended_action` in allowed enum
-- [ ] Implement fallback/error response path for upstream failures and invalid model output.
+- [x] Parse and validate model output to strict schema (per step or merged response), including:
+  - [x] `recommended_issue_type` in `Bug|Story`
+  - [x] When `recommended_issue_type` is `Bug`: `recommended_priority` in `P0|P1|P2|P3|P4`; when `Story`: omit or null `recommended_priority` (no priority model output)
+  - [x] `confidence` in `[0.0, 1.0]` (per inference that ran; document whether one or two scores are returned)
+  - [x] `reason` non-empty
+  - [x] `recommended_action` in allowed enum
+- [x] Implement fallback/error response path for upstream failures and invalid model output.
 - [ ] Add asynchronous trigger handler that accepts webhook event and schedules analysis with default 5-minute delay.
 - [ ] Add optional dedupe/recent-update deferral logic behind configuration flag.
 - [ ] Implement local runner entrypoint to execute full triage for a single issue key from CLI (without Jira Automation dependency).

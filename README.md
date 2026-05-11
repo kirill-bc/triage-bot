@@ -10,6 +10,7 @@ The repository currently includes:
 - Jira issue fetch support (`summary`, `description`, `issue type`, `priority`, `reporter`)
 - bundled **policy text** for model context (`policy/`) and a **`policy_context`** loader
 - **prompt composer** for separate classification vs priority model inputs (`prompt_composer.py`)
+- **strict model output parsing** (`triage_recommendation_parser.py`) and a **typed failure shape** for upstream and schema errors (`triage_fallback.py`)
 - CI gates for linting, type checking, and unit/integration tests
 - local helper scripts for repeatable test runs and manual Jira fetch smoke checks
 
@@ -24,6 +25,8 @@ See `TODO.md` for the active implementation backlog.
 - `core_config.py`: triage policy/config defaults (projects, delay, dedupe flag)
 - `policy_context.py`: loads bug and priority definition text from `policy/` for prompts
 - `prompt_composer.py`: builds classification-only and priority-only prompt strings from policy + issue
+- `triage_recommendation_parser.py`: validates merged LLM JSON into `TriageRecommendation` (throws `InvalidTriageRecommendationError` when invalid)
+- `triage_fallback.py`: `TriageFailure` plus `fallback_for_exception()` to map fetch/inference/parse errors to a stable category + message for orchestration
 - `policy/`: `bug_definition.md` and `priority_definition.md` (edit to match your org)
 - `scripts/fetch_jira_issue.py`: manual CLI smoke script for a single Jira issue
 - `scripts/run_tests.sh`: local entrypoint for the standard test workflow
@@ -36,6 +39,8 @@ See `TODO.md` for the active implementation backlog.
 - **Validation**: rejects missing fields and unsupported event values
 - **Jira adapter**: fetches and flattens selected Jira issue fields
 - **OpenRouter adapter**: `OpenRouterInferenceClient` posts chat completions using the configured model id
+- **Recommendation parsing**: `parse_triage_recommendation_text()` enforces the merged triage JSON contract (`Bug`/`Story`, nullable priority on Story path, `P0`–`P4` on Bug path, confidence bounds, `recommended_action` enum)
+- **Failure mapping**: `fallback_for_exception()` turns `JiraIssueFetchError`, `OpenRouterInferenceError`, `InvalidTriageRecommendationError`, and unexpected errors into `TriageFailure` (Phase 1: executors should not post Jira comments or labels on failure)
 - **Policy context**: `load_policy_context()` reads UTF-8 definitions from `policy/` (override `policy_dir` in tests)
 - **Tooling**: `flake8`, `mypy`, and pytest marker-based gates wired in CI
 
