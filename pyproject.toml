@@ -12,6 +12,9 @@ py-modules = [
     "settings",
     "triage_api",
     "triage_fallback",
+    "triage_handler",
+    "triage_mismatch",
+    "triage_manual_cli",
     "triage_recommendation_parser",
 ]
 
@@ -59,6 +62,9 @@ files = [
     "prompt_composer.py",
     "triage_api.py",
     "triage_fallback.py",
+    "triage_handler.py",
+    "triage_mismatch.py",
+    "triage_manual_cli.py",
     "triage_recommendation_parser.py",
     "tests",
 ]

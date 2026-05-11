@@ -13,6 +13,7 @@ from pydantic import ValidationError
 from jira_issue_fetcher import JiraIssueFetchError
 from openrouter_inference_client import OpenRouterInferenceError
 from triage_fallback import (
+    ProjectNotAllowedError,
     TriageFailure,
     TriageFailureCategory,
     fallback_for_exception,
@@ -75,6 +76,7 @@ def test_failure_category_literal_lists_all_supported_values() -> None:
         "inference_failed",
         "invalid_model_output",
         "internal_error",
+        "project_not_allowed",
     }
     assert set(TriageFailureCategory.__args__) == expected  # type: ignore[attr-defined]
 
@@ -102,6 +104,14 @@ def test_fallback_for_invalid_model_output_maps_to_invalid_model_output() -> Non
     )
     assert failure.category == "invalid_model_output"
     assert "JSON" in failure.message
+
+
+@pytest.mark.unit
+def test_fallback_for_project_not_allowed_maps_to_project_not_allowed() -> None:
+    exc = ProjectNotAllowedError("Project XX is not allowed for triage.")
+    failure = fallback_for_exception(exc)
+    assert failure.category == "project_not_allowed"
+    assert "XX" in failure.message
 
 
 @pytest.mark.unit

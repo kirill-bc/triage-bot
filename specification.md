@@ -75,14 +75,13 @@
         "recommended_issue_type": "Story",
         "recommended_priority": null,
         "confidence": 0.0,
-        "reason": "Explanation",
-        "recommended_action": "comment_only | label | reclassify | update_priority"
+        "reason": "Explanation"
       }
       ```
       When classification is Bug, `recommended_priority` is a string `P0`–`P4` from the second inference step (never null).
       - When `recommended_issue_type` is `Story`, `recommended_priority` is **not** produced by a priority inference step (`null` or omitted). Mismatch handling compares **type only** on that path.
       - When `recommended_issue_type` is `Bug`, `recommended_priority` is required. Compare to Jira priority when Jira type is Bug; when Jira type was Story, treat as misfiled bug and compare both type and suggested priority as designed.
-      - `confidence` may represent the last inference that ran, or separate fields per step — document and validate in the parser; at minimum, classification always has a score.
+      - `confidence` may represent the last inference that ran, or separate fields per step — document and validate in the parser; at minimum, classification always has a score. The service does **not** model a model-supplied action enum; `triage_mismatch.compute_mismatch_flags` derives `type_mismatch` / `priority_mismatch` from Jira fields vs recommendation for labels and advisory comments (`reason` required for comment text).
 - `jira_action_executor`
   - Apply the `ai-reviewed` label **after every successful triage**, mismatch or not. This is the dedupe marker the Jira scheduled rule depends on; without it the rule re-analyzes the same issue every cycle until it ages out of the JQL window.
   - When a mismatch is detected, additionally:

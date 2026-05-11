@@ -30,14 +30,14 @@
   - [x] When `recommended_issue_type` is `Bug`: `recommended_priority` in `P0|P1|P2|P3|P4`; when `Story`: omit or null `recommended_priority` (no priority model output)
   - [x] `confidence` in `[0.0, 1.0]` (per inference that ran; document whether one or two scores are returned)
   - [x] `reason` non-empty
-  - [x] `recommended_action` in allowed enum
+  - [x] Mismatch signals derived in code (`triage_mismatch.compute_mismatch_flags`); model does not emit `recommended_action`
 - [x] Implement fallback/error response path for upstream failures and invalid model output.
-- [ ] Implement synchronous triage handler invoked per-issue by the Jira scheduled-scan webhook: validate the request, run the classification → optional priority flow, hand the outcome (recommendation or `TriageFailure`) to the action executor. No internal scheduler/queue (Jira-side JQL owns delay, dedupe, and retry via the `ai-reviewed` label filter and `created >= -30m` window).
-- [ ] Implement local runner entrypoint (`source="manual_cli"`) to execute full triage for a single issue key from CLI (without Jira Automation dependency).
+- [x] Implement synchronous triage handler invoked per-issue by the Jira scheduled-scan webhook: validate the request, run the classification → optional priority flow, hand the outcome (recommendation or `TriageFailure`) to the action executor. No internal scheduler/queue (Jira-side JQL owns delay, dedupe, and retry via the `ai-reviewed` label filter and `created >= -30m` window).
+- [x] Implement local runner entrypoint (`source="manual_cli"`) to execute full triage for a single issue key from CLI (without Jira Automation dependency).
 - Done when: service supports both on-command triage and the Jira scheduled-scan webhook path, using sequential classification then optional priority (never both inferences unconditionally).
 
 ## 3. Frontend / UX (Jira-facing outputs)
-- [ ] Implement mismatch detector: always compare issue type to `recommended_issue_type`; compare priority to `recommended_priority` only when the triage path ran priority (i.e. model classified as Bug).
+- [x] Implement mismatch detector: always compare issue type to `recommended_issue_type`; compare priority to `recommended_priority` only when the triage path ran priority (i.e. model classified as Bug). (`triage_mismatch.compute_mismatch_flags`; wire into executor when built.)
 - [ ] Implement Jira action executor:
   - [ ] Apply `ai-reviewed` after every successful triage (mismatch or not). This is the dedupe marker the Jira scheduled rule depends on — without it, the JQL keeps re-matching the issue.
   - [ ] Post internal comment with recommended values, numeric confidence, and concise reasoning **only when** mismatch exists.

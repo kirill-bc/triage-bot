@@ -4,7 +4,7 @@ When the pipeline cannot produce a valid ``TriageRecommendation`` because an
 upstream call failed or model output did not satisfy the strict schema, the
 orchestrator returns a structured :class:`TriageFailure` instead.
 
-The four supported categories cover every error surface the pipeline owns:
+The supported categories cover every error surface the pipeline owns:
 
 - ``jira_fetch_failed`` — raised by :class:`jira_issue_fetcher.JiraIssueFetcher`
   when configuration is missing or the Jira REST call returns a non-2xx response.
@@ -16,6 +16,8 @@ The four supported categories cover every error surface the pipeline owns:
   :class:`triage_recommendation_parser.InvalidTriageRecommendationError`).
 - ``internal_error`` — catch-all for unexpected exceptions; keeps the response
   contract closed so callers never see a raw traceback.
+- ``project_not_allowed`` — raised when the inbound ``project`` key is not on the
+  server allowlist (misconfigured Jira rule safety net).
 
 ``fallback_for_exception`` is the single conversion point used by the
 orchestrator: it inspects the exception type and produces a typed failure with
@@ -34,11 +36,17 @@ from jira_issue_fetcher import JiraIssueFetchError
 from openrouter_inference_client import OpenRouterInferenceError
 from triage_recommendation_parser import InvalidTriageRecommendationError
 
+
+class ProjectNotAllowedError(ValueError):
+    """Raised when ``project`` is not on the server allowlist (``TriageCoreConfig``)."""
+
+
 TriageFailureCategory = Literal[
     "jira_fetch_failed",
     "inference_failed",
     "invalid_model_output",
     "internal_error",
+    "project_not_allowed",
 ]
 
 _DEFAULT_MESSAGES: dict[str, str] = {
@@ -46,6 +54,7 @@ _DEFAULT_MESSAGES: dict[str, str] = {
     "inference_failed": "Model inference failed.",
     "invalid_model_output": "Model output failed schema validation.",
     "internal_error": "Unexpected internal error.",
+    "project_not_allowed": "Project is not allowed for triage.",
 }
 
 
@@ -86,6 +95,8 @@ def fallback_for_exception(exc: BaseException) -> TriageFailure:
         category = "inference_failed"
     elif isinstance(exc, InvalidTriageRecommendationError):
         category = "invalid_model_output"
+    elif isinstance(exc, ProjectNotAllowedError):
+        category = "project_not_allowed"
     else:
         category = "internal_error"
     return TriageFailure(category=category, message=_message_for(exc, category))

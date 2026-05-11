@@ -2,6 +2,33 @@
 
 ## 2026-05-11
 
+- **Phase close (commit):** §2 core backend is complete for this slice: synchronous
+  `TriageHandler`, sequential classification → optional priority, `POST /triage` with
+  `scheduled_scan` and `manual_cli`, `scripts/run_triage_cli.py`, strict parsing without model
+  `recommended_action`, and `triage_mismatch.compute_mismatch_flags` for executor-bound label/comment
+  rules. Quality gates: `./scripts/run_tests.sh all` (`lint`, `mypy`, `unit`, `integration`). Next
+  focus: §3 Jira action executor (apply flags + `reason` / confidence in comments).
+- **Mismatch flags (no model ``recommended_action``):** ``TriageRecommendation`` drops
+  ``recommended_action``; prompts ask only for type/reason or priority/reason. Parser strips legacy
+  ``recommended_action`` from LLM JSON. ``triage_mismatch.compute_mismatch_flags`` →
+  ``TriageMismatchFlags`` (``type_mismatch``, ``priority_mismatch``; Story path never sets priority
+  mismatch). Tests: ``tests/unit/test_triage_mismatch.py``; spec/TODO/README updated.
+- **Local manual CLI:** `triage_manual_cli.py` — `infer_project_from_issue_key()` parses standard
+  `PROJ-123` keys; `run_cli_triage(issue_key, project=..., runner=...)` calls
+  `TriageRunner.run_sync(..., "manual_cli")`. `main()` loads `.env` from repo root, validates settings,
+  prints JSON (`completed` + `recommendation` or `failed` + `failure`), exit codes `0` / `1` / `2`.
+  Wrapper: `scripts/run_triage_cli.py`. API: `TriageSource` now includes `"manual_cli"`.
+  Tests: `tests/unit/test_triage_manual_cli.py`, `test_post_triage_accepts_manual_cli_source`.
+- **Synchronous triage handler:** `triage_handler.py` — `TriageHandler.run_sync(issue_key, project, source)`
+  checks project against `TriageCoreConfig.allowed_projects`, fetches via `JiraIssueFetcher`, runs
+  OpenRouter classification then optional priority (same sequential split as `prompt_composer`),
+  parses with `parse_classification_step_text` / `parse_priority_step_text` / merge helpers in
+  `triage_recommendation_parser.py`, maps errors via `fallback_for_exception`, and always calls
+  `TriageActionExecutor.apply_triage_outcome` (default `NoOpTriageActionExecutor` until §3 executor).
+  `ProjectNotAllowedError` → `TriageFailure` category `project_not_allowed`. `triage_api.create_app`
+  takes optional `triage_handler_factory` for tests; `POST /triage` returns `status` `completed` /
+  `failed` with `recommendation` or `failure`. Tests: `tests/unit/test_triage_handler.py`,
+  `tests/unit/test_triage_sequential_parser.py`, extended `test_post_triage.py` / `test_triage_fallback.py`.
 - **Phase close (commit):** pivot the trigger model from an event-driven webhook with a service-side
   5-minute delay to a **Jira-side scheduled JQL rule** that handles stabilization, dedupe, and
   retry-on-failure in one JQL expression. API contract: `event_type` → `source: Literal["scheduled_scan"]`.
@@ -20,10 +47,9 @@
   scheduler/queue. Failures (`TriageFailure`) leave the issue unlabeled → next scheduled scan retries
   automatically until success or ageout.
 - **API contract (current):** `POST /triage` body is `{ issue_key, project, source }` where
-  `source: Literal["scheduled_scan"]`. The old `event_type` field (`issue_created` / `issue_updated`)
-  is gone — nothing fires the webhook on a Jira event under the scheduled-rule model. `source` is a
-  closed enum so future entrypoints (e.g. `manual_cli`) extend the literal without changing request
-  shape. **Thin payload:** Jira sends only `issue_key + project + source`; service re-fetches latest
+  `source: Literal["scheduled_scan", "manual_cli"]`. The old `event_type` field (`issue_created` /
+  `issue_updated`) is gone — nothing fires the webhook on a Jira event under the scheduled-rule model.
+  `source` is a closed enum; `manual_cli` tags calls from `scripts/run_triage_cli.py` / local tooling. **Thin payload:** Jira sends only `issue_key + project + source`; service re-fetches latest
   issue state via `JiraIssueFetcher` (we already pay the Jira-auth cost for comment/label writes).
   Reference Jira Automation Send-web-request → Custom data body:
   `{ "issue_key": "{{issue.key}}", "project": "{{issue.project.key}}", "source": "scheduled_scan" }`.
@@ -54,7 +80,8 @@
 - **Triage recommendation parser:** `triage_recommendation_parser.py` — `parse_triage_recommendation_text`
   / `parse_triage_recommendation_json` return frozen `TriageRecommendation` (Pydantic, `extra="forbid"`).
   Validates `Bug|Story`, Story → priority null/omitted only, Bug → `P0`–`P4`, `confidence` ∈ [0, 1],
-  non-empty stripped `reason`, `recommended_action` ∈ `comment_only|label|reclassify|update_priority`.
+  non-empty stripped `reason`. Mismatch flags: `triage_mismatch.compute_mismatch_flags` /
+  `TriageMismatchFlags` (`type_mismatch`, `priority_mismatch`); legacy `recommended_action` in LLM JSON is stripped at parse.
   Module docstring documents merged `confidence` as the last inference that ran when the service
   merges two steps. Errors: `InvalidTriageRecommendationError`. Tests:
   `tests/unit/test_triage_recommendation_parser.py`.

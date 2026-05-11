@@ -18,7 +18,6 @@ def _bug_payload(**overrides: object) -> dict[str, object]:
         "recommended_priority": "P2",
         "confidence": 0.75,
         "reason": "Matches bug criteria and severity.",
-        "recommended_action": "comment_only",
     }
     base.update(overrides)
     return base
@@ -30,7 +29,6 @@ def _story_payload(**overrides: object) -> dict[str, object]:
         "recommended_priority": None,
         "confidence": 0.6,
         "reason": "Feature request phrasing; not a defect.",
-        "recommended_action": "reclassify",
     }
     base.update(overrides)
     return base
@@ -44,7 +42,6 @@ def test_parse_bug_path_accepts_valid_merged_response() -> None:
     assert rec.recommended_priority == "P2"
     assert rec.confidence == 0.75
     assert "bug" in rec.reason.lower() or "severity" in rec.reason.lower()
-    assert rec.recommended_action == "comment_only"
 
 
 @pytest.mark.unit
@@ -137,18 +134,11 @@ def test_parse_rejects_whitespace_only_reason() -> None:
 
 
 @pytest.mark.unit
-def test_parse_rejects_invalid_recommended_action() -> None:
-    data = _bug_payload(recommended_action="delete_issue")
-    with pytest.raises(InvalidTriageRecommendationError):
-        parse_triage_recommendation_text(json.dumps(data))
-
-
-@pytest.mark.unit
-def test_parse_accepts_all_allowed_recommended_actions() -> None:
-    for action in ("comment_only", "label", "reclassify", "update_priority"):
-        data = _bug_payload(recommended_action=action)
-        rec = parse_triage_recommendation_text(json.dumps(data))
-        assert rec.recommended_action == action
+def test_parse_ignores_legacy_recommended_action_field() -> None:
+    data = _bug_payload()
+    data["recommended_action"] = "delete_issue"
+    rec = parse_triage_recommendation_text(json.dumps(data))
+    assert rec.recommended_issue_type == "Bug"
 
 
 @pytest.mark.unit
