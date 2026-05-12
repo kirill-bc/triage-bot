@@ -2,60 +2,66 @@ Bug priority policy (P0-P4)
 
 P0 Outage
 Definition:
-- Component/platform is non-functional
-- Core workflow unavailable for many or all policies/claims
+Component or platform is non-functional and not working as expected.
 Examples:
-- API unavailable
-- Major component down (quoting/compliance/reporting)
-- Third-party integration failure blocking office operations
-- Build broken, halting development
-- Agents cannot quote any business
-- Renewals not processing
-- BriteAuth down; users cannot log in
+
+- API is unavailable. 
+- Major component is unavailable or non-functional (i.e. agent quoting, compliance issue, reporting issue) for multiple or all policies/claims.  Solution can include a new feature. 
+- 3rd party vendor integration(s) failing, thus blocking daily office operations. 
+- Build is broken halting all development. 
+- Agents cannot quote any business 
+- Renewals are not processing 
+- BriteAuth is non-functional and users cannot log-in.
 
 P1 Critical
 Definition:
-- Major customer business interruption, with or without workaround
-- Also includes aged/escalated P2 with stronger proven impact
-- Also includes VIP/at-risk cases that would otherwise be P2
+- Major customer business impact - whether a workaround is available or not, any defect causing a major business interruption for a client 
+OR
+- Bugs originally set to P2 that have been open for an extended period of time and the client has asked for updates and/or provided additional examples of the issue that indicate a more severe business impact than the original report. 
+- Bugs that would typically be considered P2s for VIP clients/at-risk clients.
+
 Examples:
-- Financial data loss
-- Data fully missing in feature
-- Business-impacting data error
-- Major performance regression
-- Critical security/compliance issue
-- Renewal invoices not auto-generating (manual workaround exists, issue persists)
-- Issues that can cause client business loss (e.g., incorrect/duplicate invoices, quoting malfunction, document generation failures)
+- Would be a P2 but customer is a VIP or at-risk. 
+- Financial data loss error. 
+- Data fully missing in feature. 
+- Business impacting data error. 
+- Major performance regression. 
+- Critical security/compliance related issue. 
+- Renewal Invoices are not automatically generating in Attachments, but can be manually generated. Issue has persisted for several weeks. 
+- Any issue that negatively impacts agents or insureds and could cause clients to lose business - for example, incorrect or duplicate invoices sent to insureds, quoting system isn't working correctly, documents not generating correctly for agents.
 
 P2 High
 Definition:
-- Noticeable (not severe) business impact with reasonable workaround
-- Reasonable workaround = minimal customer/internal effort and impact
-- Also includes aged/escalated P3 with stronger proven impact
-- Also includes VIP/at-risk cases that would otherwise be P3
+- Feature with non-severe but noticeable business impact is not working but a reasonable* workaround is available. 
+- A reasonable workaround can be implemented with minimal impact to customer business/resources and/or internal resources. These workarounds do not require much time or effort. 
+OR
+- Bugs originally set to P3 that have been open for an extended period of time and the client has asked for updates and/or provided additional examples of the issue that indicate a more severe business impact than the original report. 
+
 Examples:
-- Some use cases broken, component still functional overall, workaround exists
-- Automated process broken but manual process works
-- Some non-business-operation reports cannot be downloaded
-- Incorrect/missing non-financial data
-- Rollup counts incorrect in report
-- Implementation blocker
-- Data metric mismatch across pages
+- Would be a P3 but customer is a VIP or at-risk. 
+- Bug that affects some use cases but doesn’t make a component nonfunctional, with a workaround for the impacted use cases. 
+- Automated process broken though manual process functions 
+- Unable to download some non-business operations reports 
+- Incorrect/Missing non-financial data 
+- Rollup count does not add up in report 
+- Implementation Blocker 
+- Data metric mismatch in different pages.
 
 P3 Normal
 Definition:
-- Minimal business impact with workaround available, or
-- No business impact without workaround
+- Feature with minimal business impact is not working and a workaround is available. 
+OR 
+- Feature with no business impact is not working and a workaround is not available.
+
 Examples:
-- Graph not updating but downloadable data is available
-- Column does not sort
-- Minor web element defect while overall feature remains functional
+- Graph not updating though user can download data. 
+- Column does not sort. 
+- Web element not working as designed but overall feature still fully functional.
 
 P4 Nice-to-have
 Definition:
-- Trivial issue or enhancement request
-- Very minimal or no business impact
+- Trivial issue or feature request that is desired but not necessary. The lack of the desired functionality has very minimal/no business impact.
 Examples:
-- Spelling/grammar fixes
-- Error shown when user lacks proper permissions
-- Cosmetic UI inconsistency without functional impact
+- Fix spelling/grammar error. 
+- Button throws error when user does not have proper permissions. 
+- Inconsistent color/design across pages in the UI that does not impact functionality.

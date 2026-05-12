@@ -1,6 +1,6 @@
 # Jira Triage MVP
 
-Jira Triage is an MVP service that accepts a triage trigger, fetches Jira issue data, and prepares the codebase for AI-assisted recommendations on issue type and priority. Planned analysis is **sequential**: classify Bug vs Story first; run priority suggestion only when the model says Bug (see `specification.md` and `TODO.md`).
+Jira Triage is an MVP service that accepts a triage trigger, fetches Jira issue data, and prepares the codebase for AI-assisted recommendations on issue type and priority for **Bug** issues. Planned analysis is **sequential**: classify Bug vs Story first (bug policy only); run priority suggestion only when the model says Bug (see `specification.md` and `TODO.md`).
 
 ## Project status
 
@@ -31,15 +31,17 @@ See `TODO.md` for the active implementation backlog.
 - `triage_mismatch.py`: `compute_mismatch_flags(issue, recommendation)` for deterministic type/priority mismatch (Jira executor / comments)
 - `triage_fallback.py`: `TriageFailure` plus `fallback_for_exception()` to map fetch/inference/parse errors to a stable category + message for orchestration
 - `triage_manual_cli.py`: infer project from `PROJ-123` keys, run `TriageHandler.run_sync(..., "manual_cli")`, and `main()` for the CLI
+- `dev_tunnel.py`: load repo `.env`, start `uvicorn`, then run `ngrok` or `cloudflared` for Jira-facing HTTPS during local development (`scripts/run_dev_tunnel.py`)
 - `policy/`: `bug_definition.md` and `priority_definition.md` (edit to match your org)
 - `scripts/fetch_jira_issue.py`: manual CLI smoke script for a single Jira issue
+- `scripts/run_dev_tunnel.py`: uvicorn + tunnel helper (uses `dev_tunnel.main`)
 - `scripts/run_tests.sh`: local entrypoint for the standard test workflow
 - `tests/`: unit, integration, and lint test groups
 - `docs/user_flows/`: flow identifiers for integration tests and manual checks
 
 ## Current implemented components
 
-- **API layer**: `POST /triage` accepts `issue_key`, `project`, `source` (`scheduled_scan` for the Jira Automation scheduled-rule webhook; `manual_cli` for the local runner; closed `Literal`)
+- **API layer**: `POST /triage` accepts `issue_key`, `project`, `source` (`bug_created` or `priority_changed` for Jira Automation; `manual_cli` for the local runner; closed `Literal`)
 - **Validation**: rejects missing fields and unsupported `source` values; rejects projects outside `TRIAGE_ALLOWED_PROJECTS` with `TriageFailure` category `project_not_allowed`
 - **Jira adapter**: fetches and flattens selected Jira issue fields
 - **OpenRouter adapter**: `OpenRouterInferenceClient` posts chat completions using the configured model id
@@ -89,3 +91,41 @@ Run the same synchronous pipeline as `POST /triage` without Jira Automation (Ope
 ```
 
 Optional `--project TJC` overrides the project key inferred from the issue key (`TJC` from `TJC-123`). The handler receives `source="manual_cli"`; stdout is JSON with either `status: completed` and `recommendation` or `status: failed` and `failure`. Exit code `0` on completed triage, `1` on `TriageFailure`, `2` on settings validation errors.
+
+## Local HTTP server and tunnel (Jira Automation → your laptop)
+
+Use this when you want Jira Cloud **Send web request** to hit `POST /triage` on a machine that is not on the public internet. This is a **development** path only: URLs from free tunnel tiers change whenever you restart the tunnel, and Jira enforces HTTP timeouts (plan for roughly tens of seconds end-to-end including Jira fetch, OpenRouter, and Jira writes).
+
+1. Install dev dependencies so the ASGI server is available: `pip install -e ".[dev]"` (includes `uvicorn`).
+2. Install [ngrok](https://ngrok.com/docs/getting-started/) or [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) and ensure it is on your `PATH`.
+3. From the repository root, run the bundled helper (loads `.env` from the repo root, starts uvicorn on `0.0.0.0`, then starts the tunnel so stdout shows the public URL):
+
+   ```bash
+   .venv/bin/python scripts/run_dev_tunnel.py
+   ```
+
+   Use Cloudflare instead of ngrok: `.venv/bin/python scripts/run_dev_tunnel.py --tunnel cloudflared`. Override bind port with `--port 8080` (and pass the same port to your tunnel if you run it manually).
+
+   The helper sets **`TRIAGE_DEBUG_INBOUND=1`** for the uvicorn child process so **every `POST /triage` prints the raw body to stderr** (lines prefixed with `[TRIAGE_DEBUG_INBOUND]`) before FastAPI validates it. That shows exactly what Jira sent when you see HTTP 422 from missing `issue_key` / `project` / `source`. Pass **`--no-inbound-log`** to disable. For a plain uvicorn run, you can set the same variable yourself: `TRIAGE_DEBUG_INBOUND=1 .venv/bin/uvicorn triage_api:app --host 0.0.0.0 --port 8000`.
+
+   **Manual alternative:** run `.venv/bin/uvicorn triage_api:app --host 0.0.0.0 --port 8000` in one terminal with `.env` exported, then `ngrok http 8000` or `cloudflared tunnel --url http://127.0.0.1:8000` in another.
+
+4. In Jira Automation, set the web request URL to `{tunnel_base}/triage` (no trailing slash before `triage`). The body must be **your JSON** with `issue_key`, `project`, and `source` — use **Custom data** (or equivalent). Use `"source": "bug_created"` for a new-bug rule and `"source": "priority_changed"` for a priority-change rule (the string must match the API enum exactly). If Jira sends a default payload such as `{"issues":[]}`, the API will return **422** because that is not the triage contract.
+
+   ```json
+   {
+     "issue_key": "{{issue.key}}",
+     "project": "{{issue.project.key}}",
+     "source": "bug_created"
+   }
+   ```
+
+5. Smoke the public URL from another terminal (replace host and key):
+
+   ```bash
+   curl -sS -X POST 'https://YOUR-TUNNEL-HOST/triage' \
+     -H 'Content-Type: application/json' \
+     -d '{"issue_key":"TJC-123","project":"TJC","source":"bug_created"}' | jq .
+   ```
+
+If the tunnel URL changes, update the Automation action (or use a paid/stable tunnel hostname). If requests time out, narrow JQL frequency, use a faster model, or move the service closer to Jira (hosted deployment) so cold starts and network RTT stay within Jira’s limits.

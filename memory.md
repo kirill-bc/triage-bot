@@ -1,10 +1,36 @@
 # Project memory
 
+## 2026-05-12
+
+- **Phase close (commit):** `pytest -m lint`, `mypy .`, and `pytest -m "unit or integration"` all green.
+  This phase bundles the `TriageSource` rename (`bug_created` / `priority_changed` / `manual_cli`),
+  local dev tunnel (`dev_tunnel.py`, `scripts/run_dev_tunnel.py`, `tests/unit/test_dev_tunnel.py`),
+  optional `TRIAGE_DEBUG_INBOUND` raw-body logging on `POST /triage` (`triage_api`, inbound debug tests),
+  README *Local HTTP server and tunnel*, `uvicorn[standard]` under dev extras, and related unit test
+  updates (`post_triage`, triage handler, executor, mismatch). **Product path** §3 TODO item
+  (Jira Automation → hosted API) remains open until verified on a real tenant.
+
+- **`POST /triage` `source` enum:** `TriageSource = Literal["bug_created", "priority_changed", "manual_cli"]`
+  for Jira bug-creation vs priority-change automations and the local CLI. Replaces the older
+  `scheduled_scan` value; payloads using the old string now fail validation (422). README,
+  `specification.md`, `TODO.md`, and unit tests (`test_post_triage`, `test_triage_handler`,
+  `test_jira_action_executor`, `test_triage_inbound_debug`) updated.
+- **Local tunnel dev path:** `README.md` documents running `uvicorn triage_api:app --host 0.0.0.0 --port 8000`,
+  exposing `POST /triage` via ngrok or Cloudflare Tunnel for Jira Automation during development, plus
+  curl smoke and caveats (URL churn, Jira timeouts). `uvicorn[standard]` added to `pyproject.toml`
+  optional `dev` extras so `.venv` installs the ASGI server with editable dev deps.
+- **`scripts/run_dev_tunnel.py` / `dev_tunnel.py`:** loads repo `.env` via `python-dotenv`, starts
+  `uvicorn triage_api:app`, then runs `ngrok http` or `cloudflared tunnel --url` (default ngrok);
+  forwards SIGINT/SIGTERM to the tunnel process and terminates uvicorn on exit. Unit tests cover argv
+  builders in `tests/unit/test_dev_tunnel.py`. Sets `TRIAGE_DEBUG_INBOUND=1` on the uvicorn child unless
+  `--no-inbound-log`; `triage_api` logs raw `POST /triage` bodies to stderr before validation when
+  that env var is set (`tests/unit/test_triage_inbound_debug.py`).
+
 ## 2026-05-11
 
 - **Phase close (commit):** §3 **Jira action executor** is implemented in `jira_action_executor.py`
   (`JiraTriageActionExecutor`): `ai-reviewed` on every successful triage; mismatch labels
-  (`ai-likely-story` / `ai-likely-bug` / `ai-priority-mismatch`) and a terse **TriageBot** templated
+  (`ai-likely-story` / `ai-priority-mismatch`) and a terse **TriageBot** templated
   ADF comment on mismatch only (no numeric confidence in Jira; optional reporter @mention when
   `FetchedIssue.reporter_account_id` is set). `TriageFailure` → no labels and no comment.
   `build_default_triage_handler()` wires the executor when `JIRA_BASE_URL` and `JIRA_USER_EMAIL` are

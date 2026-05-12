@@ -48,11 +48,8 @@ def _jira_base_and_headers(settings: AppSettings) -> tuple[str, dict[str, str]]:
 def _labels_for_outcome(recommendation: TriageRecommendation, issue: FetchedIssue) -> list[str]:
     flags = compute_mismatch_flags(issue, recommendation)
     labels = ["ai-reviewed"]
-    if flags.type_mismatch:
-        if recommendation.recommended_issue_type == "Story":
-            labels.append("ai-likely-story")
-        else:
-            labels.append("ai-likely-bug")
+    if flags.type_mismatch and recommendation.recommended_issue_type == "Story":
+        labels.append("ai-likely-story")
     if flags.priority_mismatch:
         labels.append("ai-priority-mismatch")
     return labels
@@ -66,14 +63,11 @@ def _mention_attrs(issue: FetchedIssue) -> dict[str, str]:
 
 
 _MENTION_INTRO = (
-    f" — {_TRIAGEBOT_NAME} (automated ticket triage). "
-    "Current fields vs internal definitions: mismatch. "
-    "Advisory only; no issue fields were modified."
+    f" — {_TRIAGEBOT_NAME} (automated triage). Informational only; nothing was changed in Jira."
 )
+
 _NO_MENTION_INTRO = (
-    f"{_TRIAGEBOT_NAME} (automated ticket triage). "
-    "Current fields vs internal definitions: mismatch. "
-    "Advisory only; no issue fields were modified."
+    f"{_TRIAGEBOT_NAME} (automated triage). Informational only; nothing was changed in Jira."
 )
 
 
@@ -86,19 +80,27 @@ def _opening_paragraph_nodes(issue: FetchedIssue) -> list[dict[str, Any]]:
     return [{"type": "text", "text": _NO_MENTION_INTRO}]
 
 
-def _suggestion_paragraph_text(recommendation: TriageRecommendation) -> str:
+def _suggestion_paragraph_text(issue: FetchedIssue, recommendation: TriageRecommendation) -> str:
     if recommendation.recommended_issue_type == "Story":
         return (
-            "Issue type: Story. Per the bug definition in use: not a defect; product or "
-            "enablement work."
+            "Suggested action: classify as Story. From the bug definition we apply, this reads as "
+            "product or enablement work rather than a defect."
         )
     pri = recommendation.recommended_priority
     assert pri is not None  # Bug path: schema requires a P0–P4 priority
-    return f"Issue type: Bug. Priority: {pri}. Map to severity definitions in use."
+    raw = issue.priority
+    if raw is None or not str(raw).strip():
+        from_label = "(not set)"
+    else:
+        from_label = str(raw).strip()
+    to_label = str(pri).strip()
+    return (
+        f"Suggested action: change priority: {from_label} -> {to_label}."
+    )
 
 
-def _context_paragraph_text(recommendation: TriageRecommendation) -> str:
-    return f"Justification: {recommendation.reason}"
+def _rationale_paragraph_text(recommendation: TriageRecommendation) -> str:
+    return f"Rationale: {recommendation.reason}"
 
 
 def _mismatch_comment_body(
@@ -112,11 +114,16 @@ def _mismatch_comment_body(
             {"type": "paragraph", "content": _opening_paragraph_nodes(issue)},
             {
                 "type": "paragraph",
-                "content": [{"type": "text", "text": _suggestion_paragraph_text(recommendation)}],
+                "content": [
+                    {
+                        "type": "text",
+                        "text": _suggestion_paragraph_text(issue, recommendation),
+                    },
+                ],
             },
             {
                 "type": "paragraph",
-                "content": [{"type": "text", "text": _context_paragraph_text(recommendation)}],
+                "content": [{"type": "text", "text": _rationale_paragraph_text(recommendation)}],
             },
         ],
     }
@@ -132,7 +139,8 @@ def _raise_for_status(response: httpx.Response, action: str) -> None:
 class JiraTriageActionExecutor:
     """Apply ``ai-reviewed`` on success; on mismatch, labels plus a templated ADF comment.
 
-    Copy is a terse imperative **TriageBot** template (no confidence in Jira). When
+    Copy uses a **TriageBot** internal-comment template: factual and easy to work with (support
+    tone, not warnings or flattery). Numeric confidence stays out of Jira. When
     ``reporter_account_id`` is set, the comment opens with an ADF ``mention`` of the
     reporter (Jira REST v3).
     """

@@ -63,7 +63,7 @@ def test_executor_no_http_on_triage_failure(monkeypatch: pytest.MonkeyPatch) -> 
             issue=_issue(),
             issue_key="TJC-1",
             project="TJC",
-            source="scheduled_scan",
+            source="bug_created",
             outcome=TriageFailure(category="inference_failed", message="down"),
         )
     assert calls == []
@@ -87,7 +87,7 @@ def test_executor_applies_only_ai_reviewed_when_no_mismatch(
             issue=_issue(),
             issue_key="TJC-1",
             project="TJC",
-            source="scheduled_scan",
+            source="bug_created",
             outcome=_rec(),
         )
 
@@ -123,7 +123,7 @@ def test_executor_posts_mismatch_comment_with_reporter_mention(
             issue=issue,
             issue_key="TJC-2",
             project="TJC",
-            source="scheduled_scan",
+            source="bug_created",
             outcome=_rec(recommended_priority="P2", reason="severity"),
         )
 
@@ -148,12 +148,13 @@ def test_executor_posts_mismatch_comment_with_reporter_mention(
     assert "accessLevel" in mention["attrs"]
     intro = first_para[1]["text"].lower()
     assert "triagebot" in intro
-    assert "automated ticket triage" in intro
-    assert "mismatch" in intro
-    assert "no issue fields were modified" in intro
+    assert "automated triage" in intro
+    assert "informational only" in intro
+    assert "nothing was changed in jira" in intro
     mid = paras[1]["content"][0]["text"].lower()
-    assert "issue type: bug" in mid and "priority: p2" in mid
-    assert paras[2]["content"][0]["text"] == "Justification: severity"
+    assert "suggested action: change priority:" in mid
+    assert "p1 -> p2" in mid
+    assert paras[2]["content"][0]["text"] == "Rationale: severity"
 
 
 @pytest.mark.unit
@@ -172,22 +173,26 @@ def test_executor_mismatch_comment_without_account_id_has_no_mention_node(
     with httpx.Client(transport=transport) as client:
         ex = JiraTriageActionExecutor(settings, client=client)
         ex.apply_triage_outcome(
-            issue=_issue(issue_type="Story", reporter="Bob", reporter_account_id=None),
+            issue=_issue(
+                issue_type="Bug",
+                priority="P1",
+                reporter="Bob",
+                reporter_account_id=None,
+            ),
             issue_key="TJC-3",
             project="TJC",
             source="manual_cli",
-            outcome=_rec(
-                recommended_issue_type="Bug",
-                recommended_priority="P3",
-                reason="defect",
-            ),
+            outcome=_rec(recommended_priority="P3", reason="defect"),
         )
 
     doc = posted[0]["body"]
     first_para_nodes = doc["content"][0]["content"]
     assert all(n["type"] == "text" for n in first_para_nodes)
     assert "triagebot" in first_para_nodes[0]["text"].lower()
-    assert doc["content"][2]["content"][0]["text"] == "Justification: defect"
+    mid = doc["content"][1]["content"][0]["text"].lower()
+    assert "suggested action: change priority:" in mid
+    assert "p1 -> p3" in mid
+    assert doc["content"][2]["content"][0]["text"] == "Rationale: defect"
 
 
 @pytest.mark.unit
@@ -209,7 +214,7 @@ def test_executor_story_mismatch_uses_story_suggestion_template(
             issue=_issue(issue_type="Bug"),
             issue_key="TJC-9",
             project="TJC",
-            source="scheduled_scan",
+            source="bug_created",
             outcome=_rec(
                 recommended_issue_type="Story",
                 recommended_priority=None,
@@ -218,10 +223,10 @@ def test_executor_story_mismatch_uses_story_suggestion_template(
         )
 
     mid = posted[0]["body"]["content"][1]["content"][0]["text"]
-    assert "Issue type: Story" in mid
+    assert "Suggested action: classify as Story" in mid
     assert "priority" not in mid.lower()
     assert posted[0]["body"]["content"][2]["content"][0]["text"] == (
-        "Justification: User story framing."
+        "Rationale: User story framing."
     )
 
 
@@ -240,6 +245,6 @@ def test_executor_raises_on_label_http_error(monkeypatch: pytest.MonkeyPatch) ->
                 issue=_issue(),
                 issue_key="TJC-1",
                 project="TJC",
-                source="scheduled_scan",
+                source="bug_created",
                 outcome=_rec(),
             )

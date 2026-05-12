@@ -10,7 +10,7 @@
 
 ## 2. Core Backend / API
 - [x] Set up `README.md` from a generic project skeleton description to rough structure we could fill up leading to the final state of this stage
-- [x] Implement `POST /triage` contract accepting `issue_key`, `project`, and `source` (`scheduled_scan` for MVP; closed `Literal` enum, extensible to `manual_cli` etc.).
+- [x] Implement `POST /triage` contract accepting `issue_key`, `project`, and `source` (closed `Literal`: `bug_created`, `priority_changed`, `manual_cli`).
 - [x] Add request validation for required fields and supported `source` values.
 - [x] Implement Jira issue fetcher by issue key (summary, description, type, priority, reporter).
 - [x] Add smoke script to fetch one issue by key for manual verification (`scripts/fetch_jira_issue.py`).
@@ -19,10 +19,8 @@
 - Triage logic (sequential, not parallel type+priority):
   1. Classify Story vs Bug (bug policy only for this step).
   2. If the model says Story: recommend reclassifying to Story; do not run priority inference; do not compare or suggest P0–P4.
-  3. If the model says Bug: run a second priority inference (priority policy + issue context). Then:
-     - Jira type Bug + model Bug: compare predicted P0–P4 to current Jira priority.
-     - Jira type Story + model Bug: treat as misfiled bug — recommend Bug + suggested priority (compare for mismatch/labels as designed).
-  4. Surface guidance via internal comment (and mismatch labels when applicable): suggest reclassification and/or priority with reasoning; advisory only — no automatic Jira field mutation in Phase 1 (see Out-of-scope in `specification.md`).
+  3. If the model says Bug: run a second priority inference (priority policy + issue context). Then compare predicted P0–P4 to current Jira priority (triage is scoped to Bug issues in JQL).
+  4. Surface guidance via internal comment (and mismatch labels when applicable): suggest reclassification to Story and/or priority with reasoning; advisory only — no automatic Jira field mutation in Phase 1 (see Out-of-scope in `specification.md`).
 - [x] Build prompt/input composer for step (1) and, when needed, step (2) — do not bundle both model calls into one always-on prompt.
 - [x] Implement OpenRouter inference client with model name from configuration.
 - [x] Parse and validate model output to strict schema (per step or merged response), including:
@@ -41,11 +39,12 @@
 - [x] Implement Jira action executor (`jira_action_executor.JiraTriageActionExecutor`; default handler uses it when `JIRA_BASE_URL` and `JIRA_USER_EMAIL` are set):
   - [x] Apply `ai-reviewed` after every successful triage (mismatch or not). This is the dedupe marker the Jira scheduled rule depends on — without it, the JQL keeps re-matching the issue.
   - [x] Post internal comment with recommended values and concise reasoning **only when** mismatch exists (fixed **TriageBot** template; numeric confidence stays in API/audit only, not in the Jira body; optional reporter @mention when `reporter_account_id` is present on the fetched issue).
-  - [x] Apply mismatch-specific labels only when applicable: `ai-likely-story`/`ai-likely-bug` (type mismatch), `ai-priority-mismatch` (priority mismatch on the Bug path; N/A on the Story path).
+  - [x] Apply mismatch-specific labels only when applicable: `ai-likely-story` (type mismatch when recommending Story), `ai-priority-mismatch` (priority mismatch on the Bug path; N/A on the Story path).
 - [x] On `TriageFailure`, apply **no** labels and post **no** comment. The issue stays unlabeled so the next scheduled scan retries it automatically until success or `created >= -30m` ages it out.
-- [ ] Add end-to-end local flow task: fetch issue -> analyze -> decide mismatch -> apply Jira labels/comment per the rules above.
-- [ ] Add automation-driven local flow task: accept Jira scheduled-scan payload (`issue_key`, `project`, `source="scheduled_scan"`) -> analyze latest ticket state -> apply Jira labels/comment per the rules above.
-- Done when: both manual and automation-driven local execution apply `ai-reviewed` (plus mismatch labels/comment when warranted) on success, and leave the issue untouched on failure so Jira retries.
+- [x] **Local CLI E2E (developer path):** With `JIRA_BASE_URL`, `JIRA_USER_EMAIL`, and model keys set, `scripts/run_triage_cli.py` / `triage_manual_cli.run_cli_triage` runs the full pipeline for a given issue key: fetch → classify → optional priority → mismatch → `JiraTriageActionExecutor` (`source="manual_cli"`). This is the supported way to run triage from a laptop against real Jira without any Jira-side integration.
+- [x] **Local tunnel for Jira → laptop:** Run the HTTP server locally and expose `POST /triage` with a public HTTPS URL (e.g. ngrok, Cloudflare Tunnel) so Jira Automation “Send web request” can reach it during development; note URL churn on free tiers and timeouts. Precursor or parallel to a stable hosted deployment, not a substitute for production hardening. **Instructions:** `README.md` section *Local HTTP server and tunnel*; helper script `scripts/run_dev_tunnel.py` (loads `.env`, uvicorn, tunnel). **Operator smoke:** still confirm Jira → tunnel → service on your tenant when you first wire Automation (not covered by CI).
+- [ ] **Jira Automation → deployed API (product path, untested):** In Jira Cloud, configure rules so **Jira** sends `POST` requests to **your hosted** `POST /triage` URL with the real Automation body (`issue_key`, `project`, `source` one of `bug_created` / `priority_changed`). Prove reachability (TLS, DNS, timeouts), any auth fronting the API, and that labels/comments match the same rules as the CLI run on the same issue. Local `curl` / `TestClient` with those sources only proves the handler code, not Jira as the caller.
+- Done when: (a) CLI path above is usable for QA/dev smoke on real issues with the executor live. (b) At least one Jira site has a working Automation → production-like triage URL flow verified end-to-end (Jira is the HTTP client), with runbook steps captured in docs.
 
 ## 4. Forge app (Atlassian Forge)
 - [ ] Scaffold an Atlassian Forge app (e.g. **TriageBot**) in-repo or in a linked package: `manifest.yml`, environment (`development` / `staging` / `production`), and Forge CLI workflow documented in README or runbook.
@@ -76,7 +75,7 @@
 ## 7. Polish & Docs
 - [ ] Document architecture and module responsibilities (`jira_automation_trigger`, `ai_triage_service`, `jira_action_executor`, `audit_log_store`).
 - [ ] Add runbook for local development, env setup, and test execution commands.
-- [ ] Add Jira Automation setup recipe: the scheduled rule cadence (every 5 min ≤ JQL window length), the reference JQL (`project = ... AND issuetype = Bug AND labels not in (ai-reviewed) AND created >= -30m AND created <= -5m`), and the "Send web request → Custom data" body template (`issue_key`, `project`, `source: scheduled_scan`).
+- [ ] Add Jira Automation setup recipe: the scheduled rule cadence (every 5 min ≤ JQL window length), the reference JQL (`project = ... AND issuetype = Bug AND labels not in (ai-reviewed) AND created >= -30m AND created <= -5m`), and the "Send web request → Custom data" body template (`issue_key`, `project`, `source: bug_created` or `priority_changed` for a priority rule).
 - [ ] Document the `ai-reviewed` lifecycle: applied on every successful triage; remove the label on an issue to force re-triage; missing label on a >30m-old issue indicates the manual-QA fallback case.
 - [ ] Document known MVP limitations and out-of-scope items (no auto mutation, no Zendesk intake, no full RAG).
 - [ ] Record default model-selection rationale and tuning strategy for confidence calibration in Phase 2.

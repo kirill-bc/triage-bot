@@ -1,9 +1,8 @@
 """POST /triage request and response contract.
 
-The webhook is fired by a Jira Automation **scheduled** rule (JQL-driven scan),
-not an event trigger. The request body carries a ``source`` annotation
-(``scheduled_scan`` for Jira Automation, ``manual_cli`` for the local runner)
-rather than a Jira event type; future sources extend the same contract shape.
+The request body carries a ``source`` annotation: ``bug_created`` or
+``priority_changed`` for Jira Automation triggers, or ``manual_cli`` for the
+local runner.
 """
 
 from __future__ import annotations
@@ -50,14 +49,14 @@ def test_post_triage_accepts_manual_cli_source(client: TestClient) -> None:
 
 
 @pytest.mark.unit
-def test_post_triage_accepts_issue_key_project_and_source(client: TestClient) -> None:
-    payload = {"issue_key": "TJC-42", "project": "TJC", "source": "scheduled_scan"}
+def test_post_triage_accepts_bug_created_source(client: TestClient) -> None:
+    payload = {"issue_key": "TJC-42", "project": "TJC", "source": "bug_created"}
     response = client.post("/triage", json=payload)
     assert response.status_code == 200
     data = response.json()
     assert data["issue_key"] == "TJC-42"
     assert data["project"] == "TJC"
-    assert data["source"] == "scheduled_scan"
+    assert data["source"] == "bug_created"
     assert data["status"] == "completed"
     assert data["failure"] is None
     assert data["recommendation"]["recommended_issue_type"] == "Story"
@@ -65,10 +64,20 @@ def test_post_triage_accepts_issue_key_project_and_source(client: TestClient) ->
 
 
 @pytest.mark.unit
+def test_post_triage_accepts_priority_changed_source(client: TestClient) -> None:
+    payload = {"issue_key": "TJC-42", "project": "TJC", "source": "priority_changed"}
+    response = client.post("/triage", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["source"] == "priority_changed"
+    assert data["status"] == "completed"
+
+
+@pytest.mark.unit
 def test_post_triage_returns_422_when_issue_key_missing(client: TestClient) -> None:
     response = client.post(
         "/triage",
-        json={"project": "TJC", "source": "scheduled_scan"},
+        json={"project": "TJC", "source": "bug_created"},
     )
     assert response.status_code == 422
 
@@ -77,7 +86,7 @@ def test_post_triage_returns_422_when_issue_key_missing(client: TestClient) -> N
 def test_post_triage_returns_422_when_project_missing(client: TestClient) -> None:
     response = client.post(
         "/triage",
-        json={"issue_key": "TJC-1", "source": "scheduled_scan"},
+        json={"issue_key": "TJC-1", "source": "bug_created"},
     )
     assert response.status_code == 422
 
@@ -95,7 +104,17 @@ def test_post_triage_returns_422_when_source_missing(client: TestClient) -> None
 def test_post_triage_returns_422_when_source_not_supported(client: TestClient) -> None:
     response = client.post(
         "/triage",
-        json={"issue_key": "TJC-1", "project": "TJC", "source": "issue_created"},
+        json={"issue_key": "TJC-1", "project": "TJC", "source": "scheduled_scan"},
+    )
+    assert response.status_code == 422
+
+
+@pytest.mark.unit
+def test_post_triage_returns_422_when_source_is_priority_change_typo(client: TestClient) -> None:
+    """Jira payloads sometimes use ``priority_change``; the API enum is ``priority_changed``."""
+    response = client.post(
+        "/triage",
+        json={"issue_key": "TJC-1", "project": "TJC", "source": "priority_change"},
     )
     assert response.status_code == 422
 
@@ -104,7 +123,7 @@ def test_post_triage_returns_422_when_source_not_supported(client: TestClient) -
 def test_post_triage_returns_422_when_issue_key_empty_string(client: TestClient) -> None:
     response = client.post(
         "/triage",
-        json={"issue_key": "", "project": "TJC", "source": "scheduled_scan"},
+        json={"issue_key": "", "project": "TJC", "source": "bug_created"},
     )
     assert response.status_code == 422
 
@@ -113,7 +132,7 @@ def test_post_triage_returns_422_when_issue_key_empty_string(client: TestClient)
 def test_post_triage_returns_422_when_project_empty_string(client: TestClient) -> None:
     response = client.post(
         "/triage",
-        json={"issue_key": "TJC-1", "project": "", "source": "scheduled_scan"},
+        json={"issue_key": "TJC-1", "project": "", "source": "bug_created"},
     )
     assert response.status_code == 422
 
@@ -141,7 +160,7 @@ def test_post_triage_returns_failed_status_when_runner_returns_triage_failure() 
     app_client = TestClient(create_app(triage_handler_factory=lambda: _FailingRunner()))
     response = app_client.post(
         "/triage",
-        json={"issue_key": "TJC-1", "project": "TJC", "source": "scheduled_scan"},
+        json={"issue_key": "TJC-1", "project": "TJC", "source": "bug_created"},
     )
     assert response.status_code == 200
     data = response.json()
@@ -154,4 +173,4 @@ def test_post_triage_returns_failed_status_when_runner_returns_triage_failure() 
 @pytest.mark.unit
 def test_stub_runner_satisfies_triage_runner_protocol() -> None:
     runner: TriageRunner = _StubRunner()
-    assert isinstance(runner.run_sync("k", "p", "scheduled_scan"), TriageRecommendation)
+    assert isinstance(runner.run_sync("k", "p", "bug_created"), TriageRecommendation)

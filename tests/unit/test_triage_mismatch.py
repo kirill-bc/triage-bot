@@ -51,16 +51,6 @@ def test_compute_flags_type_mismatch_only_story_recommendation_skips_priority() 
 
 
 @pytest.mark.unit
-def test_compute_flags_type_mismatch_jira_story_recommended_bug() -> None:
-    flags = compute_mismatch_flags(
-        _issue(issue_type="Story", priority="P3"),
-        _rec(recommended_issue_type="Bug", recommended_priority="P3"),
-    )
-    assert flags.type_mismatch is True
-    assert flags.priority_mismatch is False
-
-
-@pytest.mark.unit
 def test_compute_flags_priority_mismatch_when_bug_path_and_labels_differ() -> None:
     flags = compute_mismatch_flags(_issue(priority="P1"), _rec(recommended_priority="P2"))
     assert flags.type_mismatch is False

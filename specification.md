@@ -14,7 +14,7 @@
 - Initial behavior is advisory (non-blocking), with future phases enabling soft and hard enforcement.
 
 ## Scope
-- Phase 1 (MVP): recommendation-only triage for new issues in a target project (`TJC` first, `BC` next). Primary trigger is Support-created **Bug** tickets; the same pipeline must handle **Story**-typed tickets when analysis shows they are misfiled (model says Bug + suggested priority).
+- Phase 1 (MVP): recommendation-only triage for new issues in a target project (`TJC` first, `BC` next). The pipeline targets Support-created **Bug** tickets (`issuetype = Bug` in automation JQL); classification still distinguishes defect vs product work so misfiled bugs can be recommended as **Story** (no priority step on that outcome).
 - Trigger triage from a Jira Automation **scheduled rule** whose JQL selects unprocessed issues in a stabilization window (see `jira_automation_trigger` below). Jira owns delay, dedupe, and the backstop window so the service stays stateless.
 - Send issue key to AI Triage Service (service fetches latest issue state at analysis time).
 - AI service returns structured recommendation with confidence and reasoning (fields depend on which inference steps ran; see response contract).
@@ -30,7 +30,6 @@
 ## Key User Scenarios / Flows
 - New Support-created `Bug` is triaged: classify Story vs Bug; if Bug, predict priority; internal comment + labels only on mismatch (type and/or priority).
 - AI concludes **Story** (ticket filed as Bug): recommend reclassify to Story; **no** priority step, **no** priority labels; comment/labels reflect type mismatch only.
-- AI concludes **Bug** when Jira type is **Story**: misfiled bug — recommend Bug + suggested priority; compare for mismatch and label accordingly.
 - AI detects priority mismatch on the Bug path and labels ticket for severity review.
 - Existing open issues can be batch triaged by AI service outside Jira Automation (manual or scheduled entry point).
 
@@ -52,7 +51,7 @@
     {
       "issue_key": "{{issue.key}}",
       "project": "{{issue.project.key}}",
-      "source": "scheduled_scan"
+      "source": "bug_created"
     }
     ```
   - The trigger carries no issue content. The service re-fetches the issue at analysis time so its view is always the latest state, regardless of Jira-side templating quirks.
@@ -67,8 +66,8 @@
   - Model provider: OpenRouter (cost-efficient model selected by configuration)
   - Endpoint contract: `POST /triage`
     - Request body:
-      - `{ "issue_key": "BC-123", "project": "BC", "source": "scheduled_scan" }`
-      - `source` is a closed enum (Pydantic `Literal`). Future values (e.g. `manual_cli` for the local runner) extend the literal without changing the request shape.
+      - `{ "issue_key": "BC-123", "project": "BC", "source": "bug_created" }` (scheduled bug scan), or the same shape with `"source": "priority_changed"` when an automation fires on priority edits; `"source": "manual_cli"` for the local runner.
+      - `source` is a closed enum (Pydantic `Literal`): `bug_created`, `priority_changed`, `manual_cli`.
     - Response contract (illustrative; exact nullability is enforced in code). Example when classification is Story (no priority step):
       ```json
       {
@@ -80,14 +79,14 @@
       ```
       When classification is Bug, `recommended_priority` is a string `P0`–`P4` from the second inference step (never null).
       - When `recommended_issue_type` is `Story`, `recommended_priority` is **not** produced by a priority inference step (`null` or omitted). Mismatch handling compares **type only** on that path.
-      - When `recommended_issue_type` is `Bug`, `recommended_priority` is required. Compare to Jira priority when Jira type is Bug; when Jira type was Story, treat as misfiled bug and compare both type and suggested priority as designed.
+      - When `recommended_issue_type` is `Bug`, `recommended_priority` is required. Compare to Jira priority on the Bug triage path.
       - `confidence` may represent the last inference that ran, or separate fields per step — document and validate in the parser; at minimum, classification always has a score. The service does **not** model a model-supplied action enum; `triage_mismatch.compute_mismatch_flags` derives `type_mismatch` / `priority_mismatch` from Jira fields vs recommendation for labels and advisory comments (`reason` required for comment text).
 - `jira_action_executor`
   - Apply the `ai-reviewed` label **after every successful triage**, mismatch or not. This is the dedupe marker the Jira scheduled rule depends on; without it the rule re-analyzes the same issue every cycle until it ages out of the JQL window.
   - When a mismatch is detected, additionally:
     - Post an internal comment using a **fixed direct template** as **TriageBot** (recommendation summary + model rationale as context). Numeric **confidence** stays in the API response and audit logs, not in the Jira comment body. Comment text is **advisory**; Phase 1 does **not** mutate Jira issue type or priority fields via automation.
     - Apply mismatch-specific labels
-      - `ai-likely-story`/`ai-likely-bug` when the issue type differs from `recommended_issue_type`.
+      - `ai-likely-story` when the issue type differs from `recommended_issue_type` and the recommendation is Story (reclassify away from Bug). There is no label for “recommend Bug” on a non-Bug issue type because triage is scoped to Bug issues only.
       - `ai-priority-mismatch` when the Bug path predicted a priority that differs from the current Jira priority. N/A on the Story path (priority inference does not run).
   - When recommendation matches current state, apply `ai-reviewed` only — no comment, no mismatch labels.
   - When triage returns a `TriageFailure` (Jira fetch error, OpenRouter inference error, invalid model output, unexpected error), apply **no** labels and post **no** comment. The issue keeps matching the JQL and is retried automatically on the next scheduled run, until it succeeds or ages past the backstop window.

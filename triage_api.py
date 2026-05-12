@@ -1,26 +1,80 @@
 """HTTP API surface for triage triggers (MVP: request/response contract only).
 
-The endpoint is fired by a Jira Automation **scheduled** rule (JQL-driven scan),
-not by an event-driven hook. The request body therefore carries a ``source``
-annotation rather than a Jira event type. ``scheduled_scan`` is the only MVP
-value; ``manual_cli`` is used by the local CLI runner; future sources extend the
-literal without changing the request shape.
+The request body carries a ``source`` closed enum so callers identify why triage
+was invoked: ``bug_created`` (Jira automation on new bugs), ``priority_changed``
+(Jira automation on priority edits), or ``manual_cli`` (local runner / scripts).
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import os
+import sys
+from collections.abc import Awaitable, Callable
 from typing import Literal
 
 from fastapi import Depends, FastAPI
 from pydantic import BaseModel, Field, model_validator
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import Response
 from typing_extensions import Self
 
 from triage_fallback import TriageFailure
 from triage_handler import TriageRunner, build_default_triage_handler
 from triage_recommendation_parser import TriageRecommendation
 
-TriageSource = Literal["scheduled_scan", "manual_cli"]
+TriageSource = Literal["bug_created", "priority_changed", "manual_cli"]
+
+
+def triage_inbound_debug_enabled() -> bool:
+    """True when ``TRIAGE_DEBUG_INBOUND`` requests raw ``POST /triage`` body logging to stderr."""
+    token = os.environ.get("TRIAGE_DEBUG_INBOUND", "").strip().lower()
+    return token in ("1", "true", "yes", "on")
+
+
+def preview_request_body_for_log(body: bytes, *, max_len: int = 8192) -> str:
+    """Return a UTF-8 string or repr for logging; truncate very large bodies."""
+    if len(body) <= max_len:
+        try:
+            return body.decode("utf-8")
+        except UnicodeDecodeError:
+            return repr(body)
+    head = body[:max_len]
+    try:
+        fragment = head.decode("utf-8")
+    except UnicodeDecodeError:
+        fragment = repr(head)
+    return f"{fragment}… (truncated, {len(body)} bytes total)"
+
+
+class _DebugInboundTriageBodyMiddleware(BaseHTTPMiddleware):
+    """Log raw request bodies before validation (development / Jira payload debugging)."""
+
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        if request.method != "POST" or request.url.path != "/triage":
+            return await call_next(request)
+        if not triage_inbound_debug_enabled():
+            return await call_next(request)
+        body = await request.body()
+        content_type = request.headers.get("content-type", "")
+        preview = preview_request_body_for_log(body)
+        print(
+            "[TRIAGE_DEBUG_INBOUND] POST /triage\n"
+            f"  content-type: {content_type}\n"
+            f"  body ({len(body)} bytes): {preview}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+        async def receive() -> dict[str, str | bytes | bool]:
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        replayed = Request(request.scope, receive)
+        return await call_next(replayed)
 
 
 class TriageRequest(BaseModel):
@@ -30,8 +84,8 @@ class TriageRequest(BaseModel):
     project: str = Field(min_length=1, description="Jira project key.")
     source: TriageSource = Field(
         description=(
-            "Origin of the triage call: scheduled_scan (Jira Automation) or "
-            "manual_cli (local runner)."
+            "Origin of the triage call: bug_created or priority_changed (Jira Automation) "
+            "or manual_cli (local runner)."
         ),
     )
 
@@ -96,6 +150,7 @@ def create_app(*, triage_handler_factory: Callable[[], TriageRunner] | None = No
             recommendation=outcome,
         )
 
+    app.add_middleware(_DebugInboundTriageBodyMiddleware)
     return app
 
 

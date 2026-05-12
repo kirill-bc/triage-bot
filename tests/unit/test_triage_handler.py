@@ -86,7 +86,7 @@ def test_handler_story_path_calls_inference_once_and_returns_recommendation(
             outcome = handler.run_sync(
                 issue_key="TJC-9",
                 project="TJC",
-                source="scheduled_scan",
+                source="bug_created",
             )
 
     assert isinstance(outcome, TriageRecommendation)
@@ -146,7 +146,7 @@ def test_handler_bug_path_calls_inference_twice_and_merges_priority(
             outcome = handler.run_sync(
                 issue_key="TJC-10",
                 project="TJC",
-                source="scheduled_scan",
+                source="bug_created",
             )
 
     assert isinstance(outcome, TriageRecommendation)
@@ -183,7 +183,7 @@ def test_handler_rejects_project_not_in_allowlist_without_fetch(
             outcome = handler.run_sync(
                 issue_key="XX-1",
                 project="XX",
-                source="scheduled_scan",
+                source="bug_created",
             )
 
     assert isinstance(outcome, TriageFailure)
@@ -223,7 +223,7 @@ def test_handler_passes_triage_failure_to_executor_on_jira_error(
             outcome = handler.run_sync(
                 issue_key="TJC-1",
                 project="TJC",
-                source="scheduled_scan",
+                source="bug_created",
             )
 
     assert isinstance(outcome, TriageFailure)
