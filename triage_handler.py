@@ -60,7 +60,7 @@ class TriageActionExecutor(Protocol):
 
 
 class NoOpTriageActionExecutor:
-    """No-op executor used when Jira REST env (base URL + user email) is not configured."""
+    """No-op executor when Jira REST target (cloud id or base URL) and user email are not set."""
 
     def apply_triage_outcome(
         self,
@@ -123,6 +123,39 @@ class TriageHandler:
         )
         return outcome
 
+    def run_sync_on_fetched(
+        self,
+        *,
+        issue: FetchedIssue,
+        project: str,
+        source: str,
+    ) -> TriageRecommendation | TriageFailure:
+        """Run classify then optional priority on a fetched issue.
+
+        Same executor notifications as ``run_sync`` (e.g. NoOp for offline runs).
+        """
+        try:
+            self._ensure_project_allowed(project)
+            outcome = self._triage_fetched_issue(issue)
+        except Exception as exc:
+            failure = fallback_for_exception(exc)
+            self._executor.apply_triage_outcome(
+                issue=issue,
+                issue_key=issue.issue_key,
+                project=project,
+                source=source,
+                outcome=failure,
+            )
+            return failure
+        self._executor.apply_triage_outcome(
+            issue=issue,
+            issue_key=issue.issue_key,
+            project=project,
+            source=source,
+            outcome=outcome,
+        )
+        return outcome
+
     def _ensure_project_allowed(self, project: str) -> None:
         if project not in self._allowed:
             msg = f"Project {project} is not allowed for triage."
@@ -144,6 +177,7 @@ def build_default_triage_handler() -> TriageHandler:
     """Build handler from settings, core config, policy, and Jira executor if Jira env is set."""
     from core_config import load_triage_core_config
     from jira_action_executor import JiraTriageActionExecutor
+    from jira_rest_paths import jira_rest_v3_site_prefix
     from policy_context import load_policy_context
     from settings import load_settings
 
@@ -153,8 +187,7 @@ def build_default_triage_handler() -> TriageHandler:
     fetcher = JiraIssueFetcher(settings)
     inference = OpenRouterInferenceClient(settings)
     if (
-        settings.jira_base_url
-        and str(settings.jira_base_url).strip()
+        jira_rest_v3_site_prefix(settings) is not None
         and settings.jira_user_email
         and str(settings.jira_user_email).strip()
     ):

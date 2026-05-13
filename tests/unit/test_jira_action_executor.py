@@ -231,6 +231,66 @@ def test_executor_story_mismatch_uses_story_suggestion_template(
 
 
 @pytest.mark.unit
+def test_executor_raises_when_jira_rest_target_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("JIRA_CLOUD_ID", raising=False)
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
+    monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
+    monkeypatch.setenv("JIRA_USER_EMAIL", "bot@example.com")
+    settings = AppSettings()
+
+    transport = httpx.MockTransport(lambda r: httpx.Response(200))
+    with httpx.Client(transport=transport) as client:
+        ex = JiraTriageActionExecutor(settings, client=client)
+        with pytest.raises(JiraActionExecutorError) as exc:
+            ex.apply_triage_outcome(
+                issue=_issue(),
+                issue_key="TJC-1",
+                project="TJC",
+                source="bug_created",
+                outcome=_rec(),
+            )
+    msg = str(exc.value).lower()
+    assert "jira_cloud_id" in msg or "cloud_id" in msg
+    assert "jira_base_url" in msg or "base_url" in msg
+
+
+@pytest.mark.unit
+def test_executor_uses_atlassian_gateway_when_jira_cloud_id_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
+    monkeypatch.setenv("JIRA_CLOUD_ID", "550e8400-e29b-41d4-a716-446655440000")
+    monkeypatch.setenv("JIRA_USER_EMAIL", "bot@example.com")
+    settings = AppSettings()
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(204 if request.method == "PUT" else 201, json={})
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        ex = JiraTriageActionExecutor(settings, client=client)
+        ex.apply_triage_outcome(
+            issue=_issue(),
+            issue_key="TJC-1",
+            project="TJC",
+            source="bug_created",
+            outcome=_rec(),
+        )
+
+    assert len(requests) == 1
+    assert requests[0].url.host == "api.atlassian.com"
+    assert requests[0].url.path == (
+        "/ex/jira/550e8400-e29b-41d4-a716-446655440000/rest/api/3/issue/TJC-1"
+    )
+
+
+@pytest.mark.unit
 def test_executor_raises_on_label_http_error(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = _settings(monkeypatch)
 

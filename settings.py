@@ -29,6 +29,14 @@ class AppSettings(BaseSettings):
         default=None,
         description="Jira site base URL, e.g. https://your-domain.atlassian.net",
     )
+    jira_cloud_id: str | None = Field(
+        default=None,
+        description=(
+            "Atlassian Cloud site id for api.atlassian.com REST (ex/jira/CLOUD_ID/...). "
+            "When set, issue fetch and triage Jira actions use the gateway; "
+            "JIRA_BASE_URL is optional."
+        ),
+    )
     jira_user_email: str | None = Field(
         default=None,
         description="Atlassian account email paired with jira_api_key for Cloud REST auth.",

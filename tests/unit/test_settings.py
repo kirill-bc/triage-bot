@@ -12,6 +12,7 @@ _APP_ENV_KEYS = (
     "OPENROUTER_API_KEY",
     "OPENROUTER_MODEL",
     "JIRA_BASE_URL",
+    "JIRA_CLOUD_ID",
     "JIRA_USER_EMAIL",
     "LOG_LEVEL",
     "LOGGING_API_KEY",
@@ -71,6 +72,7 @@ def test_load_settings_loads_required_keys_from_dotenv(
         "OPENROUTER_API_KEY=or-token\n"
         "OPENROUTER_MODEL=openai/gpt-4o\n"
         "JIRA_BASE_URL=https://example.atlassian.net\n"
+        "JIRA_CLOUD_ID=abc-123-cloud\n"
         "JIRA_USER_EMAIL=triage@example.com\n"
         "LOG_LEVEL=DEBUG\n"
         "LOGGING_API_KEY=log-secret\n"
@@ -82,6 +84,7 @@ def test_load_settings_loads_required_keys_from_dotenv(
     assert settings.openrouter_api_key == "or-token"
     assert settings.openrouter_model == "openai/gpt-4o"
     assert settings.jira_base_url == "https://example.atlassian.net"
+    assert settings.jira_cloud_id == "abc-123-cloud"
     assert settings.jira_user_email == "triage@example.com"
     assert settings.log_level == "DEBUG"
     assert settings.logging_api_key == "log-secret"
@@ -100,6 +103,7 @@ def test_load_settings_optional_fields_default_when_omitted(
     settings = load_settings()
     assert settings.openrouter_model == "openai/gpt-4o-mini"
     assert settings.jira_base_url is None
+    assert settings.jira_cloud_id is None
     assert settings.jira_user_email is None
     assert settings.log_level == "INFO"
     assert settings.logging_api_key is None

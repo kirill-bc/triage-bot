@@ -18,9 +18,17 @@ class OpenRouterInferenceError(RuntimeError):
 class OpenRouterInferenceClient:
     """POSTs chat completions using the model id from application settings."""
 
-    def __init__(self, settings: AppSettings, *, client: httpx.Client | None = None) -> None:
+    def __init__(
+        self,
+        settings: AppSettings,
+        *,
+        client: httpx.Client | None = None,
+        model_override: str | None = None,
+    ) -> None:
         self._settings = settings
         self._client = client
+        stripped = model_override.strip() if model_override else ""
+        self._model_override = stripped or None
 
     def chat_completion(
         self,
@@ -33,8 +41,9 @@ class OpenRouterInferenceClient:
             "Authorization": f"Bearer {self._settings.openrouter_api_key}",
             "Content-Type": "application/json",
         }
+        model_id = self._model_override or self._settings.openrouter_model
         body: dict[str, Any] = {
-            "model": self._settings.openrouter_model,
+            "model": model_id,
             "messages": list(messages),
             "temperature": temperature,
         }

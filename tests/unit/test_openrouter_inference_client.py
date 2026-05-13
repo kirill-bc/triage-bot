@@ -64,6 +64,33 @@ def test_chat_completion_sends_model_from_settings_and_returns_assistant_text(
 
 
 @pytest.mark.unit
+def test_chat_completion_uses_model_override_when_provided(
+    openrouter_app_settings: AppSettings,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["json"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": "ok"}}]},
+        )
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        inference = OpenRouterInferenceClient(
+            openrouter_app_settings,
+            client=client,
+            model_override="meta-llama/llama-3.1-8b-instruct",
+        )
+        assert inference.chat_completion(messages=[{"role": "user", "content": "x"}]) == "ok"
+
+    payload = captured["json"]
+    assert isinstance(payload, dict)
+    assert payload["model"] == "meta-llama/llama-3.1-8b-instruct"
+
+
+@pytest.mark.unit
 def test_chat_completion_raises_on_http_error(openrouter_app_settings: AppSettings) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(429, text="Rate limited")

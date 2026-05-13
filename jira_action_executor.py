@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 
 from jira_issue_fetcher import FetchedIssue
+from jira_rest_paths import jira_rest_v3_site_prefix
 from settings import AppSettings
 from triage_fallback import TriageFailure
 from triage_mismatch import compute_mismatch_flags
@@ -28,21 +29,22 @@ def _basic_auth_header(email: str, api_token: str) -> str:
 
 
 def _jira_base_and_headers(settings: AppSettings) -> tuple[str, dict[str, str]]:
-    base = settings.jira_base_url
-    if base is None or not str(base).strip():
-        msg = "Jira base URL is required (set JIRA_BASE_URL)."
+    prefix = jira_rest_v3_site_prefix(settings)
+    if prefix is None:
+        msg = (
+            "Jira REST requires JIRA_CLOUD_ID (Atlassian gateway) or JIRA_BASE_URL (site URL)."
+        )
         raise JiraActionExecutorError(msg)
     email = settings.jira_user_email
     if email is None or not str(email).strip():
         msg = "Jira user email is required for REST auth (set JIRA_USER_EMAIL)."
         raise JiraActionExecutorError(msg)
-    base_url = str(base).rstrip("/")
     headers = {
         "Authorization": _basic_auth_header(email, settings.jira_api_key),
         "Accept": "application/json",
         "Content-Type": "application/json",
     }
-    return base_url, headers
+    return prefix, headers
 
 
 def _labels_for_outcome(recommendation: TriageRecommendation, issue: FetchedIssue) -> list[str]:

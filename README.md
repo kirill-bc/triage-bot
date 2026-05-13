@@ -34,6 +34,11 @@ See `TODO.md` for the active implementation backlog.
 - `dev_tunnel.py`: load repo `.env`, start `uvicorn`, then run `ngrok` or `cloudflared` for Jira-facing HTTPS during local development (`scripts/run_dev_tunnel.py`)
 - `policy/`: `bug_definition.md` and `priority_definition.md` (edit to match your org)
 - `scripts/fetch_jira_issue.py`: manual CLI smoke script for a single Jira issue
+- `scripts/benchmark/build_benchmark_dataset.py`: optional Jira → CSV sampler for benchmark buckets (changelog-derived rows)
+- `scripts/benchmark/run_classification_benchmark.py`: run the same classify → optional priority pipeline over `data/issue_benchmark_dataset.csv` for one or more OpenRouter models; writes JSONL per model plus `summary.json` (NoOp Jira executor; no labels/comments)
+- `scripts/benchmark/summarize_benchmark_rows.py`: offline aggregator over any folder of `rows_*.jsonl` benchmark outputs — per-bucket and overall accuracy, latency stats, issue-type confusion matrix, and failure breakdown; optional folder-level JSON dump
+- `classification_benchmark.py`: CSV loader and bucket-aware scoring (stable bugs vs human-corrected type/priority)
+- `benchmark_summary.py`: pure-logic helpers used by `summarize_benchmark_rows.py` (JSONL parsing, latency/failure aggregation, summary serialization)
 - `scripts/run_dev_tunnel.py`: uvicorn + tunnel helper (uses `dev_tunnel.main`)
 - `scripts/run_tests.sh`: local entrypoint for the standard test workflow
 - `tests/`: unit, integration, and lint test groups
@@ -81,6 +86,37 @@ Run:
 ```
 
 The script calls Jira REST and prints normalized JSON for the issue.
+
+## Benchmark dataset (optional)
+
+`scripts/benchmark/build_benchmark_dataset.py` is a standalone helper that queries Jira Cloud and writes a CSV of issue keys plus last priority / issue-type changelog transitions, grouped into benchmark buckets (misprioritized done bugs, stories converted from bugs, and “stable” bugs with no priority or issuetype history). It uses the same `.env` credentials as the triage app: **`JIRA_USER_EMAIL`**, **`JIRA_API_KEY`**, and optional **`JIRA_BASE_URL`**. Jira Cloud has removed **`GET /rest/api/3/search`** (HTTP 410); the script uses **`GET /rest/api/3/search/jql`** with **`nextPageToken`** pagination and **stops fetching further pages once each bucket reaches its configured target** (defaults: `--per-priority 10`, `--stories-from-bugs 50`, `--stable-bugs 50`). Example:
+
+```bash
+.venv/bin/python scripts/benchmark/build_benchmark_dataset.py -o benchmark_dataset.csv
+```
+
+Tune `--request-interval` if you need gentler pacing against Jira rate limits.
+
+## Benchmark summary (offline)
+
+`scripts/benchmark/summarize_benchmark_rows.py` post-processes any folder of `rows_*.jsonl` files produced by `run_classification_benchmark.py` (no Jira/OpenRouter access required). For each model file it prints per-bucket accuracy, overall accuracy, priority accuracy, latency stats (total / mean / median / p95 / min / max), the issue-type confusion matrix (with `_failed` for runs where the model produced no prediction), and a per-category failure breakdown. The trailing folder overview ranks models by overall accuracy. Useful for re-summarizing partial or interrupted runs and for diffing several runs in one go.
+
+Summarize a single run folder:
+
+```bash
+.venv/bin/python scripts/benchmark/summarize_benchmark_rows.py \
+    benchmark_runs/20260512T211133Z
+```
+
+Walk every nested run, suppress the per-model tables, and write a combined JSON:
+
+```bash
+.venv/bin/python scripts/benchmark/summarize_benchmark_rows.py \
+    benchmark_runs --recursive --quiet \
+    --output-json benchmark_runs/rows_summary.json
+```
+
+The per-model numbers match `summary.json` from the original benchmark run by reusing `aggregate_bucket_summaries`, `aggregate_overall`, and `confusion_matrix_issue_type` from `classification_benchmark.py`.
 
 ## Local full triage (CLI)
 

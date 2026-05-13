@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 from pydantic import BaseModel
 
+from jira_rest_paths import jira_rest_v3_site_prefix
 from settings import AppSettings
 
 
@@ -108,8 +109,19 @@ def _basic_auth_header(email: str, api_token: str) -> str:
     return f"Basic {encoded}"
 
 
+def _issue_get_url(settings: AppSettings, issue_key: str) -> str:
+    """REST v3 issue URL: gateway (CLOUD_ID) when set, else site base URL."""
+    prefix = jira_rest_v3_site_prefix(settings)
+    if prefix is None:
+        raise JiraIssueFetchError(
+            "Jira issue URL requires JIRA_CLOUD_ID (Atlassian gateway) or JIRA_BASE_URL "
+            "(site URL).",
+        )
+    return f"{prefix}/rest/api/3/issue/{issue_key}"
+
+
 class JiraIssueFetcher:
-    """Loads issue summary, description, type, priority, and reporter from Jira Cloud REST v3."""
+    """Loads issue fields via Jira REST v3 (Atlassian gateway or site base URL)."""
 
     _FIELDS = "summary,description,issuetype,priority,reporter"
 
@@ -118,19 +130,12 @@ class JiraIssueFetcher:
         self._client = client
 
     def fetch(self, issue_key: str) -> FetchedIssue:
-        base = self._settings.jira_base_url
-        if base is None or not str(base).strip():
-            raise JiraIssueFetchError(
-                "Jira base URL is required to fetch issues (set JIRA_BASE_URL).",
-            )
+        url = _issue_get_url(self._settings, issue_key)
         email = self._settings.jira_user_email
         if email is None or not str(email).strip():
             raise JiraIssueFetchError(
                 "Jira user email is required for REST auth (set JIRA_USER_EMAIL).",
             )
-
-        base_url = str(base).rstrip("/")
-        url = f"{base_url}/rest/api/3/issue/{issue_key}"
         params = {"fields": self._FIELDS}
         headers = {
             "Authorization": _basic_auth_header(email, self._settings.jira_api_key),

@@ -1,0 +1,51 @@
+Issue,Issue Number,Prev Priority,New priority
+BC-22557: Multi-Client | Insvista Files Reporting only 1 entry in HO and BG Files for 04/29/2026GA Released,BC-22557,P3,P0
+BC-22147: Allied Trust | DP3 renewal failuresWon't Do,BC-22147,P3,P0
+BC-22041: Multi-Client | Deliverable Jobs didn't generate successfully (file=0)GA Released,BC-22041,P1,P0
+BC-21746: Multi-client issue | Old Report List Retrieve Monthly Commission Report Not found DONE,BC-21746,P1,P0
+BC-21332: Great Bay | Tiger CQ error preventing renewal creationDONE,BC-21332,P3,P0
+BC-20783: Farmers Mutual WV | Unable to Apply Manual PaymentDONE,BC-20783,P2,P0
+BC-20387: Multi-Client | MunichRe Errors Appears to Be Causing widespread issues Won't Do,BC-20387,P3,P0
+BC-19875: Mult-Client | Month-End reporting stuckDONE,BC-19875,P3,P0
+BC-19713: CNI (RELEASE RELATED) | Renewal failing due to missing DB columnCannot Reproduce,BC-19713,P3,P0
+BC-18871: Laris Motorsports | View Quote Summary Fails To Generate DONE,BC-18871,P3,P0
+BC-22673: Allied | Billing Schedule change not regenerating installmentsGroup 1 Released,BC-22673,P0,P1
+BC-22496: Lilypad | Clean up Policy FL-DP3-000005-00 so reporting is accurateDONE,BC-22496,P3,P1
+BC-22493: Allied - When removing an Additional interest the agent gets deselectedGroup 1 Released,BC-22493,P0,P1
+BC-22476: Great Bay | Several Commission Statements in Report Pending GA Released,BC-22476,P3,P1
+BC-22354: Lilypad | Print Date IssueGroup 1 Released,BC-22354,P3,P1
+BC-22343: Performance | Vehicles wizard page fires duplicate rules/run calls due to watcher feedback loopGroup 1 Released,BC-22343,P3,P1
+BC-22182: AFR | Successful policy payments are marked as IncompleteWon't Do,BC-22182,P3,P1
+BC-22052: Multi-Client | Alert Email (missing policy number and installment info) for failed generationGA Released,BC-22052,P3,P1
+BC-21884: Wausau | Data Fix - Auto Renewals not saving Coverage C increaseDONE,BC-21884,P3,P1
+BC-21706: FM Global | Deliverables Not Generating (likely related to K8 migration)DONE,BC-21706,P0,P1
+"BC-22584: FM Global | Amended Billing Statement failed to generate due to revision does not exist ""error""Duplicate",BC-22584,P3,P2
+BC-22473: Multiclient | Regeneration script leaves folder-only or upload-false billing deliverablesWon't Do,BC-22473,P0,P2
+BC-21785: Fix default arguments in create_admin_contact to isGod=True to preserve backward compatibilityDONE,BC-21785,P3,P2
+BC-21767: Madison | Correct 'enable_default_agency' setting behaviorGA Released,BC-21767,P3,P2
+BC-21574: Application Error While Trying To Rate for Mississippi Dwelling Cannot Reproduce,BC-21574,P4,P2
+BC-21522: Multi-Client | GP Quick Function Gets Stuck Due to New Attachments UIDONE,BC-21522,P1,P2
+"BC-21452: Augusta | Renewals failed due to ""Loss Cause"" error. (use-new-rules-engine)DONE",BC-21452,P0,P2
+"BC-21364: No event, notes or logs for Hard deleted revision.DONE",BC-21364,P3,P2
+BC-20807: Claims Feedback | Large File Uploads Fail Without User-Facing Error MessageDONE,BC-20807,P3,P2
+BC-20269: Alamance | UI Bug: Loss Address Missing When Pulled from PolicyDONE,BC-20269,P1,P2
+https://britecore.atlassian.net/browse/BC-22472,BC-22472,P1,P3
+https://britecore.atlassian.net/browse/BC-22043,BC-22043,P1,P3
+https://britecore.atlassian.net/browse/BC-21776,BC-21776,P2,P3
+https://britecore.atlassian.net/browse/BC-21646,BC-21646,P1,P3
+https://britecore.atlassian.net/browse/BC-21434,BC-21434,P1,P3
+"BC-21108: remove the readonly notification icons from the report list, leave them in report details tray onlyDONE",BC-21108,P1,P3
+BC-21073: Get base policy number using policy-related custom sequencesDONE,BC-21073,P1,P3
+BC-20747: Stateless create_quote_extended propertiesDONE,BC-20747,P2,P3
+BC-20560: Porch | ISO Integration FailureDONE,BC-20560,P1,P3
+BC-19718: Allied PUP - Additional Interest section is missingDONE,BC-19718,P1,P3
+BC-19899,BC-19899,P1,P4
+BC-17820,BC-17820,P1,P4
+BC-14416,BC-14416,P3,P4
+BC-14413,BC-14413,P2,P4
+BC-13737,BC-13737,P3,P4
+BC-12970,BC-12970,P2,P4
+BC-12787,BC-12787,P2,P4
+BC-12735,BC-12735,P3,P4
+BC-12244,BC-12244,P3,P4
+BC-10748,BC-10748,P3,P4

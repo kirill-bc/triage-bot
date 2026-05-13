@@ -158,6 +158,59 @@ def test_handler_bug_path_calls_inference_twice_and_merges_priority(
 
 
 @pytest.mark.unit
+def test_run_sync_on_fetched_story_path_skips_jira_fetch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _app_settings(monkeypatch)
+    issue = FetchedIssue(
+        issue_key="TJC-11",
+        summary="s",
+        description=None,
+        issue_type="Bug",
+        priority="Medium",
+        reporter="r",
+    )
+
+    def jira_handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("fetcher must not be used by run_sync_on_fetched")
+
+    story_json = '{"recommended_issue_type":"Story","confidence":0.7,"reason":"Narrative work."}'
+
+    def openrouter_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": story_json}}]},
+        )
+
+    transport_j = httpx.MockTransport(jira_handler)
+    transport_o = httpx.MockTransport(openrouter_handler)
+    with httpx.Client(transport=transport_j) as j_client:
+        with httpx.Client(transport=transport_o) as o_client:
+            fetcher = JiraIssueFetcher(settings, client=j_client)
+            inference = OpenRouterInferenceClient(settings, client=o_client)
+            executor = _RecordingExecutor()
+            handler = TriageHandler(
+                allowed_projects=("TJC",),
+                fetcher=fetcher,
+                inference=inference,
+                policy=_policy(),
+                executor=executor,
+            )
+            outcome = handler.run_sync_on_fetched(
+                issue=issue,
+                project="TJC",
+                source="manual_cli",
+            )
+
+    assert isinstance(outcome, TriageRecommendation)
+    assert outcome.recommended_issue_type == "Story"
+    assert len(executor.calls) == 1
+    applied_issue, applied_outcome = executor.calls[0]
+    assert applied_issue == issue
+    assert applied_outcome == outcome
+
+
+@pytest.mark.unit
 def test_handler_rejects_project_not_in_allowlist_without_fetch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
