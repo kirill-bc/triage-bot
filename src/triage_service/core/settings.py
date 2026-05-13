@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+
 from dotenv import find_dotenv, load_dotenv
-from pydantic import Field, field_validator
+from pydantic import Field, computed_field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from typing_extensions import Self
 
 
 class AppSettings(BaseSettings):
@@ -25,16 +27,11 @@ class AppSettings(BaseSettings):
         description="OpenRouter model id, e.g. openai/gpt-4o-mini or anthropic/claude-3-haiku.",
     )
 
-    jira_base_url: str | None = Field(
-        default=None,
-        description="Jira site base URL, e.g. https://your-domain.atlassian.net",
-    )
     jira_cloud_id: str | None = Field(
         default=None,
         description=(
             "Atlassian Cloud site id for api.atlassian.com REST (ex/jira/CLOUD_ID/...). "
-            "When set, issue fetch and triage Jira actions use the gateway; "
-            "JIRA_BASE_URL is optional."
+            "Issue fetch and triage Jira actions require this gateway id."
         ),
     )
     jira_user_email: str | None = Field(
@@ -51,6 +48,17 @@ class AppSettings(BaseSettings):
         default=None,
         description="Optional logging ingest URL when using a hosted log pipeline.",
     )
+    # Keep explicit alias so this env var remains stable if settings naming evolves.
+    allowed_projects_csv: str = Field(
+        default="TJC,BC",
+        validation_alias="TRIAGE_ALLOWED_PROJECTS",
+        description="Comma-separated Jira project keys eligible for triage.",
+    )
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def allowed_projects(self) -> list[str]:
+        return [p.strip() for p in self.allowed_projects_csv.split(",") if p.strip()]
 
     @field_validator("log_level")
     @classmethod
@@ -60,6 +68,12 @@ class AppSettings(BaseSettings):
         if upper not in allowed:
             raise ValueError(f"log_level must be one of {sorted(allowed)}")
         return upper
+
+    @model_validator(mode="after")
+    def allowed_projects_nonempty(self) -> Self:
+        if not self.allowed_projects:
+            raise ValueError("allowed_projects must include at least one project key")
+        return self
 
 
 def load_settings(*, env_file: str | Path | None = None) -> AppSettings:

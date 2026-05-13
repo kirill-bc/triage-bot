@@ -10,10 +10,10 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from triage_api import create_app
-from triage_fallback import TriageFailure, fallback_for_exception
-from triage_handler import TriageRunner
-from triage_recommendation_parser import TriageRecommendation
+from triage_service.api.triage_api import create_app
+from triage_service.core.triage_fallback import TriageFailure, fallback_for_exception
+from triage_service.core.triage_handler import TriageRunner
+from triage_service.core.triage_recommendation_parser import TriageRecommendation
 
 
 class _StubRunner:

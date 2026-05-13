@@ -15,7 +15,9 @@ from dotenv import find_dotenv, load_dotenv
 
 load_dotenv(find_dotenv(usecwd=True), override=False)
 
-JIRA_URL = (os.environ.get("JIRA_BASE_URL") or "https://britecore.atlassian.net").rstrip("/")
+_ATLASSIAN_GATEWAY = "https://api.atlassian.com/ex/jira"
+_CLOUD_ID = (os.environ.get("JIRA_CLOUD_ID") or "").strip()
+JIRA_URL = f"{_ATLASSIAN_GATEWAY}/{_CLOUD_ID}" if _CLOUD_ID else ""
 EMAIL = os.environ.get("JIRA_USER_EMAIL")
 API_TOKEN = os.environ.get("JIRA_API_KEY")
 
@@ -57,10 +59,10 @@ class MinIntervalPacer:
 
 
 def _require_credentials() -> None:
-    if not EMAIL or not API_TOKEN:
+    if not EMAIL or not API_TOKEN or not JIRA_URL:
         print(
             "Missing Jira credentials. Set JIRA_USER_EMAIL and JIRA_API_KEY in your environment "
-            "or `.env`. Optional: JIRA_BASE_URL.",
+            "or `.env`, and set JIRA_CLOUD_ID.",
             file=sys.stderr,
         )
         sys.exit(1)

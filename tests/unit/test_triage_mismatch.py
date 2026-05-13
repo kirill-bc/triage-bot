@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from jira_issue_fetcher import FetchedIssue
-from triage_mismatch import TriageMismatchFlags, compute_mismatch_flags
-from triage_recommendation_parser import TriageRecommendation
+from triage_service.adapters.jira_issue_fetcher import FetchedIssue
+from triage_service.core.triage_mismatch import TriageMismatchFlags, compute_mismatch_flags
+from triage_service.core.triage_recommendation_parser import TriageRecommendation
 
 
 def _issue(**overrides: object) -> FetchedIssue:

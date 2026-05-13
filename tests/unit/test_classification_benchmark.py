@@ -7,13 +7,13 @@ from pathlib import Path
 import httpx
 import pytest
 
-from jira_issue_fetcher import FetchedIssue, JiraIssueFetcher
-from triage_recommendation_parser import TriageRecommendation
+from triage_service.adapters.jira_issue_fetcher import FetchedIssue, JiraIssueFetcher
+from triage_service.core.triage_recommendation_parser import TriageRecommendation
 
 
 @pytest.mark.unit
 def test_load_benchmark_csv_parses_header_and_rows(tmp_path: Path) -> None:
-    from classification_benchmark import BenchmarkCsvRow, load_benchmark_csv
+    from scripts.benchmark.classification_benchmark import BenchmarkCsvRow, load_benchmark_csv
 
     csv_path = tmp_path / "bench.csv"
     csv_path.write_text(
@@ -46,7 +46,10 @@ def test_load_benchmark_csv_parses_header_and_rows(tmp_path: Path) -> None:
 
 @pytest.mark.unit
 def test_score_stable_bug_success_when_bug_and_priority_matches_jira() -> None:
-    from classification_benchmark import BenchmarkCsvRow, score_benchmark_prediction
+    from scripts.benchmark.classification_benchmark import (
+        BenchmarkCsvRow,
+        score_benchmark_prediction,
+    )
 
     row = BenchmarkCsvRow(
         benchmark_bucket="stable_bug",
@@ -78,7 +81,10 @@ def test_score_stable_bug_success_when_bug_and_priority_matches_jira() -> None:
 
 @pytest.mark.unit
 def test_score_stable_bug_fails_when_priority_differs_from_jira() -> None:
-    from classification_benchmark import BenchmarkCsvRow, score_benchmark_prediction
+    from scripts.benchmark.classification_benchmark import (
+        BenchmarkCsvRow,
+        score_benchmark_prediction,
+    )
 
     row = BenchmarkCsvRow(
         benchmark_bucket="stable_bug",
@@ -110,7 +116,10 @@ def test_score_stable_bug_fails_when_priority_differs_from_jira() -> None:
 
 @pytest.mark.unit
 def test_score_story_from_bug_success_when_story() -> None:
-    from classification_benchmark import BenchmarkCsvRow, score_benchmark_prediction
+    from scripts.benchmark.classification_benchmark import (
+        BenchmarkCsvRow,
+        score_benchmark_prediction,
+    )
 
     row = BenchmarkCsvRow(
         benchmark_bucket="story_from_bug",
@@ -142,7 +151,10 @@ def test_score_story_from_bug_success_when_story() -> None:
 
 @pytest.mark.unit
 def test_score_story_from_bug_fails_when_bug() -> None:
-    from classification_benchmark import BenchmarkCsvRow, score_benchmark_prediction
+    from scripts.benchmark.classification_benchmark import (
+        BenchmarkCsvRow,
+        score_benchmark_prediction,
+    )
 
     row = BenchmarkCsvRow(
         benchmark_bucket="story_from_bug",
@@ -174,7 +186,10 @@ def test_score_story_from_bug_fails_when_bug() -> None:
 
 @pytest.mark.unit
 def test_score_misprioritized_bug_success_when_bug_and_priority_matches_human_fix() -> None:
-    from classification_benchmark import BenchmarkCsvRow, score_benchmark_prediction
+    from scripts.benchmark.classification_benchmark import (
+        BenchmarkCsvRow,
+        score_benchmark_prediction,
+    )
 
     row = BenchmarkCsvRow(
         benchmark_bucket="misprioritized_bug",
@@ -206,7 +221,10 @@ def test_score_misprioritized_bug_success_when_bug_and_priority_matches_human_fi
 
 @pytest.mark.unit
 def test_score_misprioritized_bug_fails_when_model_echoes_old_wrong_priority() -> None:
-    from classification_benchmark import BenchmarkCsvRow, score_benchmark_prediction
+    from scripts.benchmark.classification_benchmark import (
+        BenchmarkCsvRow,
+        score_benchmark_prediction,
+    )
 
     row = BenchmarkCsvRow(
         benchmark_bucket="misprioritized_bug",
@@ -238,12 +256,12 @@ def test_score_misprioritized_bug_fails_when_model_echoes_old_wrong_priority() -
 
 @pytest.mark.unit
 def test_aggregate_bucket_accuracy_counts_successes() -> None:
-    from classification_benchmark import (
+    from scripts.benchmark.classification_benchmark import (
         BenchmarkCsvRow,
         aggregate_bucket_summaries,
         score_benchmark_prediction,
     )
-    from triage_recommendation_parser import TriageRecommendation
+    from triage_service.core.triage_recommendation_parser import TriageRecommendation
 
     row_stable = BenchmarkCsvRow(
         benchmark_bucket="stable_bug",
@@ -290,7 +308,10 @@ def test_aggregate_bucket_accuracy_counts_successes() -> None:
 
 @pytest.mark.unit
 def test_score_benchmark_skipped_records_failure() -> None:
-    from classification_benchmark import BenchmarkCsvRow, score_benchmark_skipped
+    from scripts.benchmark.classification_benchmark import (
+        BenchmarkCsvRow,
+        score_benchmark_skipped,
+    )
 
     row = BenchmarkCsvRow(
         benchmark_bucket="stable_bug",
@@ -307,12 +328,12 @@ def test_score_benchmark_skipped_records_failure() -> None:
 
 @pytest.mark.unit
 def test_aggregate_overall_accuracy() -> None:
-    from classification_benchmark import (
+    from scripts.benchmark.classification_benchmark import (
         BenchmarkCsvRow,
         aggregate_overall,
         score_benchmark_prediction,
     )
-    from triage_recommendation_parser import TriageRecommendation
+    from triage_service.core.triage_recommendation_parser import TriageRecommendation
 
     row = BenchmarkCsvRow(
         benchmark_bucket="story_from_bug",
@@ -350,7 +371,10 @@ def test_aggregate_overall_accuracy() -> None:
 
 @pytest.mark.unit
 def test_ordered_unique_issue_keys_preserves_order_and_dedups() -> None:
-    from classification_benchmark import BenchmarkCsvRow, ordered_unique_issue_keys
+    from scripts.benchmark.classification_benchmark import (
+        BenchmarkCsvRow,
+        ordered_unique_issue_keys,
+    )
 
     rows = [
         BenchmarkCsvRow("stable_bug", "BC-2", "", "", "", ""),
@@ -362,14 +386,14 @@ def test_ordered_unique_issue_keys_preserves_order_and_dedups() -> None:
 
 @pytest.mark.unit
 def test_load_benchmark_issue_fetch_cache_missing_returns_none(tmp_path: Path) -> None:
-    from classification_benchmark import load_benchmark_issue_fetch_cache
+    from scripts.benchmark.classification_benchmark import load_benchmark_issue_fetch_cache
 
     assert load_benchmark_issue_fetch_cache(tmp_path / "missing.json") is None
 
 
 @pytest.mark.unit
 def test_benchmark_issue_fetch_cache_roundtrip(tmp_path: Path) -> None:
-    from classification_benchmark import (
+    from scripts.benchmark.classification_benchmark import (
         load_benchmark_issue_fetch_cache,
         write_benchmark_issue_fetch_cache,
     )
@@ -401,13 +425,13 @@ def test_benchmark_issue_fetch_cache_roundtrip(tmp_path: Path) -> None:
 def test_merge_cached_issues_with_fetch_only_hits_network_for_missing_keys(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from classification_benchmark import merge_cached_issues_with_fetch
+    from scripts.benchmark.classification_benchmark import merge_cached_issues_with_fetch
 
     monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
     monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
-    monkeypatch.setenv("JIRA_BASE_URL", "https://example.atlassian.net")
+    monkeypatch.setenv("JIRA_CLOUD_ID", "cloud-id-test")
     monkeypatch.setenv("JIRA_USER_EMAIL", "bot@example.com")
-    from settings import AppSettings
+    from triage_service.core.settings import AppSettings
 
     settings = AppSettings()
     cached = FetchedIssue(

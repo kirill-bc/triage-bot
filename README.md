@@ -6,11 +6,11 @@ Jira Triage is an MVP service that accepts a triage trigger, fetches Jira issue 
 
 The repository currently includes:
 
-- a working `POST /triage` API that validates the request, runs synchronous triage (fetch → classify → optional priority), and returns `status: completed|failed` with a recommendation or `TriageFailure` (also invocable locally via `scripts/run_triage_cli.py` with `source=manual_cli`). When `JIRA_BASE_URL` and `JIRA_USER_EMAIL` are configured, successful triage applies Jira labels/comments via `jira_action_executor` (see below); failures do not touch the issue.
+- a working `POST /triage` API that validates the request, runs synchronous triage (fetch → classify → optional priority), and returns `status: completed|failed` with a recommendation or `TriageFailure` (also invocable locally via `scripts/run_triage_cli.py` with `source=manual_cli`). When `JIRA_CLOUD_ID` and `JIRA_USER_EMAIL` are configured, successful triage applies Jira labels/comments via `src/triage_service/adapters/jira_action_executor.py` (see below); failures do not touch the issue.
 - Jira issue fetch support (`summary`, `description`, `issue type`, `priority`, `reporter`)
-- bundled **policy text** for model context (`policy/`) and a **`policy_context`** loader
-- **prompt composer** for separate classification vs priority model inputs (`prompt_composer.py`)
-- **strict model output parsing** (`triage_recommendation_parser.py`) and a **typed failure shape** for upstream and schema errors (`triage_fallback.py`)
+- bundled **policy text** for model context (`src/triage_service/core/policy/`) and a **`policy_context`** loader
+- **prompt composer** for separate classification vs priority model inputs (`src/triage_service/core/prompt_composer.py`)
+- **strict model output parsing** (`src/triage_service/core/triage_recommendation_parser.py`) and a **typed failure shape** for upstream and schema errors (`src/triage_service/core/triage_fallback.py`)
 - CI gates for linting, type checking, and unit/integration tests
 - local helper scripts for repeatable test runs and manual Jira fetch smoke checks
 
@@ -18,27 +18,26 @@ See `TODO.md` for the active implementation backlog.
 
 ## Repository layout
 
-- `triage_api.py`: FastAPI app, `POST /triage` request/response contract, and dependency-injectable triage runner
-- `triage_handler.py`: synchronous pipeline, `TriageRunner` / `TriageActionExecutor` protocols; `build_default_triage_handler()` uses `JiraTriageActionExecutor` when Jira base URL and user email are set, otherwise a no-op executor
-- `jira_issue_fetcher.py`: Jira REST client and response normalization (includes `reporter_account_id` when Jira returns it, for @mentions in mismatch comments)
-- `jira_action_executor.py`: on success, applies `ai-reviewed` plus mismatch labels and a templated **TriageBot** ADF comment when needed; on `TriageFailure`, performs no Jira writes
-- `openrouter_inference_client.py`: OpenRouter chat completions using `OPENROUTER_MODEL` (see `settings.py`)
-- `settings.py`: environment-backed runtime settings
-- `core_config.py`: triage policy/config defaults (project allowlist; stabilization delay and dedupe live in the Jira-side scheduled rule)
-- `policy_context.py`: loads bug and priority definition text from `policy/` for prompts
-- `prompt_composer.py`: builds classification-only and priority-only prompt strings from policy + issue
-- `triage_recommendation_parser.py`: validates merged LLM JSON into `TriageRecommendation` (throws `InvalidTriageRecommendationError` when invalid)
-- `triage_mismatch.py`: `compute_mismatch_flags(issue, recommendation)` for deterministic type/priority mismatch (Jira executor / comments)
-- `triage_fallback.py`: `TriageFailure` plus `fallback_for_exception()` to map fetch/inference/parse errors to a stable category + message for orchestration
+- `src/triage_service/api/triage_api.py`: FastAPI app, `POST /triage` request/response contract, and dependency-injectable triage runner
+- `src/triage_service/core/triage_handler.py`: synchronous pipeline, `TriageRunner` / `TriageActionExecutor` protocols; `build_default_triage_handler()` uses `JiraTriageActionExecutor` when Jira base URL and user email are set, otherwise a no-op executor
+- `src/triage_service/adapters/jira_issue_fetcher.py`: Jira REST client and response normalization (includes `reporter_account_id` when Jira returns it, for @mentions in mismatch comments)
+- `src/triage_service/adapters/jira_action_executor.py`: on success, applies `ai-reviewed` plus mismatch labels and a templated **TriageBot** ADF comment when needed; on `TriageFailure`, performs no Jira writes
+- `src/triage_service/adapters/openrouter_inference_client.py`: OpenRouter chat completions using `OPENROUTER_MODEL` (see `src/triage_service/core/settings.py`)
+- `src/triage_service/core/settings.py`: environment-backed runtime settings, including `TRIAGE_ALLOWED_PROJECTS` allowlist parsing
+- `src/triage_service/core/policy_context.py`: loads bug and priority definition text from `src/triage_service/core/policy/` for prompts
+- `src/triage_service/core/prompt_composer.py`: builds classification-only and priority-only prompt strings from policy + issue
+- `src/triage_service/core/triage_recommendation_parser.py`: validates merged LLM JSON into `TriageRecommendation` (throws `InvalidTriageRecommendationError` when invalid)
+- `src/triage_service/core/triage_mismatch.py`: `compute_mismatch_flags(issue, recommendation)` for deterministic type/priority mismatch (Jira executor / comments)
+- `src/triage_service/core/triage_fallback.py`: `TriageFailure` plus `fallback_for_exception()` to map fetch/inference/parse errors to a stable category + message for orchestration
 - `triage_manual_cli.py`: infer project from `PROJ-123` keys, run `TriageHandler.run_sync(..., "manual_cli")`, and `main()` for the CLI
 - `dev_tunnel.py`: load repo `.env`, start `uvicorn`, then run `ngrok` or `cloudflared` for Jira-facing HTTPS during local development (`scripts/run_dev_tunnel.py`)
-- `policy/`: `bug_definition.md` and `priority_definition.md` (edit to match your org)
+- `src/triage_service/core/policy/`: `bug_definition.md` and `priority_definition.md` (edit to match your org)
 - `scripts/fetch_jira_issue.py`: manual CLI smoke script for a single Jira issue
 - `scripts/benchmark/build_benchmark_dataset.py`: optional Jira → CSV sampler for benchmark buckets (changelog-derived rows)
 - `scripts/benchmark/run_classification_benchmark.py`: run the same classify → optional priority pipeline over `data/issue_benchmark_dataset.csv` for one or more OpenRouter models; writes JSONL per model plus `summary.json` (NoOp Jira executor; no labels/comments)
 - `scripts/benchmark/summarize_benchmark_rows.py`: offline aggregator over any folder of `rows_*.jsonl` benchmark outputs — per-bucket and overall accuracy, latency stats, issue-type confusion matrix, and failure breakdown; optional folder-level JSON dump
-- `classification_benchmark.py`: CSV loader and bucket-aware scoring (stable bugs vs human-corrected type/priority)
-- `benchmark_summary.py`: pure-logic helpers used by `summarize_benchmark_rows.py` (JSONL parsing, latency/failure aggregation, summary serialization)
+- `scripts/benchmark/classification_benchmark.py`: CSV loader and bucket-aware scoring (stable bugs vs human-corrected type/priority)
+- `scripts/benchmark/benchmark_summary.py`: pure-logic helpers used by `summarize_benchmark_rows.py` (JSONL parsing, latency/failure aggregation, summary serialization)
 - `scripts/run_dev_tunnel.py`: uvicorn + tunnel helper (uses `dev_tunnel.main`)
 - `scripts/run_tests.sh`: local entrypoint for the standard test workflow
 - `tests/`: unit, integration, and lint test groups
@@ -52,7 +51,7 @@ See `TODO.md` for the active implementation backlog.
 - **OpenRouter adapter**: `OpenRouterInferenceClient` posts chat completions using the configured model id
 - **Recommendation parsing**: `parse_triage_recommendation_text()` enforces the merged triage JSON contract; step-specific helpers (`parse_classification_step_text`, `parse_priority_step_text`) support the sequential model calls before merging into `TriageRecommendation`
 - **Failure mapping**: `fallback_for_exception()` maps fetch, inference, parse, `ProjectNotAllowedError`, and unexpected errors into `TriageFailure` (Phase 1: executors should not post Jira comments or labels on failure)
-- **Policy context**: `load_policy_context()` reads UTF-8 definitions from `policy/` (override `policy_dir` in tests)
+- **Policy context**: `load_policy_context()` reads UTF-8 definitions from `src/triage_service/core/policy/` (override `policy_dir` in tests)
 - **Tooling**: `flake8`, `mypy`, and pytest marker-based gates wired in CI
 
 ## Local development
@@ -66,7 +65,8 @@ From repository root:
    - `JIRA_API_KEY`
    - `OPENROUTER_API_KEY`
    - optional: `OPENROUTER_MODEL` (defaults to `openai/gpt-4o-mini` if unset)
-   - optional: `JIRA_BASE_URL`, `JIRA_USER_EMAIL`, logging values
+   - optional: `TRIAGE_PROMPT_TEMPLATES_PATH` (path to external JSON prompt templates; defaults to `src/triage_service/core/prompt_templates.json`)
+   - optional: `JIRA_CLOUD_ID`, `JIRA_USER_EMAIL`, logging values
 3. Run quality gates:
    - `.venv/bin/pytest -m lint`
    - `.venv/bin/mypy .`
@@ -89,7 +89,7 @@ The script calls Jira REST and prints normalized JSON for the issue.
 
 ## Benchmark dataset (optional)
 
-`scripts/benchmark/build_benchmark_dataset.py` is a standalone helper that queries Jira Cloud and writes a CSV of issue keys plus last priority / issue-type changelog transitions, grouped into benchmark buckets (misprioritized done bugs, stories converted from bugs, and “stable” bugs with no priority or issuetype history). It uses the same `.env` credentials as the triage app: **`JIRA_USER_EMAIL`**, **`JIRA_API_KEY`**, and optional **`JIRA_BASE_URL`**. Jira Cloud has removed **`GET /rest/api/3/search`** (HTTP 410); the script uses **`GET /rest/api/3/search/jql`** with **`nextPageToken`** pagination and **stops fetching further pages once each bucket reaches its configured target** (defaults: `--per-priority 10`, `--stories-from-bugs 50`, `--stable-bugs 50`). Example:
+`scripts/benchmark/build_benchmark_dataset.py` is a standalone helper that queries Jira Cloud and writes a CSV of issue keys plus last priority / issue-type changelog transitions, grouped into benchmark buckets (misprioritized done bugs, stories converted from bugs, and “stable” bugs with no priority or issuetype history). It uses the same `.env` credentials as the triage app: **`JIRA_USER_EMAIL`**, **`JIRA_API_KEY`**, and **`JIRA_CLOUD_ID`**. Jira Cloud has removed **`GET /rest/api/3/search`** (HTTP 410); the script uses **`GET /rest/api/3/search/jql`** with **`nextPageToken`** pagination and **stops fetching further pages once each bucket reaches its configured target** (defaults: `--per-priority 10`, `--stories-from-bugs 50`, `--stable-bugs 50`). Example:
 
 ```bash
 .venv/bin/python scripts/benchmark/build_benchmark_dataset.py -o benchmark_dataset.csv
@@ -116,7 +116,7 @@ Walk every nested run, suppress the per-model tables, and write a combined JSON:
     --output-json benchmark_runs/rows_summary.json
 ```
 
-The per-model numbers match `summary.json` from the original benchmark run by reusing `aggregate_bucket_summaries`, `aggregate_overall`, and `confusion_matrix_issue_type` from `classification_benchmark.py`.
+The per-model numbers match `summary.json` from the original benchmark run by reusing `aggregate_bucket_summaries`, `aggregate_overall`, and `confusion_matrix_issue_type` from `scripts/benchmark/classification_benchmark.py`.
 
 ## Local full triage (CLI)
 
@@ -127,6 +127,47 @@ Run the same synchronous pipeline as `POST /triage` without Jira Automation (Ope
 ```
 
 Optional `--project TJC` overrides the project key inferred from the issue key (`TJC` from `TJC-123`). The handler receives `source="manual_cli"`; stdout is JSON with either `status: completed` and `recommendation` or `status: failed` and `failure`. Exit code `0` on completed triage, `1` on `TriageFailure`, `2` on settings validation errors.
+
+## Jira Automation recipe (scheduled scan)
+
+The production integration model is Jira Cloud Automation running on a schedule and calling
+`POST /triage` once per matching issue.
+
+- Rule cadence: every 5 minutes (or similar), aligned to the JQL window.
+- Reference JQL:
+  `project = TJC AND issuetype = Bug AND labels not in (ai-reviewed) AND created >= -30m AND created <= -5m`
+- Rationale:
+  - `created <= -5m`: stabilization delay before first triage attempt.
+  - `labels not in (ai-reviewed)`: dedupe marker so successful issues drop out.
+  - `created >= -30m`: retry backstop window for temporary failures.
+
+For the **Send web request** action, use custom JSON data:
+
+```json
+{
+  "issue_key": "{{issue.key}}",
+  "project": "{{issue.project.key}}",
+  "source": "bug_created"
+}
+```
+
+Use `"source": "bug_created"` for a newly-created Bug rule and `"source": "priority_changed"`
+for a priority-change rule.
+
+### `ai-reviewed` lifecycle
+
+- On successful triage (mismatch or not), the executor applies `ai-reviewed`.
+- On triage failure (`status: failed` / `TriageFailure`), no labels or comments are posted.
+- To force re-triage on an issue that already succeeded, remove `ai-reviewed` manually.
+- If an issue is older than the JQL window and still has no `ai-reviewed`, treat it as a
+  manual follow-up case and run triage via CLI or direct API call.
+
+### MVP limitations
+
+- Jira mutations are advisory only: no automatic issue-type or priority field update.
+- Confidence is metadata for operators and API/audit output; it is not used as a direct
+  mutation threshold.
+- Retry/dedupe behavior is owned by Jira Automation JQL and labels, not by an internal queue.
 
 ## Local HTTP server and tunnel (Jira Automation → your laptop)
 
@@ -142,9 +183,9 @@ Use this when you want Jira Cloud **Send web request** to hit `POST /triage` on 
 
    Use Cloudflare instead of ngrok: `.venv/bin/python scripts/run_dev_tunnel.py --tunnel cloudflared`. Override bind port with `--port 8080` (and pass the same port to your tunnel if you run it manually).
 
-   The helper sets **`TRIAGE_DEBUG_INBOUND=1`** for the uvicorn child process so **every `POST /triage` prints the raw body to stderr** (lines prefixed with `[TRIAGE_DEBUG_INBOUND]`) before FastAPI validates it. That shows exactly what Jira sent when you see HTTP 422 from missing `issue_key` / `project` / `source`. Pass **`--no-inbound-log`** to disable. For a plain uvicorn run, you can set the same variable yourself: `TRIAGE_DEBUG_INBOUND=1 .venv/bin/uvicorn triage_api:app --host 0.0.0.0 --port 8000`.
+   The helper sets **`TRIAGE_DEBUG_INBOUND=1`** for the uvicorn child process so **every `POST /triage` prints the raw body to stderr** (lines prefixed with `[TRIAGE_DEBUG_INBOUND]`) before FastAPI validates it. That shows exactly what Jira sent when you see HTTP 422 from missing `issue_key` / `project` / `source`. Pass **`--no-inbound-log`** to disable. For a plain uvicorn run, you can set the same variable yourself: `TRIAGE_DEBUG_INBOUND=1 .venv/bin/uvicorn triage_service.api.triage_api:app --app-dir src --host 0.0.0.0 --port 8000`.
 
-   **Manual alternative:** run `.venv/bin/uvicorn triage_api:app --host 0.0.0.0 --port 8000` in one terminal with `.env` exported, then `ngrok http 8000` or `cloudflared tunnel --url http://127.0.0.1:8000` in another.
+   **Manual alternative:** run `.venv/bin/uvicorn triage_service.api.triage_api:app --app-dir src --host 0.0.0.0 --port 8000` in one terminal with `.env` exported, then `ngrok http 8000` or `cloudflared tunnel --url http://127.0.0.1:8000` in another.
 
 4. In Jira Automation, set the web request URL to `{tunnel_base}/triage` (no trailing slash before `triage`). The body must be **your JSON** with `issue_key`, `project`, and `source` — use **Custom data** (or equivalent). Use `"source": "bug_created"` for a new-bug rule and `"source": "priority_changed"` for a priority-change rule (the string must match the API enum exactly). If Jira sends a default payload such as `{"issues":[]}`, the API will return **422** because that is not the triage contract.
 

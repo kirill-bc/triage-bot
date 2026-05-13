@@ -10,8 +10,8 @@ import os
 
 import pytest
 
-from openrouter_inference_client import OpenRouterInferenceClient
-from settings import load_settings
+from triage_service.adapters.openrouter_inference_client import OpenRouterInferenceClient
+from triage_service.core.settings import load_settings
 
 
 def _truthy_env(name: str) -> bool:

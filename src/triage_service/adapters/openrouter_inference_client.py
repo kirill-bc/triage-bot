@@ -6,7 +6,7 @@ from typing import Any
 
 import httpx
 
-from settings import AppSettings
+from triage_service.core.settings import AppSettings
 
 OPENROUTER_CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions"
 

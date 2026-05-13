@@ -8,17 +8,20 @@ from typing import Any
 import httpx
 import pytest
 
-from jira_action_executor import JiraActionExecutorError, JiraTriageActionExecutor
-from jira_issue_fetcher import FetchedIssue
-from settings import AppSettings
-from triage_fallback import TriageFailure
-from triage_recommendation_parser import TriageRecommendation
+from triage_service.adapters.jira_action_executor import (
+    JiraActionExecutorError,
+    JiraTriageActionExecutor,
+)
+from triage_service.adapters.jira_issue_fetcher import FetchedIssue
+from triage_service.core.settings import AppSettings
+from triage_service.core.triage_fallback import TriageFailure
+from triage_service.core.triage_recommendation_parser import TriageRecommendation
 
 
 def _settings(monkeypatch: pytest.MonkeyPatch) -> AppSettings:
     monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
     monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
-    monkeypatch.setenv("JIRA_BASE_URL", "https://example.atlassian.net")
+    monkeypatch.setenv("JIRA_CLOUD_ID", "cloud-id-test")
     monkeypatch.setenv("JIRA_USER_EMAIL", "bot@example.com")
     return AppSettings()
 
@@ -93,7 +96,7 @@ def test_executor_applies_only_ai_reviewed_when_no_mismatch(
 
     assert len(requests) == 1
     assert requests[0].method == "PUT"
-    assert requests[0].url.path == "/rest/api/3/issue/TJC-1"
+    assert requests[0].url.path == "/ex/jira/cloud-id-test/rest/api/3/issue/TJC-1"
     body = json.loads(requests[0].content.decode())
     assert body == {"update": {"labels": [{"add": "ai-reviewed"}]}}
     assert "/comment" not in str(requests[0].url)
@@ -134,7 +137,7 @@ def test_executor_posts_mismatch_comment_with_reporter_mention(
     assert adds == ["ai-reviewed", "ai-priority-mismatch"]
 
     assert requests[1].method == "POST"
-    assert requests[1].url.path == "/rest/api/3/issue/TJC-2/comment"
+    assert requests[1].url.path == "/ex/jira/cloud-id-test/rest/api/3/issue/TJC-2/comment"
     comment_body = json.loads(requests[1].content.decode())
     raw = requests[1].content.decode()
     assert "Confidence" not in raw
@@ -235,7 +238,6 @@ def test_executor_raises_when_jira_rest_target_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("JIRA_CLOUD_ID", raising=False)
-    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
     monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
     monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
     monkeypatch.setenv("JIRA_USER_EMAIL", "bot@example.com")
@@ -254,7 +256,6 @@ def test_executor_raises_when_jira_rest_target_missing(
             )
     msg = str(exc.value).lower()
     assert "jira_cloud_id" in msg or "cloud_id" in msg
-    assert "jira_base_url" in msg or "base_url" in msg
 
 
 @pytest.mark.unit

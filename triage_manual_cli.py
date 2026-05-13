@@ -9,9 +9,9 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from triage_fallback import TriageFailure
-from triage_handler import TriageRunner, build_default_triage_handler
-from triage_recommendation_parser import TriageRecommendation
+from triage_service.core.triage_fallback import TriageFailure
+from triage_service.core.triage_handler import TriageRunner, build_default_triage_handler
+from triage_service.core.triage_recommendation_parser import TriageRecommendation
 
 _ROOT = Path(__file__).resolve().parent
 
@@ -66,7 +66,7 @@ def main(argv: list[str] | None = None) -> int:
 
     dotenv_path = _ROOT / ".env"
     try:
-        from settings import load_settings
+        from triage_service.core.settings import load_settings
 
         load_settings(env_file=dotenv_path if dotenv_path.is_file() else None)
     except ValidationError as exc:

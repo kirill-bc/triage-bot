@@ -5,18 +5,20 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from settings import AppSettings, load_settings
+from triage_service.core.settings import AppSettings, load_settings
 
 _APP_ENV_KEYS = (
     "JIRA_API_KEY",
     "OPENROUTER_API_KEY",
     "OPENROUTER_MODEL",
-    "JIRA_BASE_URL",
     "JIRA_CLOUD_ID",
     "JIRA_USER_EMAIL",
     "LOG_LEVEL",
     "LOGGING_API_KEY",
     "LOGGING_ENDPOINT",
+    "TRIAGE_ALLOWED_PROJECTS",
+    "TRIAGE_ANALYSIS_DELAY_SECONDS",
+    "TRIAGE_DEDUPE_DEFERRAL_ENABLED",
 )
 
 
@@ -71,7 +73,6 @@ def test_load_settings_loads_required_keys_from_dotenv(
         "JIRA_API_KEY=jira-token\n"
         "OPENROUTER_API_KEY=or-token\n"
         "OPENROUTER_MODEL=openai/gpt-4o\n"
-        "JIRA_BASE_URL=https://example.atlassian.net\n"
         "JIRA_CLOUD_ID=abc-123-cloud\n"
         "JIRA_USER_EMAIL=triage@example.com\n"
         "LOG_LEVEL=DEBUG\n"
@@ -83,7 +84,6 @@ def test_load_settings_loads_required_keys_from_dotenv(
     assert settings.jira_api_key == "jira-token"
     assert settings.openrouter_api_key == "or-token"
     assert settings.openrouter_model == "openai/gpt-4o"
-    assert settings.jira_base_url == "https://example.atlassian.net"
     assert settings.jira_cloud_id == "abc-123-cloud"
     assert settings.jira_user_email == "triage@example.com"
     assert settings.log_level == "DEBUG"
@@ -102,7 +102,6 @@ def test_load_settings_optional_fields_default_when_omitted(
     )
     settings = load_settings()
     assert settings.openrouter_model == "openai/gpt-4o-mini"
-    assert settings.jira_base_url is None
     assert settings.jira_cloud_id is None
     assert settings.jira_user_email is None
     assert settings.log_level == "INFO"
@@ -121,3 +120,64 @@ def test_app_settings_reads_from_process_environment(
     settings = AppSettings()
     assert settings.jira_api_key == "from-env"
     assert settings.openrouter_api_key == "or-from-env"
+
+
+@pytest.mark.unit
+def test_load_settings_default_allowlist_is_tjc_then_bc(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text(
+        "JIRA_API_KEY=jira-token\nOPENROUTER_API_KEY=or-token\n",
+        encoding="utf-8",
+    )
+    settings = load_settings()
+    assert settings.allowed_projects == ["TJC", "BC"]
+
+
+@pytest.mark.unit
+def test_load_settings_allowlist_from_comma_separated_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text(
+        "JIRA_API_KEY=jira-token\n"
+        "OPENROUTER_API_KEY=or-token\n"
+        "TRIAGE_ALLOWED_PROJECTS= BC , TJC \n",
+        encoding="utf-8",
+    )
+    settings = load_settings()
+    assert settings.allowed_projects == ["BC", "TJC"]
+
+
+@pytest.mark.unit
+def test_load_settings_rejects_empty_allowlist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text(
+        "JIRA_API_KEY=jira-token\n"
+        "OPENROUTER_API_KEY=or-token\n"
+        "TRIAGE_ALLOWED_PROJECTS=\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValidationError) as exc:
+        load_settings()
+    assert "allowed_projects" in str(exc.value).lower()
+
+
+@pytest.mark.unit
+def test_load_settings_ignores_retired_delay_and_dedupe_env_vars(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text(
+        "JIRA_API_KEY=jira-token\nOPENROUTER_API_KEY=or-token\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TRIAGE_ANALYSIS_DELAY_SECONDS", "120")
+    monkeypatch.setenv("TRIAGE_DEDUPE_DEFERRAL_ENABLED", "true")
+    settings = load_settings()
+    assert settings.allowed_projects == ["TJC", "BC"]
+    assert not hasattr(settings, "analysis_delay_seconds")
+    assert not hasattr(settings, "dedupe_deferral_enabled")

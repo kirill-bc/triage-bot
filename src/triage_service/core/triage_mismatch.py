@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from jira_issue_fetcher import FetchedIssue
-from triage_recommendation_parser import TriageRecommendation
+from triage_service.adapters.jira_issue_fetcher import FetchedIssue
+from triage_service.core.triage_recommendation_parser import TriageRecommendation
 
 
 @dataclass(frozen=True)

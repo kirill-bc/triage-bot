@@ -16,11 +16,17 @@ from pathlib import Path
 from pydantic import ValidationError
 
 _ROOT = Path(__file__).resolve().parents[1]
+_SRC = _ROOT / "src"
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
 
-from jira_issue_fetcher import JiraIssueFetcher, JiraIssueFetchError  # noqa: E402
-from settings import load_settings  # noqa: E402
+from triage_service.adapters.jira_issue_fetcher import (  # noqa: E402
+    JiraIssueFetchError,
+    JiraIssueFetcher,
+)
+from triage_service.core.settings import load_settings  # noqa: E402
 
 
 def main() -> int:

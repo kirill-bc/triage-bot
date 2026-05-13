@@ -2,7 +2,7 @@
 
 Pure helpers (no Jira/OpenRouter dependencies) so a folder of ``rows_*.jsonl``
 files can be analysed offline. Reuses the scoring/aggregation primitives from
-:mod:`classification_benchmark` to stay consistent with ``summary.json``.
+:mod:`scripts.benchmark.classification_benchmark` to stay consistent with ``summary.json``.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
-from classification_benchmark import (
+from scripts.benchmark.classification_benchmark import (
     BenchmarkBucketSummary,
     BenchmarkOverallSummary,
     BenchmarkRowScore,
@@ -25,7 +25,7 @@ from classification_benchmark import (
     aggregate_overall,
     confusion_matrix_issue_type,
 )
-from triage_recommendation_parser import IssueTypeLiteral
+from triage_service.core.triage_recommendation_parser import IssueTypeLiteral
 
 _VALID_ISSUE_TYPES: frozenset[str] = frozenset({"Bug", "Story"})
 

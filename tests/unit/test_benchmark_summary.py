@@ -64,7 +64,7 @@ def _row(
 
 @pytest.mark.unit
 def test_load_jsonl_rows_skips_blank_lines(tmp_path: Path) -> None:
-    from benchmark_summary import load_jsonl_rows
+    from scripts.benchmark.benchmark_summary import load_jsonl_rows
 
     path = tmp_path / "rows_x.jsonl"
     path.write_text(
@@ -81,7 +81,7 @@ def test_load_jsonl_rows_skips_blank_lines(tmp_path: Path) -> None:
 
 @pytest.mark.unit
 def test_load_jsonl_rows_raises_for_malformed_line(tmp_path: Path) -> None:
-    from benchmark_summary import load_jsonl_rows
+    from scripts.benchmark.benchmark_summary import load_jsonl_rows
 
     path = tmp_path / "rows_bad.jsonl"
     path.write_text(json.dumps(_row()) + "\nnot-json\n", encoding="utf-8")
@@ -92,7 +92,7 @@ def test_load_jsonl_rows_raises_for_malformed_line(tmp_path: Path) -> None:
 
 @pytest.mark.unit
 def test_compute_latency_stats_returns_zeros_for_empty() -> None:
-    from benchmark_summary import compute_latency_stats
+    from scripts.benchmark.benchmark_summary import compute_latency_stats
 
     stats = compute_latency_stats([])
 
@@ -107,7 +107,7 @@ def test_compute_latency_stats_returns_zeros_for_empty() -> None:
 
 @pytest.mark.unit
 def test_compute_latency_stats_computes_basic_aggregates() -> None:
-    from benchmark_summary import compute_latency_stats
+    from scripts.benchmark.benchmark_summary import compute_latency_stats
 
     stats = compute_latency_stats([100.0, 200.0, 300.0, 400.0, 500.0])
 
@@ -122,7 +122,7 @@ def test_compute_latency_stats_computes_basic_aggregates() -> None:
 
 @pytest.mark.unit
 def test_compute_failure_counts_groups_by_category() -> None:
-    from benchmark_summary import compute_failure_counts
+    from scripts.benchmark.benchmark_summary import compute_failure_counts
 
     records = [
         _row(outcome_kind="ok"),
@@ -142,7 +142,7 @@ def test_compute_failure_counts_groups_by_category() -> None:
 
 @pytest.mark.unit
 def test_summarize_model_run_aggregates_per_bucket_and_overall(tmp_path: Path) -> None:
-    from benchmark_summary import summarize_model_run
+    from scripts.benchmark.benchmark_summary import summarize_model_run
 
     records = [
         _row(bucket="stable_bug", success=True),
@@ -181,7 +181,7 @@ def test_summarize_model_run_aggregates_per_bucket_and_overall(tmp_path: Path) -
 
 @pytest.mark.unit
 def test_summarize_model_run_marks_failed_predictions_in_confusion(tmp_path: Path) -> None:
-    from benchmark_summary import summarize_model_run
+    from scripts.benchmark.benchmark_summary import summarize_model_run
 
     records = [
         _row(
@@ -210,7 +210,7 @@ def test_summarize_model_run_marks_failed_predictions_in_confusion(tmp_path: Pat
 
 @pytest.mark.unit
 def test_summarize_model_run_derives_model_from_first_record(tmp_path: Path) -> None:
-    from benchmark_summary import summarize_model_run
+    from scripts.benchmark.benchmark_summary import summarize_model_run
 
     records = [_row(model="x-ai/grok-4.3", bucket="stable_bug")]
 
@@ -221,7 +221,7 @@ def test_summarize_model_run_derives_model_from_first_record(tmp_path: Path) -> 
 
 @pytest.mark.unit
 def test_summarize_model_run_falls_back_to_filename_when_no_records(tmp_path: Path) -> None:
-    from benchmark_summary import summarize_model_run
+    from scripts.benchmark.benchmark_summary import summarize_model_run
 
     summary = summarize_model_run(
         records=[],
@@ -235,7 +235,7 @@ def test_summarize_model_run_falls_back_to_filename_when_no_records(tmp_path: Pa
 
 @pytest.mark.unit
 def test_discover_row_files_returns_sorted_rows_jsonl(tmp_path: Path) -> None:
-    from benchmark_summary import discover_row_files
+    from scripts.benchmark.benchmark_summary import discover_row_files
 
     (tmp_path / "rows_b.jsonl").write_text("", encoding="utf-8")
     (tmp_path / "rows_a.jsonl").write_text("", encoding="utf-8")
@@ -250,7 +250,10 @@ def test_discover_row_files_returns_sorted_rows_jsonl(tmp_path: Path) -> None:
 
 @pytest.mark.unit
 def test_format_summary_text_shows_model_buckets_and_overall(tmp_path: Path) -> None:
-    from benchmark_summary import format_summary_text, summarize_model_run
+    from scripts.benchmark.benchmark_summary import (
+        format_summary_text,
+        summarize_model_run,
+    )
 
     records = [
         _row(model="openai/gpt-4o-mini", bucket="stable_bug", success=True),
@@ -267,7 +270,7 @@ def test_format_summary_text_shows_model_buckets_and_overall(tmp_path: Path) -> 
 
 @pytest.mark.unit
 def test_summary_to_dict_mirrors_run_summary_keys(tmp_path: Path) -> None:
-    from benchmark_summary import summarize_model_run, summary_to_dict
+    from scripts.benchmark.benchmark_summary import summarize_model_run, summary_to_dict
 
     records = [_row(bucket="stable_bug", success=True)]
     summary = summarize_model_run(records=records, source_file=tmp_path / "rows_x.jsonl")

@@ -30,10 +30,13 @@ from dotenv import find_dotenv, load_dotenv
 from tqdm import tqdm
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+_SRC_ROOT = _REPO_ROOT / "src"
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
+if str(_SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SRC_ROOT))
 
-from classification_benchmark import (  # noqa: E402
+from scripts.benchmark.classification_benchmark import (  # noqa: E402
     BenchmarkBucketSummary,
     BenchmarkCsvRow,
     BenchmarkOverallSummary,
@@ -51,14 +54,18 @@ from classification_benchmark import (  # noqa: E402
     score_triage_outcome,
     write_benchmark_issue_fetch_cache,
 )
-from core_config import load_triage_core_config  # noqa: E402
-from jira_issue_fetcher import FetchedIssue, JiraIssueFetcher  # noqa: E402
-from openrouter_inference_client import OpenRouterInferenceClient  # noqa: E402
-from policy_context import load_policy_context  # noqa: E402
-from settings import AppSettings, load_settings  # noqa: E402
-from triage_fallback import TriageFailure  # noqa: E402
-from triage_handler import NoOpTriageActionExecutor, TriageHandler  # noqa: E402
-from triage_recommendation_parser import TriageRecommendation  # noqa: E402
+from triage_service.adapters.jira_issue_fetcher import (  # noqa: E402
+    FetchedIssue,
+    JiraIssueFetcher,
+)
+from triage_service.adapters.openrouter_inference_client import (  # noqa: E402
+    OpenRouterInferenceClient,
+)
+from triage_service.core.settings import AppSettings, load_settings  # noqa: E402
+from triage_service.core.policy_context import load_policy_context  # noqa: E402
+from triage_service.core.triage_fallback import TriageFailure  # noqa: E402
+from triage_service.core.triage_handler import NoOpTriageActionExecutor, TriageHandler  # noqa: E402
+from triage_service.core.triage_recommendation_parser import TriageRecommendation  # noqa: E402
 
 _LOG = logging.getLogger(__name__)
 
@@ -87,12 +94,11 @@ def _parse_models(raw: str | None, default_model: str) -> list[str]:
 
 
 def _build_handler(settings: AppSettings, model: str) -> TriageHandler:
-    core = load_triage_core_config()
     policy = load_policy_context()
     fetcher = JiraIssueFetcher(settings)
     inference = OpenRouterInferenceClient(settings, model_override=model)
     return TriageHandler(
-        allowed_projects=core.allowed_projects,
+        allowed_projects=settings.allowed_projects,
         fetcher=fetcher,
         inference=inference,
         policy=policy,

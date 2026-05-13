@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from policy_context import PolicyContextLoadError, load_policy_context
+from triage_service.core.policy_context import PolicyContextLoadError, load_policy_context
 
 
 @pytest.mark.unit

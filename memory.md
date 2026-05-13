@@ -2,7 +2,86 @@
 
 ## 2026-05-13
 
-- **Phase close (commit):** `pytest -m lint`, `mypy .`, and `pytest -m "unit or integration"` all green after adding `jira_rest_paths.py` (`jira_rest_v3_site_prefix`: prefer **`JIRA_CLOUD_ID`** → `https://api.atlassian.com/ex/jira/{id}` over **`JIRA_BASE_URL`**), wiring the prefix through **`JiraIssueFetcher`**, **`JiraTriageActionExecutor`**, and sequential **`TriageHandler`** (same REST root for fetch vs transitions/comments/labels). **Settings / `.env.example`:** optional `JIRA_CLOUD_ID` documented for Atlassian gateway REST. **OpenRouter:** `OpenRouterInferenceClient` accepts optional extra JSON body fields (e.g. provider routing) from settings when added later — tests cover passthrough. **Benchmark tooling:** `classification_benchmark.py`, `benchmark_summary.py`, `scripts/benchmark/{build_benchmark_dataset,run_classification_benchmark,summarize_benchmark_rows}.py`, `data/issue_benchmark_dataset.csv` (+ bucket CSVs), unit tests for benchmark math and Jira URL helper. **`benchmark_runs/`** added to `.gitignore` for local JSONL/cache outputs. **`TODO.md`** Post-MVP section updated: harness marked delivered; follow-up for strict 25×4 dataset balance. **`README.md`:** benchmark dataset build, run, and offline summarize sections (Jira `search/jql`, `nextPageToken`, 410 on legacy search).
+- **Phase close (verification + docs reconciliation):** ran gates from `.venv`:
+  `pytest -m lint`, `mypy .`, and `pytest -m "unit or integration"` (all green:
+  5 lint tests passed; mypy clean on 51 files; unit+integration 161 passed, 1 skipped).
+  Updated `README.md` with a Jira Automation scheduled-rule recipe (cadence + JQL +
+  request body), explicit `ai-reviewed` lifecycle, and MVP limitations. Reconciled
+  `TODO.md` §9 by marking architecture docs, local runbook, Jira automation setup,
+  `ai-reviewed` lifecycle, and MVP limitations as complete.
+
+- **Benchmark helpers moved under scripts/benchmark:** relocated
+  `classification_benchmark.py` and `benchmark_summary.py` from repo root to
+  `scripts/benchmark/` and removed root copies. Updated imports in benchmark scripts and
+  unit tests to `scripts.benchmark.*`, extended package-layout guard, and updated
+  lint/mypy targets plus README/TODO references. Added `scripts/__init__.py` and
+  `scripts/benchmark/__init__.py` to resolve mypy duplicate-module discovery.
+
+- **Jira REST prefix helper merged into adapters and cloud-id-only:** removed root
+  `jira_rest_paths.py` and added `src/triage_service/adapters/jira_rest.py` with
+  `jira_cloud_rest_v3_prefix(settings)`. Fetcher/executor/handler now rely only on
+  `JIRA_CLOUD_ID` (no `JIRA_BASE_URL` fallback in triage paths). Updated unit tests,
+  flake8/mypy paths, and README wording for triage env vars.
+
+- **Policy loader + policy files moved under core package:** relocated
+  `policy_context.py` to `src/triage_service/core/policy_context.py` and policy markdown files
+  to `src/triage_service/core/policy/`. Updated imports in core, tests, and benchmark script;
+  updated lint/mypy paths and packaging data (`core/policy/*.md`). Removed root
+  `policy_context.py` and root `policy/*.md`.
+
+- **Prompt files moved under core package:** relocated prompt builder to
+  `src/triage_service/core/prompt_composer.py` and default templates to
+  `src/triage_service/core/prompt_templates.json`; removed root copies. Updated
+  imports (`triage_handler`), lint/mypy paths, and prompt-composer tests to use
+  `triage_service.core.prompt_composer`.
+
+- **Prompt templates externalized:** moved hardcoded prompt bodies out of `prompt_composer.py`
+  into `prompt_templates.json` (JSON templates with placeholders for policy and issue fields).
+  `prompt_composer` now loads templates from that file by default and supports
+  `TRIAGE_PROMPT_TEMPLATES_PATH` for override/testing. Added unit coverage in
+  `tests/unit/test_prompt_composer.py` to verify an external JSON path is honored.
+  Verification: `pytest tests/unit/test_prompt_composer.py`, `pytest -m lint`,
+  `mypy .`, and `pytest -m unit` all green.
+
+- **Adapter module relocation (no root shims):** moved `jira_issue_fetcher.py`,
+  `jira_action_executor.py`, and `openrouter_inference_client.py` to
+  `src/triage_service/adapters/` and removed the root files. Updated imports across
+  core modules, scripts, benchmark paths, API-facing code, and unit/integration tests
+  to `triage_service.adapters.*`. Extended package-layout guard test with adapter module
+  assertions and updated `pyproject.toml` + flake8 lint targets to new file paths.
+  Verification: RED by failing `tests/unit/test_package_layout.py`, then green on targeted
+  adapter-focused test slice, plus `pytest -m lint`, `mypy .`, and `pytest -m unit`.
+
+- **Core module relocation (no root shims):** moved `triage_handler.py`, `triage_fallback.py`,
+  `triage_mismatch.py`, and `triage_recommendation_parser.py` to
+  `src/triage_service/core/` and removed the root files. Updated imports across API, CLI,
+  executor, benchmark modules, and affected unit tests to use `triage_service.core.*`.
+  Extended package-layout guard test to require the four modules under `core/` and assert
+  the root files are absent.
+  Verification: RED by failing `tests/unit/test_package_layout.py`, then green on targeted
+  core-related unit slice, plus `pytest -m lint`, `mypy .`, and `pytest -m unit`.
+
+- **API module relocation (no root shim):** moved `triage_api.py` to
+  `src/triage_service/api/triage_api.py` and removed the root file. Updated imports in
+  `tests/unit/test_post_triage.py` and `tests/unit/test_triage_inbound_debug.py`,
+  switched dev server module target in `dev_tunnel.build_uvicorn_argv()` to
+  `triage_service.api.triage_api:app` with `--app-dir src`, and aligned
+  `tests/unit/test_dev_tunnel.py`. `pyproject.toml` now includes pytest `pythonpath = [".", "src"]`,
+  mypy targets the new API file path, and setuptools includes `triage_service*` packages.
+  Added guard test `test_triage_api_module_lives_under_api_package` to
+  `tests/unit/test_package_layout.py`.
+  Verification: RED import failure reproduced, then green on
+  `pytest tests/unit/test_post_triage.py tests/unit/test_triage_inbound_debug.py tests/unit/test_dev_tunnel.py tests/unit/test_package_layout.py`,
+  `pytest -m lint`, and `mypy .`.
+
+- **Refactor scaffold start:** added package skeleton under `src/triage_service/` with
+  `api`, `core`, `adapters`, and `observability` subpackages (each with `__init__.py`) and
+  created `docs/architecture/overview.md` to define ownership boundaries and dependency direction
+  for the migration. Guard test: `tests/unit/test_package_layout.py`.
+  Verification: `pytest tests/unit/test_package_layout.py -q`, `pytest -m lint -q`,
+  `mypy .`, `pytest -m unit -q` all green.
+
+- **Phase close (commit):** `pytest -m lint`, `mypy .`, and `pytest -m "unit or integration"` all green after adding `jira_rest_paths.py` (`jira_rest_v3_site_prefix`: prefer **`JIRA_CLOUD_ID`** → `https://api.atlassian.com/ex/jira/{id}` over **`JIRA_BASE_URL`**), wiring the prefix through **`JiraIssueFetcher`**, **`JiraTriageActionExecutor`**, and sequential **`TriageHandler`** (same REST root for fetch vs transitions/comments/labels). **Settings / `.env.example`:** optional `JIRA_CLOUD_ID` documented for Atlassian gateway REST. **OpenRouter:** `OpenRouterInferenceClient` accepts optional extra JSON body fields (e.g. provider routing) from settings when added later — tests cover passthrough. **Benchmark tooling:** `classification_benchmark.py`, `benchmark_summary.py`, `scripts/benchmark/{build_benchmark_dataset,run_classification_benchmark,summarize_benchmark_rows}.py`, `data/issue_benchmark_dataset.csv` (+ bucket CSVs), unit tests for benchmark math and Jira URL helper. **`benchmark_runs/`** added to `.gitignore` for local JSONL/cache outputs. **`TODO.md`** Post-MVP section updated: harness marked delivered; benchmark CSV stays Bug-centric (no equal Story-bucket rebalance while Stories are out of scope). **`README.md`:** benchmark dataset build, run, and offline summarize sections (Jira `search/jql`, `nextPageToken`, 410 on legacy search).
 
 ## 2026-05-12
 
@@ -40,9 +119,7 @@
   `build_default_triage_handler()` wires the executor when `JIRA_BASE_URL` and `JIRA_USER_EMAIL` are
   set. `prompt_composer` frames **TriageBot** with direct `reason` guidance for Jira copy.
   `pytest -m lint`, `mypy .`, `pytest -m "unit or integration"` all green for close-phase.
-- **TODO structure:** New ``TODO.md`` §4 **Forge app (Atlassian Forge)** (scaffold, scopes,
-  integration with triage service, TriageBot identity, secrets, install checklist). Former §4–§8
-  renumbered to §5–§9 (Integration tests through Post-MVP).
+- **TODO structure (historical):** A Forge-app backlog section was added to `TODO.md` on 2026-05-11 then **removed**: integration stays **Jira Cloud REST + service account** (gateway `JIRA_CLOUD_ID` or site URL, API token) with Automation calling `POST /triage`, not an Atlassian Forge app.
 - **Phase close (commit, earlier same day):** §2 core backend: synchronous `TriageHandler`,
   sequential classification → optional priority, `POST /triage` with `scheduled_scan` and
   `manual_cli`, `scripts/run_triage_cli.py`, strict parsing without model `recommended_action`, and

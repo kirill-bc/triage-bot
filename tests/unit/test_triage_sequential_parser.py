@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from triage_recommendation_parser import (
+from triage_service.core.triage_recommendation_parser import (
     ClassificationStepOutput,
     InvalidTriageRecommendationError,
     classification_bug_to_final,

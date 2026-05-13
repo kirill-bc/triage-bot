@@ -10,15 +10,15 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from jira_issue_fetcher import JiraIssueFetchError
-from openrouter_inference_client import OpenRouterInferenceError
-from triage_fallback import (
+from triage_service.adapters.jira_issue_fetcher import JiraIssueFetchError
+from triage_service.adapters.openrouter_inference_client import OpenRouterInferenceError
+from triage_service.core.triage_fallback import (
     ProjectNotAllowedError,
     TriageFailure,
     TriageFailureCategory,
     fallback_for_exception,
 )
-from triage_recommendation_parser import InvalidTriageRecommendationError
+from triage_service.core.triage_recommendation_parser import InvalidTriageRecommendationError
 
 
 @pytest.mark.unit

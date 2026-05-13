@@ -19,9 +19,9 @@ from starlette.requests import Request
 from starlette.responses import Response
 from typing_extensions import Self
 
-from triage_fallback import TriageFailure
-from triage_handler import TriageRunner, build_default_triage_handler
-from triage_recommendation_parser import TriageRecommendation
+from triage_service.core.triage_fallback import TriageFailure
+from triage_service.core.triage_handler import TriageRunner, build_default_triage_handler
+from triage_service.core.triage_recommendation_parser import TriageRecommendation
 
 TriageSource = Literal["bug_created", "priority_changed", "manual_cli"]
 

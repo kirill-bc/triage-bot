@@ -5,12 +5,19 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Protocol
 
-from jira_issue_fetcher import FetchedIssue, JiraIssueFetcher
-from openrouter_inference_client import OpenRouterInferenceClient
-from policy_context import PolicyContext
-from prompt_composer import compose_classification_prompt, compose_priority_prompt
-from triage_fallback import ProjectNotAllowedError, TriageFailure, fallback_for_exception
-from triage_recommendation_parser import (
+from triage_service.adapters.jira_issue_fetcher import FetchedIssue, JiraIssueFetcher
+from triage_service.adapters.openrouter_inference_client import OpenRouterInferenceClient
+from triage_service.core.policy_context import PolicyContext
+from triage_service.core.prompt_composer import (
+    compose_classification_prompt,
+    compose_priority_prompt,
+)
+from triage_service.core.triage_fallback import (
+    ProjectNotAllowedError,
+    TriageFailure,
+    fallback_for_exception,
+)
+from triage_service.core.triage_recommendation_parser import (
     TriageRecommendation,
     classification_story_to_final,
     merge_bug_classification_with_priority,
@@ -174,20 +181,18 @@ class TriageHandler:
 
 
 def build_default_triage_handler() -> TriageHandler:
-    """Build handler from settings, core config, policy, and Jira executor if Jira env is set."""
-    from core_config import load_triage_core_config
-    from jira_action_executor import JiraTriageActionExecutor
-    from jira_rest_paths import jira_rest_v3_site_prefix
-    from policy_context import load_policy_context
-    from settings import load_settings
+    """Build handler from settings, policy, and Jira executor if Jira env is set."""
+    from triage_service.adapters.jira_action_executor import JiraTriageActionExecutor
+    from triage_service.core.policy_context import load_policy_context
+    from triage_service.core.settings import load_settings
 
     settings = load_settings()
-    core = load_triage_core_config()
     policy = load_policy_context()
     fetcher = JiraIssueFetcher(settings)
     inference = OpenRouterInferenceClient(settings)
+    cloud_id_configured = settings.jira_cloud_id and str(settings.jira_cloud_id).strip()
     if (
-        jira_rest_v3_site_prefix(settings) is not None
+        cloud_id_configured
         and settings.jira_user_email
         and str(settings.jira_user_email).strip()
     ):
@@ -195,7 +200,7 @@ def build_default_triage_handler() -> TriageHandler:
     else:
         executor = NoOpTriageActionExecutor()
     return TriageHandler(
-        allowed_projects=core.allowed_projects,
+        allowed_projects=settings.allowed_projects,
         fetcher=fetcher,
         inference=inference,
         policy=policy,

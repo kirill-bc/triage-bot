@@ -5,23 +5,19 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 py-modules = [
     "dev_tunnel",
-    "core_config",
-    "jira_action_executor",
-    "jira_issue_fetcher",
-    "jira_rest_paths",
-    "openrouter_inference_client",
-    "policy_context",
-    "prompt_composer",
-    "settings",
-    "triage_api",
-    "triage_fallback",
-    "triage_handler",
-    "triage_mismatch",
     "triage_manual_cli",
-    "triage_recommendation_parser",
-    "classification_benchmark",
-    "benchmark_summary",
 ]
+packages = [
+    "triage_service",
+    "triage_service.api",
+    "triage_service.core",
+    "triage_service.adapters",
+    "triage_service.observability",
+]
+package-dir = {"" = "src"}
+
+[tool.setuptools.package-data]
+triage_service = ["core/prompt_templates.json", "core/policy/*.md"]
 
 [project]
 name = "jira-triage"
@@ -50,7 +46,7 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["."]
+pythonpath = [".", "src"]
 markers = [
     "unit: fast isolated unit tests",
     "integration: integration tests with mocks",
@@ -63,22 +59,20 @@ strict = true
 exclude = ["^build/"]
 files = [
     "dev_tunnel.py",
-    "settings.py",
-    "core_config.py",
-    "jira_action_executor.py",
-    "jira_issue_fetcher.py",
-    "jira_rest_paths.py",
-    "openrouter_inference_client.py",
-    "policy_context.py",
-    "prompt_composer.py",
-    "triage_api.py",
-    "triage_fallback.py",
-    "triage_handler.py",
-    "triage_mismatch.py",
+    "src/triage_service/core/settings.py",
+    "src/triage_service/adapters/jira_action_executor.py",
+    "src/triage_service/adapters/jira_issue_fetcher.py",
+    "src/triage_service/adapters/openrouter_inference_client.py",
+    "src/triage_service/core/policy_context.py",
+    "src/triage_service/core/prompt_composer.py",
+    "src/triage_service/api/triage_api.py",
+    "src/triage_service/core/triage_fallback.py",
+    "src/triage_service/core/triage_handler.py",
+    "src/triage_service/core/triage_mismatch.py",
     "triage_manual_cli.py",
-    "triage_recommendation_parser.py",
-    "classification_benchmark.py",
-    "benchmark_summary.py",
+    "src/triage_service/core/triage_recommendation_parser.py",
+    "scripts/benchmark/classification_benchmark.py",
+    "scripts/benchmark/benchmark_summary.py",
     "tests",
 ]
 plugins = ["pydantic.mypy"]

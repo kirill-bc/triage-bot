@@ -7,8 +7,11 @@ import json
 import httpx
 import pytest
 
-from openrouter_inference_client import OpenRouterInferenceClient, OpenRouterInferenceError
-from settings import AppSettings
+from triage_service.adapters.openrouter_inference_client import (
+    OpenRouterInferenceClient,
+    OpenRouterInferenceError,
+)
+from triage_service.core.settings import AppSettings
 
 
 @pytest.fixture

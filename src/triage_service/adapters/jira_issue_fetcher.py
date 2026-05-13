@@ -8,8 +8,9 @@ from typing import Any
 import httpx
 from pydantic import BaseModel
 
-from jira_rest_paths import jira_rest_v3_site_prefix
-from settings import AppSettings
+from triage_service.core.settings import AppSettings
+
+_ATLASSIAN_GATEWAY = "https://api.atlassian.com/ex/jira"
 
 
 class FetchedIssue(BaseModel):
@@ -110,18 +111,19 @@ def _basic_auth_header(email: str, api_token: str) -> str:
 
 
 def _issue_get_url(settings: AppSettings, issue_key: str) -> str:
-    """REST v3 issue URL: gateway (CLOUD_ID) when set, else site base URL."""
-    prefix = jira_rest_v3_site_prefix(settings)
-    if prefix is None:
+    """REST v3 issue URL using Atlassian gateway ``JIRA_CLOUD_ID``."""
+    cloud_raw = settings.jira_cloud_id
+    if cloud_raw is None or not str(cloud_raw).strip():
         raise JiraIssueFetchError(
-            "Jira issue URL requires JIRA_CLOUD_ID (Atlassian gateway) or JIRA_BASE_URL "
-            "(site URL).",
+            "Jira issue URL requires JIRA_CLOUD_ID (Atlassian gateway).",
         )
+    cloud_id = str(cloud_raw).strip()
+    prefix = f"{_ATLASSIAN_GATEWAY}/{cloud_id}"
     return f"{prefix}/rest/api/3/issue/{issue_key}"
 
 
 class JiraIssueFetcher:
-    """Loads issue fields via Jira REST v3 (Atlassian gateway or site base URL)."""
+    """Loads issue fields via Jira Cloud REST v3 through Atlassian gateway."""
 
     _FIELDS = "summary,description,issuetype,priority,reporter"
 

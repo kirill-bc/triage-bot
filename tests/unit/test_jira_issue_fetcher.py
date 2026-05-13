@@ -5,15 +5,19 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from jira_issue_fetcher import FetchedIssue, JiraIssueFetchError, JiraIssueFetcher
-from settings import AppSettings
+from triage_service.adapters.jira_issue_fetcher import (
+    FetchedIssue,
+    JiraIssueFetchError,
+    JiraIssueFetcher,
+)
+from triage_service.core.settings import AppSettings
 
 
 @pytest.fixture
 def jira_app_settings(monkeypatch: pytest.MonkeyPatch) -> AppSettings:
     monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
     monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
-    monkeypatch.setenv("JIRA_BASE_URL", "https://example.atlassian.net")
+    monkeypatch.setenv("JIRA_CLOUD_ID", "cloud-id-test")
     monkeypatch.setenv("JIRA_USER_EMAIL", "bot@example.com")
     return AppSettings()
 
@@ -48,7 +52,7 @@ def test_fetch_issue_returns_summary_description_type_priority_reporter(
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "GET"
-        assert request.url.path == "/rest/api/3/issue/TJC-42"
+        assert request.url.path == "/ex/jira/cloud-id-test/rest/api/3/issue/TJC-42"
         assert "fields=summary" in str(request.url)
         auth = request.headers.get("Authorization", "")
         assert auth.startswith("Basic ")
@@ -138,13 +142,9 @@ def test_fetch_issue_uses_atlassian_gateway_when_jira_cloud_id_set(
 
 
 @pytest.mark.unit
-def test_fetch_issue_prefers_jira_cloud_id_over_jira_base_url(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Gateway URL wins when both are configured (matches service-account curl style)."""
+def test_fetch_issue_uses_jira_cloud_id(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
     monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
-    monkeypatch.setenv("JIRA_BASE_URL", "https://legacy.example.atlassian.net")
     monkeypatch.setenv("JIRA_CLOUD_ID", "cloud-id-1")
     monkeypatch.setenv("JIRA_USER_EMAIL", "bot@example.com")
     settings = AppSettings()
@@ -200,7 +200,6 @@ def test_fetch_issue_raises_when_jira_cloud_id_and_base_url_missing(
             fetcher.fetch("TJC-1")
     msg = str(exc.value).lower()
     assert "jira_cloud_id" in msg or "cloud_id" in msg
-    assert "jira_base_url" in msg or "base_url" in msg
 
 
 @pytest.mark.unit
@@ -209,7 +208,7 @@ def test_fetch_issue_raises_when_jira_user_email_missing(
 ) -> None:
     monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
     monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
-    monkeypatch.setenv("JIRA_BASE_URL", "https://example.atlassian.net")
+    monkeypatch.setenv("JIRA_CLOUD_ID", "cloud-id-test")
     settings = AppSettings()
 
     transport = httpx.MockTransport(lambda r: httpx.Response(200, json={}))

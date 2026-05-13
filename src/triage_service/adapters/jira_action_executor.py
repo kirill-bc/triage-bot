@@ -7,15 +7,15 @@ from typing import Any
 
 import httpx
 
-from jira_issue_fetcher import FetchedIssue
-from jira_rest_paths import jira_rest_v3_site_prefix
-from settings import AppSettings
-from triage_fallback import TriageFailure
-from triage_mismatch import compute_mismatch_flags
-from triage_recommendation_parser import TriageRecommendation
+from triage_service.core.settings import AppSettings
+from triage_service.adapters.jira_issue_fetcher import FetchedIssue
+from triage_service.core.triage_fallback import TriageFailure
+from triage_service.core.triage_mismatch import compute_mismatch_flags
+from triage_service.core.triage_recommendation_parser import TriageRecommendation
 
-# Display name for Jira mismatch comments (align with Forge app name when you ship it).
+# Display name for Jira mismatch comments (keep consistent with operator-facing bot naming).
 _TRIAGEBOT_NAME = "TriageBot"
+_ATLASSIAN_GATEWAY = "https://api.atlassian.com/ex/jira"
 
 
 class JiraActionExecutorError(RuntimeError):
@@ -29,12 +29,12 @@ def _basic_auth_header(email: str, api_token: str) -> str:
 
 
 def _jira_base_and_headers(settings: AppSettings) -> tuple[str, dict[str, str]]:
-    prefix = jira_rest_v3_site_prefix(settings)
-    if prefix is None:
-        msg = (
-            "Jira REST requires JIRA_CLOUD_ID (Atlassian gateway) or JIRA_BASE_URL (site URL)."
-        )
+    cloud_raw = settings.jira_cloud_id
+    if cloud_raw is None or not str(cloud_raw).strip():
+        msg = "Jira REST requires JIRA_CLOUD_ID (Atlassian gateway)."
         raise JiraActionExecutorError(msg)
+    cloud_id = str(cloud_raw).strip()
+    prefix = f"{_ATLASSIAN_GATEWAY}/{cloud_id}"
     email = settings.jira_user_email
     if email is None or not str(email).strip():
         msg = "Jira user email is required for REST auth (set JIRA_USER_EMAIL)."

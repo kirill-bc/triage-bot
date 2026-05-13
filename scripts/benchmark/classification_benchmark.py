@@ -11,9 +11,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from jira_issue_fetcher import FetchedIssue, JiraIssueFetchError, JiraIssueFetcher
-from triage_fallback import TriageFailure
-from triage_recommendation_parser import IssueTypeLiteral, TriageRecommendation
+from triage_service.adapters.jira_issue_fetcher import (
+    FetchedIssue,
+    JiraIssueFetchError,
+    JiraIssueFetcher,
+)
+from triage_service.core.triage_fallback import TriageFailure
+from triage_service.core.triage_recommendation_parser import IssueTypeLiteral, TriageRecommendation
 
 CSV_COLUMNS = (
     "benchmark_bucket",
@@ -331,7 +335,7 @@ def score_benchmark_skipped(row: BenchmarkCsvRow, *, reason: str) -> BenchmarkRo
 def confusion_matrix_issue_type(scores: Sequence[BenchmarkRowScore]) -> dict[tuple[str, str], int]:
     """Counts of (ground_truth_issue_type, predicted_issue_type).
 
-    Predicted side uses ``\"_failed\"`` when the run did not produce a type.
+    Predicted side uses ``"_failed"`` when the run did not produce a type.
     """
     counts: dict[tuple[str, str], int] = {}
     for s in scores:

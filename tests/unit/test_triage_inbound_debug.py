@@ -5,13 +5,13 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from triage_api import (
+from triage_service.api.triage_api import (
     create_app,
     preview_request_body_for_log,
     triage_inbound_debug_enabled,
 )
-from triage_fallback import TriageFailure
-from triage_recommendation_parser import TriageRecommendation
+from triage_service.core.triage_fallback import TriageFailure
+from triage_service.core.triage_recommendation_parser import TriageRecommendation
 
 
 @pytest.mark.unit

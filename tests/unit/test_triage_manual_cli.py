@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from triage_fallback import TriageFailure, fallback_for_exception
-from triage_recommendation_parser import TriageRecommendation
+from triage_service.core.triage_fallback import TriageFailure, fallback_for_exception
+from triage_service.core.triage_recommendation_parser import TriageRecommendation
 
 
 @pytest.mark.unit

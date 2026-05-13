@@ -13,7 +13,7 @@ The supported categories cover every error surface the pipeline owns:
   or unusable completion payloads.
 - ``invalid_model_output`` — raised by the recommendation parser when the model
   reply is not JSON or fails the schema (see
-  :class:`triage_recommendation_parser.InvalidTriageRecommendationError`).
+  :class:`triage_service.core.triage_recommendation_parser.InvalidTriageRecommendationError`).
 - ``internal_error`` — catch-all for unexpected exceptions; keeps the response
   contract closed so callers never see a raw traceback.
 - ``project_not_allowed`` — raised when the inbound ``project`` key is not on the
@@ -32,13 +32,13 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
-from jira_issue_fetcher import JiraIssueFetchError
-from openrouter_inference_client import OpenRouterInferenceError
-from triage_recommendation_parser import InvalidTriageRecommendationError
+from triage_service.adapters.jira_issue_fetcher import JiraIssueFetchError
+from triage_service.adapters.openrouter_inference_client import OpenRouterInferenceError
+from triage_service.core.triage_recommendation_parser import InvalidTriageRecommendationError
 
 
 class ProjectNotAllowedError(ValueError):
-    """Raised when ``project`` is not on the server allowlist (``TriageCoreConfig``)."""
+    """Raised when ``project`` is not on the server allowlist (``AppSettings``)."""
 
 
 TriageFailureCategory = Literal[

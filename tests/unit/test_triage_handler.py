@@ -7,13 +7,13 @@ from typing import Any
 import httpx
 import pytest
 
-from jira_issue_fetcher import FetchedIssue, JiraIssueFetcher
-from openrouter_inference_client import OpenRouterInferenceClient
-from policy_context import PolicyContext
-from settings import AppSettings
-from triage_fallback import TriageFailure
-from triage_handler import TriageActionExecutor, TriageHandler
-from triage_recommendation_parser import TriageRecommendation
+from triage_service.adapters.jira_issue_fetcher import FetchedIssue, JiraIssueFetcher
+from triage_service.adapters.openrouter_inference_client import OpenRouterInferenceClient
+from triage_service.core.settings import AppSettings
+from triage_service.core.triage_fallback import TriageFailure
+from triage_service.core.triage_handler import TriageActionExecutor, TriageHandler
+from triage_service.core.policy_context import PolicyContext
+from triage_service.core.triage_recommendation_parser import TriageRecommendation
 
 
 class _RecordingExecutor(TriageActionExecutor):
@@ -35,7 +35,7 @@ class _RecordingExecutor(TriageActionExecutor):
 def _app_settings(monkeypatch: pytest.MonkeyPatch) -> AppSettings:
     monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
     monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
-    monkeypatch.setenv("JIRA_BASE_URL", "https://example.atlassian.net")
+    monkeypatch.setenv("JIRA_CLOUD_ID", "cloud-id-test")
     monkeypatch.setenv("JIRA_USER_EMAIL", "bot@example.com")
     return AppSettings()
 
