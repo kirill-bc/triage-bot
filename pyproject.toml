@@ -28,6 +28,7 @@ requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.110",
     "httpx>=0.27",
+    "langfuse>=4.0",
     "tqdm>=4.66",
     "pydantic>=2.6",
     "pydantic-settings>=2.2",
@@ -71,6 +72,10 @@ files = [
     "src/triage_service/core/triage_mismatch.py",
     "triage_manual_cli.py",
     "src/triage_service/core/triage_recommendation_parser.py",
+    "src/triage_service/observability/audit_events.py",
+    "src/triage_service/observability/audit_store.py",
+    "src/triage_service/observability/langfuse_inference_tracing.py",
+    "src/triage_service/observability/langfuse_audit_store.py",
     "scripts/benchmark/classification_benchmark.py",
     "scripts/benchmark/benchmark_summary.py",
     "tests",

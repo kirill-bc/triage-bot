@@ -1,14 +1,107 @@
 # Project memory
 
+## 2026-05-14
+
+- **Phase close (verification):** from `.venv`, `./scripts/run_tests.sh lint` (flake8 via `pytest -m lint`, 5 tests), `./scripts/run_tests.sh types` (`mypy .`, 67 files, clean), and `./scripts/run_tests.sh fast` (`pytest -m "unit or integration"`, 228 passed, 1 skipped: `OPENROUTER_LIVE_SMOKE` integration smoke). README repository-layout line aligned with gateway auth: executor wiring when `JIRA_CLOUD_ID` and `JIRA_USER_EMAIL` are set.
+
+- **Jira REST timeout and bounded retries:** `AppSettings` adds `TRIAGE_JIRA_HTTP_TIMEOUT_SECONDS`
+  (default 30) and `TRIAGE_JIRA_HTTP_MAX_RETRIES` (default 2 extra attempts). Shared helper
+  `src/triage_service/adapters/jira_http_retry.py` retries on HTTP 429/502/503/504 and
+  `ConnectError` / `RemoteProtocolError` / `TimeoutException`. Wired through
+  `JiraIssueFetcher` and `JiraTriageActionExecutor` (GET issue, PUT labels, POST comment).
+  Unit tests: `tests/unit/test_jira_http_retry.py`, retry cases in
+  `tests/unit/test_jira_issue_fetcher.py` and `tests/unit/test_jira_action_executor.py`.
+
+- **Observability settings surface expanded:** `AppSettings` now exposes audit config
+  flags in `src/triage_service/core/settings.py` with env aliases
+  `TRIAGE_AUDIT_STRUCTURED_LOG_ENABLED`, `TRIAGE_AUDIT_LANGFUSE_ENABLED`,
+  `TRIAGE_AUDIT_REDACT_MODEL_INPUT`, and `TRIAGE_AUDIT_REDACT_MODEL_OUTPUT`
+  (defaults: structured log and Langfuse audit mirror on, input redaction on, output
+  redaction off). Added unit coverage in `tests/unit/test_settings.py` for
+  defaults + explicit env overrides. Verification gates run from `.venv`:
+  `pytest tests/unit/test_settings.py`, `pytest -m lint`, `pytest -m unit`,
+  and `mypy .` (all green).
+
+- **Audit store fan-out contract:** added `src/triage_service/observability/audit_store.py`
+  with `AuditStore` protocol (`record(event)`) and `CompositeAuditStore` fan-out to all
+  child stores. Exported via `triage_service.observability.__init__`; added unit coverage
+  in `tests/unit/test_audit_store.py` and included the new module in lint/mypy target lists.
+
+- **Stage latency capture in handler:** `TriageHandler` now logs structured `triage_stage_timing`
+  events (with `run_id`, `issue_key`, `project`, `source`, and `latency_ms`) for
+  `jira_fetch`, `classification_inference`, `priority_inference` (Bug path only), and
+  `jira_action`. Timing is measured with `time.perf_counter()` and emitted in `finally`
+  blocks so failures still produce latency telemetry. Unit coverage:
+  `tests/unit/test_triage_handler.py::test_handler_emits_stage_timing_for_fetch_model_and_executor`.
+
+- **Canonical audit events:** `src/triage_service/observability/audit_events.py` defines Pydantic
+  models and `parse_triage_audit_event` / `dump_triage_audit_event` for lifecycle types
+  `classification_completed`, `priority_completed`, `triage_completed`, and `triage_failed`
+  (failure `category` literals aligned with `TriageFailureCategory` via unit test).
+  `TriageHandler` records these via `AuditStore` (`observability_wiring.build_observability(...)`)
+  with optional Langfuse + structured-log sinks and payload redaction per settings.
+
+- **LangFuse inference tracing:** `src/triage_service/observability/langfuse_inference_tracing.py`
+  provides `LangfuseInferenceTracer` (root span `triage_issue` + nested `classification` /
+  `priority` generations). `TriageHandler` wires it via `build_langfuse_inference_tracer(...)`
+  when `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` are set (`AppSettings`); each generation
+  records OpenRouter `messages`, model id, temperature, raw assistant JSON as `output`, and
+  parsed step fields under `metadata.parsed`. Trace id is derived from `run_id` (UUID hex or
+  SHA-256 prefix for non-UUID run ids). SDK failures are logged and never fail triage.
+  `TriageHandler.flush_inference_telemetry` / `POST /triage` and `run_cli_triage` call LangFuse
+  `flush()` after each run so short-lived processes still export spans.
+
+- **`run_id` correlation:** `POST /triage` generates `str(uuid.uuid4())` at ingress (`triage_api`),
+  returns it on `TriagePostResponse`, and passes `run_id=` through `TriageRunner.run_sync` →
+  `TriageHandler` → `JiraIssueFetcher.fetch`, `OpenRouterInferenceClient.chat_completion`, and
+  `TriageActionExecutor.apply_triage_outcome`. CLI (`triage_manual_cli.run_cli_triage`)
+  generates its own `run_id` per invocation.
+  Benchmark prefetch/triage paths pass `run_id` into fetch / `run_sync_on_fetched`.
+
+- **LangFuse audit store sink:** added `src/triage_service/observability/langfuse_audit_store.py`
+  with `LangfuseAuditStore` implementing the `AuditStore` contract by serializing
+  `TriageAuditEvent` via `dump_triage_audit_event` and sending it to LangFuse `create_event`
+  using a stable per-run trace id (`stable_langfuse_trace_id(run_id)`). Added
+  `build_langfuse_audit_store(public_key, secret_key, base_url)` (no-op without both keys),
+  exported both from `triage_service.observability`, and covered behavior in
+  `tests/unit/test_langfuse_audit_store.py` (happy path + failure-safe no-raise).
+
+- **Structured logger audit sink:** added
+  `src/triage_service/observability/structured_logger_audit_store.py` with
+  `StructuredLoggerAuditStore` implementing `AuditStore` by serializing each
+  `TriageAuditEvent` via `dump_triage_audit_event` and emitting one JSON log line
+  (stable key order) for CloudWatch-compatible querying. Emission errors are swallowed
+  with a warning so audit logging cannot break the triage pipeline. Exported via
+  `triage_service.observability.__init__`; covered in
+  `tests/unit/test_structured_logger_audit_store.py`.
+
+- **Confidence remains advisory for Jira actions:** `JiraTriageActionExecutor` now
+  routes mismatch-comment decisions through
+  `_should_post_mismatch_comment(flags: TriageMismatchFlags)` in
+  `src/triage_service/adapters/jira_action_executor.py`, making the decision
+  depend only on deterministic mismatch flags (not model confidence). Added unit
+  coverage in `tests/unit/test_jira_action_executor.py`:
+  `test_should_post_mismatch_comment_depends_only_on_mismatch_flags` (RED on
+  missing helper, then GREEN). Verification gates from `.venv`: targeted unit
+  slice, `pytest -m lint`, `mypy .`, and `pytest -m unit` all green.
+
+- **Observability test-task verified and closed:** TODO §5 item "Add unit tests
+  for event schema validation, audit fan-out behavior, and failure-safe
+  logging/LangFuse emission paths" is now marked complete after verifying
+  existing coverage and re-running gates from `.venv`: targeted observability
+  unit files (`tests/unit/test_audit_events.py`, `test_audit_store.py`,
+  `test_langfuse_audit_store.py`, `test_structured_logger_audit_store.py`),
+  `pytest -m lint`, and `mypy .` (all green).
+
 ## 2026-05-13
 
 - **Phase close (verification + docs reconciliation):** ran gates from `.venv`:
   `pytest -m lint`, `mypy .`, and `pytest -m "unit or integration"` (all green:
   5 lint tests passed; mypy clean on 51 files; unit+integration 161 passed, 1 skipped).
   Updated `README.md` with a Jira Automation scheduled-rule recipe (cadence + JQL +
-  request body), explicit `ai-reviewed` lifecycle, and MVP limitations. Reconciled
+  request body), explicit `triagebot-reviewed` lifecycle, and MVP limitations. Reconciled
   `TODO.md` §9 by marking architecture docs, local runbook, Jira automation setup,
-  `ai-reviewed` lifecycle, and MVP limitations as complete.
+  `triagebot-reviewed` lifecycle, and MVP limitations as complete.
 
 - **Benchmark helpers moved under scripts/benchmark:** relocated
   `classification_benchmark.py` and `benchmark_summary.py` from repo root to
@@ -112,8 +205,8 @@
 ## 2026-05-11
 
 - **Phase close (commit):** §3 **Jira action executor** is implemented in `jira_action_executor.py`
-  (`JiraTriageActionExecutor`): `ai-reviewed` on every successful triage; mismatch labels
-  (`ai-likely-story` / `ai-priority-mismatch`) and a terse **TriageBot** templated
+  (`JiraTriageActionExecutor`): `triagebot-reviewed` on every successful triage; mismatch labels
+  (`triagebot-likely-story` / `triagebot-priority-mismatch`) and a terse **TriageBot** templated
   ADF comment on mismatch only (no numeric confidence in Jira; optional reporter @mention when
   `FetchedIssue.reporter_account_id` is set). `TriageFailure` → no labels and no comment.
   `build_default_triage_handler()` wires the executor when `JIRA_BASE_URL` and `JIRA_USER_EMAIL` are
@@ -150,7 +243,7 @@
   5-minute delay to a **Jira-side scheduled JQL rule** that handles stabilization, dedupe, and
   retry-on-failure in one JQL expression. API contract: `event_type` → `source: Literal["scheduled_scan"]`.
   `core_config.py` drops `analysis_delay_seconds` + `dedupe_deferral_enabled`. `specification.md`
-  rewrites `jira_automation_trigger` and `jira_action_executor` (`ai-reviewed` now applied on every
+  rewrites `jira_automation_trigger` and `jira_action_executor` (`triagebot-reviewed` now applied on every
   successful triage so it can act as the dedupe marker the JQL relies on). `TODO.md` realigned
   (§2 single synchronous handler, §3 label rules, §5 backstop-window metric, §6 Jira automation
   runbook). `README.md` + `memory.md` updated. Next backlog focus: synchronous triage handler that
@@ -158,8 +251,8 @@
   action executor (`TODO.md` §2).
 - **Integration model (locked):** Jira Cloud Automation **scheduled rule** (per-issue, no batching for
   MVP) is the only production trigger. Rule cadence ~5 min. Reference JQL:
-  `project = <KEY> AND issuetype = Bug AND labels not in (ai-reviewed) AND created >= -30m AND created <= -5m`.
-  `created <= -5m` = stabilization delay; `labels not in (ai-reviewed)` = dedupe (service applies that
+  `project = <KEY> AND issuetype = Bug AND labels not in (triagebot-reviewed) AND created >= -30m AND created <= -5m`.
+  `created <= -5m` = stabilization delay; `labels not in (triagebot-reviewed)` = dedupe (service applies that
   label on every successful triage); `created >= -30m` = backstop. Service is stateless — no in-process
   scheduler/queue. Failures (`TriageFailure`) leave the issue unlabeled → next scheduled scan retries
   automatically until success or ageout.
@@ -171,11 +264,11 @@
   Reference Jira Automation Send-web-request → Custom data body:
   `{ "issue_key": "{{issue.key}}", "project": "{{issue.project.key}}", "source": "scheduled_scan" }`.
   Tests: `tests/unit/test_post_triage.py`.
-- **Label semantics (locked):** `ai-reviewed` is applied on **every successful triage**, mismatch or
+- **Label semantics (locked):** `triagebot-reviewed` is applied on **every successful triage**, mismatch or
   not — it is the dedupe marker the scheduled JQL depends on. Mismatch-specific labels keep their
-  original meaning: `ai-likely-story` only when type mismatches; `ai-priority-mismatch` only when
+  original meaning: `triagebot-likely-story` only when type mismatches; `triagebot-priority-mismatch` only when
   priority mismatches on the Bug path. Internal comment is posted only on mismatch. Operators force
-  re-triage by removing `ai-reviewed` on the Jira issue.
+  re-triage by removing `triagebot-reviewed` on the Jira issue.
 - **Config cleanup:** `TriageCoreConfig` no longer carries `analysis_delay_seconds` or
   `dedupe_deferral_enabled` — both concerns moved to the Jira-side rule.
   `TRIAGE_ANALYSIS_DELAY_SECONDS` and `TRIAGE_DEDUPE_DEFERRAL_ENABLED` env vars are silently ignored
@@ -207,7 +300,7 @@
   scaffold (`run_e2e_tests.sh`, `pytest` `e2e` marker, `tests/e2e/`); `run_tests.sh full` delegates to
   `all`; docs/spec/user flows and Cursor prompts aligned with Lambda-shaped service.
 - **OpenRouter client:** `openrouter_inference_client.py` — `OpenRouterInferenceClient(settings, client=...)`.
-  `chat_completion(messages, temperature=..., max_tokens=...)` POSTs to
+  `chat_completion(messages, *, run_id, temperature=..., max_tokens=...)` POSTs to
   `https://openrouter.ai/api/v1/chat/completions` with `model=settings.openrouter_model`
   (`OPENROUTER_MODEL`, default `openai/gpt-4o-mini`) and Bearer `OPENROUTER_API_KEY`. Optional
   `max_tokens` is forwarded when set. Raises `OpenRouterInferenceError` on HTTP errors or empty

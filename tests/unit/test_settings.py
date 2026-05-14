@@ -19,6 +19,10 @@ _APP_ENV_KEYS = (
     "TRIAGE_ALLOWED_PROJECTS",
     "TRIAGE_ANALYSIS_DELAY_SECONDS",
     "TRIAGE_DEDUPE_DEFERRAL_ENABLED",
+    "TRIAGE_AUDIT_STRUCTURED_LOG_ENABLED",
+    "TRIAGE_AUDIT_LANGFUSE_ENABLED",
+    "TRIAGE_AUDIT_REDACT_MODEL_INPUT",
+    "TRIAGE_AUDIT_REDACT_MODEL_OUTPUT",
 )
 
 
@@ -107,6 +111,48 @@ def test_load_settings_optional_fields_default_when_omitted(
     assert settings.log_level == "INFO"
     assert settings.logging_api_key is None
     assert settings.logging_endpoint is None
+    assert settings.audit_structured_log_enabled is True
+    assert settings.audit_langfuse_enabled is True
+    assert settings.audit_redact_model_input is True
+    assert settings.audit_redact_model_output is False
+
+
+@pytest.mark.unit
+def test_load_settings_reads_audit_feature_flags_and_redaction_toggles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text(
+        "JIRA_API_KEY=jira-token\n"
+        "OPENROUTER_API_KEY=or-token\n"
+        "TRIAGE_AUDIT_STRUCTURED_LOG_ENABLED=false\n"
+        "TRIAGE_AUDIT_LANGFUSE_ENABLED=false\n"
+        "TRIAGE_AUDIT_REDACT_MODEL_INPUT=true\n"
+        "TRIAGE_AUDIT_REDACT_MODEL_OUTPUT=false\n",
+        encoding="utf-8",
+    )
+    settings = load_settings()
+    assert settings.audit_structured_log_enabled is False
+    assert settings.audit_langfuse_enabled is False
+    assert settings.audit_redact_model_input is True
+    assert settings.audit_redact_model_output is False
+
+
+@pytest.mark.unit
+def test_load_settings_reads_jira_http_timeout_and_max_retries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text(
+        "JIRA_API_KEY=jira-token\n"
+        "OPENROUTER_API_KEY=or-token\n"
+        "TRIAGE_JIRA_HTTP_TIMEOUT_SECONDS=45\n"
+        "TRIAGE_JIRA_HTTP_MAX_RETRIES=0\n",
+        encoding="utf-8",
+    )
+    settings = load_settings()
+    assert settings.jira_http_timeout_seconds == 45.0
+    assert settings.jira_http_max_retries == 0
 
 
 @pytest.mark.unit

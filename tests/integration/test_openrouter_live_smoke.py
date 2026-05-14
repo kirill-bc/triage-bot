@@ -35,6 +35,7 @@ def test_openrouter_live_chat_completion_smoke() -> None:
                 "content": "Reply with the single word pong and nothing else.",
             },
         ],
+        run_id="openrouter-live-smoke",
         temperature=0,
         max_tokens=256,
     )

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import uuid
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -42,7 +43,11 @@ def run_cli_triage(
     key = issue_key.strip()
     proj = project.strip() if project is not None else infer_project_from_issue_key(key)
     resolved = runner if runner is not None else build_default_triage_handler()
-    return resolved.run_sync(key, proj, "manual_cli")
+    outcome = resolved.run_sync(key, proj, "manual_cli", run_id=str(uuid.uuid4()))
+    flush = getattr(resolved, "flush_inference_telemetry", None)
+    if callable(flush):
+        flush()
+    return outcome
 
 
 def main(argv: list[str] | None = None) -> int:

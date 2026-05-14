@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import sys
+import uuid
 from collections.abc import Awaitable, Callable
 from typing import Literal
 
@@ -93,6 +94,10 @@ class TriageRequest(BaseModel):
 class TriagePostResponse(BaseModel):
     """Synchronous triage outcome: merged recommendation or structured failure."""
 
+    run_id: str = Field(
+        min_length=1,
+        description="Correlation id for this triage attempt (generated at API ingress).",
+    )
     issue_key: str
     project: str
     source: TriageSource
@@ -119,6 +124,13 @@ class TriagePostResponse(BaseModel):
         return self
 
 
+def _flush_inference_telemetry_if_supported(runner: TriageRunner) -> None:
+    """Invoke :meth:`TriageHandler.flush_inference_telemetry` when the runner supports it."""
+    flush = getattr(runner, "flush_inference_telemetry", None)
+    if callable(flush):
+        flush()
+
+
 def create_app(*, triage_handler_factory: Callable[[], TriageRunner] | None = None) -> FastAPI:
     """Build the FastAPI app. Override ``triage_handler_factory`` in tests."""
     factory: Callable[[], TriageRunner] = triage_handler_factory or build_default_triage_handler
@@ -133,9 +145,12 @@ def create_app(*, triage_handler_factory: Callable[[], TriageRunner] | None = No
         body: TriageRequest,
         runner: TriageRunner = Depends(get_triage_runner),
     ) -> TriagePostResponse:
-        outcome = runner.run_sync(body.issue_key, body.project, body.source)
+        run_id = str(uuid.uuid4())
+        outcome = runner.run_sync(body.issue_key, body.project, body.source, run_id=run_id)
+        _flush_inference_telemetry_if_supported(runner)
         if isinstance(outcome, TriageFailure):
             return TriagePostResponse(
+                run_id=run_id,
                 issue_key=body.issue_key,
                 project=body.project,
                 source=body.source,
@@ -143,6 +158,7 @@ def create_app(*, triage_handler_factory: Callable[[], TriageRunner] | None = No
                 failure=outcome,
             )
         return TriagePostResponse(
+            run_id=run_id,
             issue_key=body.issue_key,
             project=body.project,
             source=body.source,

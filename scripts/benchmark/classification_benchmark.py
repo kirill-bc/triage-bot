@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import uuid
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -428,7 +429,7 @@ def prefetch_jira_issues_for_keys(
     failures: dict[str, str] = {}
     for key in keys:
         try:
-            issues[key] = fetcher.fetch(key)
+            issues[key] = fetcher.fetch(key, run_id=f"benchmark-prefetch-{uuid.uuid4()}")
         except JiraIssueFetchError as exc:
             failures[key] = str(exc)
     return issues, failures
@@ -448,7 +449,7 @@ def merge_cached_issues_with_fetch(
         if key in issues or key in failures:
             continue
         try:
-            issues[key] = fetcher.fetch(key)
+            issues[key] = fetcher.fetch(key, run_id=f"benchmark-prefetch-{uuid.uuid4()}")
         except JiraIssueFetchError as exc:
             failures[key] = str(exc)
     return issues, failures

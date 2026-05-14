@@ -7,10 +7,11 @@ from typing import Any
 
 import httpx
 
+from triage_service.adapters.jira_http_retry import request_with_retries
 from triage_service.core.settings import AppSettings
 from triage_service.adapters.jira_issue_fetcher import FetchedIssue
 from triage_service.core.triage_fallback import TriageFailure
-from triage_service.core.triage_mismatch import compute_mismatch_flags
+from triage_service.core.triage_mismatch import TriageMismatchFlags, compute_mismatch_flags
 from triage_service.core.triage_recommendation_parser import TriageRecommendation
 
 # Display name for Jira mismatch comments (keep consistent with operator-facing bot naming).
@@ -49,11 +50,11 @@ def _jira_base_and_headers(settings: AppSettings) -> tuple[str, dict[str, str]]:
 
 def _labels_for_outcome(recommendation: TriageRecommendation, issue: FetchedIssue) -> list[str]:
     flags = compute_mismatch_flags(issue, recommendation)
-    labels = ["ai-reviewed"]
+    labels = ["triagebot-reviewed"]
     if flags.type_mismatch and recommendation.recommended_issue_type == "Story":
-        labels.append("ai-likely-story")
+        labels.append("triagebot-likely-story")
     if flags.priority_mismatch:
-        labels.append("ai-priority-mismatch")
+        labels.append("triagebot-priority-mismatch")
     return labels
 
 
@@ -65,11 +66,15 @@ def _mention_attrs(issue: FetchedIssue) -> dict[str, str]:
 
 
 _MENTION_INTRO = (
-    f" — {_TRIAGEBOT_NAME} (automated triage). Informational only; nothing was changed in Jira."
+    " — This is an informational message from "
+    f"{_TRIAGEBOT_NAME} (automated triage). "
+    "No modifications were made to this Jira ticket."
 )
 
 _NO_MENTION_INTRO = (
-    f"{_TRIAGEBOT_NAME} (automated triage). Informational only; nothing was changed in Jira."
+    "This is an informational message from "
+    f"{_TRIAGEBOT_NAME} (automated triage). "
+    "No modifications were made to this Jira ticket."
 )
 
 
@@ -85,8 +90,7 @@ def _opening_paragraph_nodes(issue: FetchedIssue) -> list[dict[str, Any]]:
 def _suggestion_paragraph_text(issue: FetchedIssue, recommendation: TriageRecommendation) -> str:
     if recommendation.recommended_issue_type == "Story":
         return (
-            "Suggested action: classify as Story. From the bug definition we apply, this reads as "
-            "product or enablement work rather than a defect."
+            "TriageBot recommended action: Change this Bug to a Story."
         )
     pri = recommendation.recommended_priority
     assert pri is not None  # Bug path: schema requires a P0–P4 priority
@@ -97,38 +101,82 @@ def _suggestion_paragraph_text(issue: FetchedIssue, recommendation: TriageRecomm
         from_label = str(raw).strip()
     to_label = str(pri).strip()
     return (
-        f"Suggested action: change priority: {from_label} -> {to_label}."
+        f"TriageBot recommended action: Change ticket Priority from {from_label} to {to_label}."
     )
 
 
 def _rationale_paragraph_text(recommendation: TriageRecommendation) -> str:
-    return f"Rationale: {recommendation.reason}"
+    return f"TriageBot rationale: {recommendation.reason}"
+
+
+_PRIORITY_RETENTION_PROMPT = (
+    "If you would like to keep the current Priority, please explain your reasoning. Thank you."
+)
+
+
+def _p0_p4_rank(label: str | None) -> int | None:
+    """Map P0..P4 to 0..4 for ordering (lower rank = more urgent). Unknown labels -> None."""
+    if label is None:
+        return None
+    s = str(label).strip().upper()
+    if len(s) != 2 or s[0] != "P" or s[1] not in "01234":
+        return None
+    return int(s[1])
+
+
+def _should_include_priority_retention_prompt(
+    issue: FetchedIssue,
+    recommendation: TriageRecommendation,
+) -> bool:
+    """Ask for human rationale when Jira is P0/P1 but TriageBot recommends a less urgent P0–P4."""
+    flags = compute_mismatch_flags(issue, recommendation)
+    if not flags.priority_mismatch:
+        return False
+    if recommendation.recommended_issue_type != "Bug":
+        return False
+    rec_pri = recommendation.recommended_priority
+    if rec_pri is None:
+        return False
+    orig_rank = _p0_p4_rank(issue.priority)
+    rec_rank = _p0_p4_rank(str(rec_pri))
+    if orig_rank is None or rec_rank is None:
+        return False
+    if orig_rank not in (0, 1):
+        return False
+    return rec_rank > orig_rank
 
 
 def _mismatch_comment_body(
     issue: FetchedIssue,
     recommendation: TriageRecommendation,
 ) -> dict[str, Any]:
-    return {
-        "version": 1,
-        "type": "doc",
-        "content": [
-            {"type": "paragraph", "content": _opening_paragraph_nodes(issue)},
+    content: list[dict[str, Any]] = [
+        {"type": "paragraph", "content": _opening_paragraph_nodes(issue)},
+        {
+            "type": "paragraph",
+            "content": [
+                {
+                    "type": "text",
+                    "text": _suggestion_paragraph_text(issue, recommendation),
+                },
+            ],
+        },
+    ]
+
+    content.append(
+        {
+            "type": "paragraph",
+            "content": [{"type": "text", "text": _rationale_paragraph_text(recommendation)}],
+        },
+    )
+    if _should_include_priority_retention_prompt(issue, recommendation):
+        content.append(
             {
                 "type": "paragraph",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": _suggestion_paragraph_text(issue, recommendation),
-                    },
-                ],
+                "content": [{"type": "text", "text": _PRIORITY_RETENTION_PROMPT}],
             },
-            {
-                "type": "paragraph",
-                "content": [{"type": "text", "text": _rationale_paragraph_text(recommendation)}],
-            },
-        ],
-    }
+        )
+    return {"version": 1, "type": "doc", "content": content}
 
 
 def _raise_for_status(response: httpx.Response, action: str) -> None:
@@ -138,8 +186,13 @@ def _raise_for_status(response: httpx.Response, action: str) -> None:
         raise JiraActionExecutorError(msg)
 
 
+def _should_post_mismatch_comment(flags: TriageMismatchFlags) -> bool:
+    """Keep confidence advisory-only: comment decisions depend on mismatch flags only."""
+    return flags.any_mismatch()
+
+
 class JiraTriageActionExecutor:
-    """Apply ``ai-reviewed`` on success; on mismatch, labels plus a templated ADF comment.
+    """Apply ``triagebot-reviewed`` on success; on mismatch, labels plus a templated ADF comment.
 
     Copy uses a **TriageBot** internal-comment template: factual and easy to work with (support
     tone, not warnings or flattery). Numeric confidence stays out of Jira. When
@@ -151,6 +204,31 @@ class JiraTriageActionExecutor:
         self._settings = settings
         self._client = client
 
+    def _request(
+        self,
+        client: httpx.Client,
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str],
+        json: dict[str, Any] | None = None,
+    ) -> httpx.Response:
+        kwargs: dict[str, Any] = {"headers": headers}
+        if json is not None:
+            kwargs["json"] = json
+        try:
+            response, _attempts = request_with_retries(
+                client,
+                method,
+                url,
+                max_retries=self._settings.jira_http_max_retries,
+                **kwargs,
+            )
+        except httpx.RequestError as exc:
+            msg = f"Jira request failed after retries: {exc}"
+            raise JiraActionExecutorError(msg) from exc
+        return response
+
     def apply_triage_outcome(
         self,
         *,
@@ -159,8 +237,9 @@ class JiraTriageActionExecutor:
         project: str,
         source: str,
         outcome: TriageRecommendation | TriageFailure,
+        run_id: str,
     ) -> None:
-        _ = (project, source)
+        _ = (project, source, run_id)
         if isinstance(outcome, TriageFailure):
             return
         if issue is None:
@@ -169,7 +248,7 @@ class JiraTriageActionExecutor:
         labels = _labels_for_outcome(outcome, issue)
         base_url, headers = _jira_base_and_headers(self._settings)
         self._apply_labels(base_url, issue_key, labels, headers)
-        if flags.any_mismatch():
+        if _should_post_mismatch_comment(flags):
             self._post_comment(base_url, issue_key, issue, outcome, headers)
 
     def _apply_labels(
@@ -182,11 +261,12 @@ class JiraTriageActionExecutor:
         url = f"{base_url}/rest/api/3/issue/{issue_key}"
         body = {"update": {"labels": [{"add": label} for label in labels]}}
         if self._client is not None:
-            resp = self._client.put(url, json=body, headers=headers)
+            resp = self._request(self._client, "PUT", url, headers=headers, json=body)
             _raise_for_status(resp, "issue label update")
             return
-        with httpx.Client(timeout=30.0) as client:
-            resp = client.put(url, json=body, headers=headers)
+        timeout = httpx.Timeout(self._settings.jira_http_timeout_seconds)
+        with httpx.Client(timeout=timeout) as client:
+            resp = self._request(client, "PUT", url, headers=headers, json=body)
             _raise_for_status(resp, "issue label update")
 
     def _post_comment(
@@ -200,9 +280,10 @@ class JiraTriageActionExecutor:
         url = f"{base_url}/rest/api/3/issue/{issue_key}/comment"
         payload = {"body": _mismatch_comment_body(issue, recommendation)}
         if self._client is not None:
-            resp = self._client.post(url, json=payload, headers=headers)
+            resp = self._request(self._client, "POST", url, headers=headers, json=payload)
             _raise_for_status(resp, "issue comment")
             return
-        with httpx.Client(timeout=30.0) as client:
-            resp = client.post(url, json=payload, headers=headers)
+        timeout = httpx.Timeout(self._settings.jira_http_timeout_seconds)
+        with httpx.Client(timeout=timeout) as client:
+            resp = self._request(client, "POST", url, headers=headers, json=payload)
             _raise_for_status(resp, "issue comment")

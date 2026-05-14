@@ -7,6 +7,8 @@ local runner.
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -24,7 +26,10 @@ class _StubRunner:
         issue_key: str,
         project: str,
         source: str,
+        *,
+        run_id: str,
     ) -> TriageRecommendation | TriageFailure:
+        _ = run_id
         return TriageRecommendation(
             recommended_issue_type="Story",
             recommended_priority=None,
@@ -36,6 +41,79 @@ class _StubRunner:
 @pytest.fixture
 def client() -> TestClient:
     return TestClient(create_app(triage_handler_factory=lambda: _StubRunner()))
+
+
+@pytest.mark.unit
+def test_post_triage_response_includes_parseable_uuid_run_id(client: TestClient) -> None:
+    payload = {"issue_key": "TJC-9", "project": "TJC", "source": "manual_cli"}
+    response = client.post("/triage", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    assert "run_id" in data
+    uuid.UUID(data["run_id"])
+
+
+@pytest.mark.unit
+def test_post_triage_run_id_propagated_to_runner_matches_response(client: TestClient) -> None:
+    seen: list[str] = []
+
+    class _CapturingRunner:
+        def run_sync(
+            self,
+            issue_key: str,
+            project: str,
+            source: str,
+            *,
+            run_id: str,
+        ) -> TriageRecommendation | TriageFailure:
+            _ = (issue_key, project, source)
+            seen.append(run_id)
+            return TriageRecommendation(
+                recommended_issue_type="Story",
+                recommended_priority=None,
+                confidence=0.5,
+                reason="capture stub",
+            )
+
+    app_client = TestClient(create_app(triage_handler_factory=lambda: _CapturingRunner()))
+    payload = {"issue_key": "TJC-9", "project": "TJC", "source": "bug_created"}
+    response = app_client.post("/triage", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    assert len(seen) == 1
+    assert data["run_id"] == seen[0]
+
+
+@pytest.mark.unit
+def test_post_triage_calls_flush_inference_telemetry_when_runner_exposes_it() -> None:
+    flush_calls = 0
+
+    class _RunnerWithFlush:
+        def run_sync(
+            self,
+            issue_key: str,
+            project: str,
+            source: str,
+            *,
+            run_id: str,
+        ) -> TriageRecommendation | TriageFailure:
+            _ = (issue_key, project, source, run_id)
+            return TriageRecommendation(
+                recommended_issue_type="Story",
+                recommended_priority=None,
+                confidence=0.5,
+                reason="flush stub",
+            )
+
+        def flush_inference_telemetry(self) -> None:
+            nonlocal flush_calls
+            flush_calls += 1
+
+    app_client = TestClient(create_app(triage_handler_factory=lambda: _RunnerWithFlush()))
+    payload = {"issue_key": "TJC-9", "project": "TJC", "source": "bug_created"}
+    response = app_client.post("/triage", json=payload)
+    assert response.status_code == 200
+    assert flush_calls == 1
 
 
 @pytest.mark.unit
@@ -154,7 +232,10 @@ def test_post_triage_returns_failed_status_when_runner_returns_triage_failure() 
             issue_key: str,
             project: str,
             source: str,
+            *,
+            run_id: str,
         ) -> TriageRecommendation | TriageFailure:
+            _ = (issue_key, project, source, run_id)
             return fallback_for_exception(RuntimeError("boom"))
 
     app_client = TestClient(create_app(triage_handler_factory=lambda: _FailingRunner()))
@@ -168,9 +249,13 @@ def test_post_triage_returns_failed_status_when_runner_returns_triage_failure() 
     assert data["recommendation"] is None
     assert data["failure"]["category"] == "internal_error"
     assert "boom" in data["failure"]["message"]
+    uuid.UUID(data["run_id"])
 
 
 @pytest.mark.unit
 def test_stub_runner_satisfies_triage_runner_protocol() -> None:
     runner: TriageRunner = _StubRunner()
-    assert isinstance(runner.run_sync("k", "p", "bug_created"), TriageRecommendation)
+    assert isinstance(
+        runner.run_sync("k", "p", "bug_created", run_id=str(uuid.uuid4())),
+        TriageRecommendation,
+    )

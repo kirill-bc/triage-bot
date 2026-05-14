@@ -61,7 +61,7 @@ def test_fetch_issue_returns_summary_description_type_priority_reporter(
     transport = httpx.MockTransport(handler)
     with httpx.Client(transport=transport) as client:
         fetcher = JiraIssueFetcher(jira_app_settings, client=client)
-        issue = fetcher.fetch("TJC-42")
+        issue = fetcher.fetch("TJC-42", run_id="run-test")
 
     assert issue == FetchedIssue(
         issue_key="TJC-42",
@@ -95,7 +95,7 @@ def test_fetch_issue_uses_reporter_account_id_when_display_name_missing(
     transport = httpx.MockTransport(handler)
     with httpx.Client(transport=transport) as client:
         fetcher = JiraIssueFetcher(jira_app_settings, client=client)
-        issue = fetcher.fetch("BC-1")
+        issue = fetcher.fetch("BC-1", run_id="run-test")
 
     assert issue.description is None
     assert issue.priority is None
@@ -137,7 +137,7 @@ def test_fetch_issue_uses_atlassian_gateway_when_jira_cloud_id_set(
     transport = httpx.MockTransport(handler)
     with httpx.Client(transport=transport) as client:
         fetcher = JiraIssueFetcher(settings, client=client)
-        issue = fetcher.fetch("TJC-42")
+        issue = fetcher.fetch("TJC-42", run_id="run-test")
     assert issue.issue_key == "TJC-42"
 
 
@@ -169,7 +169,7 @@ def test_fetch_issue_uses_jira_cloud_id(monkeypatch: pytest.MonkeyPatch) -> None
     transport = httpx.MockTransport(handler)
     with httpx.Client(transport=transport) as client:
         fetcher = JiraIssueFetcher(settings, client=client)
-        fetcher.fetch("X-1")
+        fetcher.fetch("X-1", run_id="run-test")
 
 
 @pytest.mark.unit
@@ -181,7 +181,7 @@ def test_fetch_issue_raises_on_http_error(jira_app_settings: AppSettings) -> Non
     with httpx.Client(transport=transport) as client:
         fetcher = JiraIssueFetcher(jira_app_settings, client=client)
         with pytest.raises(JiraIssueFetchError) as exc:
-            fetcher.fetch("TJC-999")
+            fetcher.fetch("TJC-999", run_id="run-test")
     assert "404" in str(exc.value)
 
 
@@ -197,7 +197,7 @@ def test_fetch_issue_raises_when_jira_cloud_id_and_base_url_missing(
     with httpx.Client(transport=transport) as client:
         fetcher = JiraIssueFetcher(settings, client=client)
         with pytest.raises(JiraIssueFetchError) as exc:
-            fetcher.fetch("TJC-1")
+            fetcher.fetch("TJC-1", run_id="run-test")
     msg = str(exc.value).lower()
     assert "jira_cloud_id" in msg or "cloud_id" in msg
 
@@ -215,5 +215,71 @@ def test_fetch_issue_raises_when_jira_user_email_missing(
     with httpx.Client(transport=transport) as client:
         fetcher = JiraIssueFetcher(settings, client=client)
         with pytest.raises(JiraIssueFetchError) as exc:
-            fetcher.fetch("TJC-1")
+            fetcher.fetch("TJC-1", run_id="run-test")
     assert "email" in str(exc.value).lower()
+
+
+@pytest.mark.unit
+def test_fetch_issue_retries_on_transient_503_then_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+    jira_app_settings: AppSettings,
+) -> None:
+    monkeypatch.setattr(
+        "triage_service.adapters.jira_http_retry.time.sleep",
+        lambda _s: None,
+    )
+    attempts: list[int] = []
+    body = {
+        "key": "TJC-42",
+        "fields": {
+            "summary": "ok",
+            "description": None,
+            "issuetype": {"name": "Bug"},
+            "priority": None,
+            "reporter": {"displayName": "r"},
+        },
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(1)
+        if len(attempts) == 1:
+            return httpx.Response(503, text="unavailable")
+        return httpx.Response(200, json=body)
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        fetcher = JiraIssueFetcher(jira_app_settings, client=client)
+        issue = fetcher.fetch("TJC-42", run_id="run-test")
+    assert len(attempts) == 2
+    assert issue.summary == "ok"
+
+
+@pytest.mark.unit
+def test_fetch_issue_raises_after_exhausting_retries_on_persistent_503(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
+    monkeypatch.setenv("JIRA_CLOUD_ID", "cloud-id-test")
+    monkeypatch.setenv("JIRA_USER_EMAIL", "bot@example.com")
+    monkeypatch.setenv("TRIAGE_JIRA_HTTP_MAX_RETRIES", "1")
+    monkeypatch.setattr(
+        "triage_service.adapters.jira_http_retry.time.sleep",
+        lambda _s: None,
+    )
+    settings = AppSettings()
+    attempts: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(1)
+        return httpx.Response(503, text="still down")
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        fetcher = JiraIssueFetcher(settings, client=client)
+        with pytest.raises(JiraIssueFetchError) as exc:
+            fetcher.fetch("TJC-1", run_id="run-test")
+    assert len(attempts) == 2
+    assert "503" in str(exc.value)
+    assert exc.value.attempts == 2
+    assert exc.value.http_status == 503

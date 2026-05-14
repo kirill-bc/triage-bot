@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import uuid
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -50,7 +51,7 @@ def main() -> int:
 
     fetcher = JiraIssueFetcher(settings)
     try:
-        issue = fetcher.fetch(args.issue_key.strip())
+        issue = fetcher.fetch(args.issue_key.strip(), run_id=str(uuid.uuid4()))
     except JiraIssueFetchError as exc:
         print(str(exc), file=sys.stderr)
         return 1

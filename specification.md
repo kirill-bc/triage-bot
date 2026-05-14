@@ -18,7 +18,7 @@
 - Trigger triage from a Jira Automation **scheduled rule** whose JQL selects unprocessed issues in a stabilization window (see `jira_automation_trigger` below). Jira owns delay, dedupe, and the backstop window so the service stays stateless.
 - Send issue key to AI Triage Service (service fetches latest issue state at analysis time).
 - AI service returns structured recommendation with confidence and reasoning (fields depend on which inference steps ran; see response contract).
-- The AI Triage Service applies an internal comment and the `ai-reviewed` label after every **successful** analysis, regardless of whether a mismatch was detected. Mismatch-specific labels (`ai-likely-story`, `ai-priority-mismatch`) and comment content trigger only on mismatch; **advisory only** (no automatic issue type or priority field mutation in Phase 1).
+- The AI Triage Service applies an internal comment and the `triagebot-reviewed` label after every **successful** analysis, regardless of whether a mismatch was detected. Mismatch-specific labels (`triagebot-likely-story`, `triagebot-priority-mismatch`) and comment content trigger only on mismatch; **advisory only** (no automatic issue type or priority field mutation in Phase 1).
 - Persist audit logs of AI inputs/outputs and applied automation actions.
 
 ## Out-of-scope
@@ -39,11 +39,11 @@
   - Reference JQL (per project):
     ```jql
     project = BC AND issuetype = Bug
-      AND labels not in (ai-reviewed)
+      AND labels not in (triagebot-reviewed)
       AND created >= -30m AND created <= -5m
     ```
     - `created <= -5m` is the stabilization delay (no half-written tickets).
-    - `labels not in (ai-reviewed)` is the dedupe filter — the service applies `ai-reviewed` on every successful analysis, so each issue is triaged exactly once.
+    - `labels not in (triagebot-reviewed)` is the dedupe filter — the service applies `triagebot-reviewed` on every successful analysis, so each issue is triaged exactly once.
     - `created >= -30m` is the backstop window. Failed analyses (transient Jira/OpenRouter outage, invalid model output) keep matching until success or until the issue ages past 30 minutes; then they fall through and surface as manual-QA cases via metrics.
   - Reference rule cadence: every 5 minutes (must be ≤ the JQL window length so no issue is missed).
   - Reference request body (Jira Automation **Send web request → Custom data**):
@@ -82,15 +82,15 @@
       - When `recommended_issue_type` is `Bug`, `recommended_priority` is required. Compare to Jira priority on the Bug triage path.
       - `confidence` may represent the last inference that ran, or separate fields per step — document and validate in the parser; at minimum, classification always has a score. The service does **not** model a model-supplied action enum; `triage_mismatch.compute_mismatch_flags` derives `type_mismatch` / `priority_mismatch` from Jira fields vs recommendation for labels and advisory comments (`reason` required for comment text).
 - `jira_action_executor`
-  - Apply the `ai-reviewed` label **after every successful triage**, mismatch or not. This is the dedupe marker the Jira scheduled rule depends on; without it the rule re-analyzes the same issue every cycle until it ages out of the JQL window.
+  - Apply the `triagebot-reviewed` label **after every successful triage**, mismatch or not. This is the dedupe marker the Jira scheduled rule depends on; without it the rule re-analyzes the same issue every cycle until it ages out of the JQL window.
   - When a mismatch is detected, additionally:
     - Post an internal comment using a **fixed direct template** as **TriageBot** (recommendation summary + model rationale as context). Numeric **confidence** stays in the API response and audit logs, not in the Jira comment body. Comment text is **advisory**; Phase 1 does **not** mutate Jira issue type or priority fields via automation.
     - Apply mismatch-specific labels
-      - `ai-likely-story` when the issue type differs from `recommended_issue_type` and the recommendation is Story (reclassify away from Bug). There is no label for “recommend Bug” on a non-Bug issue type because triage is scoped to Bug issues only.
-      - `ai-priority-mismatch` when the Bug path predicted a priority that differs from the current Jira priority. N/A on the Story path (priority inference does not run).
-  - When recommendation matches current state, apply `ai-reviewed` only — no comment, no mismatch labels.
+      - `triagebot-likely-story` when the issue type differs from `recommended_issue_type` and the recommendation is Story (reclassify away from Bug). There is no label for “recommend Bug” on a non-Bug issue type because triage is scoped to Bug issues only.
+      - `triagebot-priority-mismatch` when the Bug path predicted a priority that differs from the current Jira priority. N/A on the Story path (priority inference does not run).
+  - When recommendation matches current state, apply `triagebot-reviewed` only — no comment, no mismatch labels.
   - When triage returns a `TriageFailure` (Jira fetch error, OpenRouter inference error, invalid model output, unexpected error), apply **no** labels and post **no** comment. The issue keeps matching the JQL and is retried automatically on the next scheduled run, until it succeeds or ages past the backstop window.
-  - Re-triage policy: an operator may remove `ai-reviewed` on a Jira issue to force re-analysis on the next scheduled scan. There is no TTL or service-side state to clear.
+  - Re-triage policy: an operator may remove `triagebot-reviewed` on a Jira issue to force re-analysis on the next scheduled scan. There is no TTL or service-side state to clear.
 - `audit_log_store`
   - Persist request metadata (including `source`), model output, confidence, action taken, and timestamp.
 

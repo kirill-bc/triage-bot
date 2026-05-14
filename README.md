@@ -6,7 +6,7 @@ Jira Triage is an MVP service that accepts a triage trigger, fetches Jira issue 
 
 The repository currently includes:
 
-- a working `POST /triage` API that validates the request, runs synchronous triage (fetch → classify → optional priority), and returns `status: completed|failed` with a recommendation or `TriageFailure` (also invocable locally via `scripts/run_triage_cli.py` with `source=manual_cli`). When `JIRA_CLOUD_ID` and `JIRA_USER_EMAIL` are configured, successful triage applies Jira labels/comments via `src/triage_service/adapters/jira_action_executor.py` (see below); failures do not touch the issue.
+- a working `POST /triage` API that validates the request, runs synchronous triage (fetch → classify → optional priority), and returns `run_id` (per-request UUID), `status: completed|failed`, and a recommendation or `TriageFailure` (also invocable locally via `scripts/run_triage_cli.py` with `source=manual_cli`, which generates its own `run_id` for the CLI attempt). When `JIRA_CLOUD_ID` and `JIRA_USER_EMAIL` are configured, successful triage applies Jira labels/comments via `src/triage_service/adapters/jira_action_executor.py` (see below); failures do not touch the issue.
 - Jira issue fetch support (`summary`, `description`, `issue type`, `priority`, `reporter`)
 - bundled **policy text** for model context (`src/triage_service/core/policy/`) and a **`policy_context`** loader
 - **prompt composer** for separate classification vs priority model inputs (`src/triage_service/core/prompt_composer.py`)
@@ -19,9 +19,9 @@ See `TODO.md` for the active implementation backlog.
 ## Repository layout
 
 - `src/triage_service/api/triage_api.py`: FastAPI app, `POST /triage` request/response contract, and dependency-injectable triage runner
-- `src/triage_service/core/triage_handler.py`: synchronous pipeline, `TriageRunner` / `TriageActionExecutor` protocols; `build_default_triage_handler()` uses `JiraTriageActionExecutor` when Jira base URL and user email are set, otherwise a no-op executor
+- `src/triage_service/core/triage_handler.py`: synchronous pipeline, `TriageRunner` / `TriageActionExecutor` protocols; `build_default_triage_handler()` uses `JiraTriageActionExecutor` when `JIRA_CLOUD_ID` and `JIRA_USER_EMAIL` are set, otherwise a no-op executor
 - `src/triage_service/adapters/jira_issue_fetcher.py`: Jira REST client and response normalization (includes `reporter_account_id` when Jira returns it, for @mentions in mismatch comments)
-- `src/triage_service/adapters/jira_action_executor.py`: on success, applies `ai-reviewed` plus mismatch labels and a templated **TriageBot** ADF comment when needed; on `TriageFailure`, performs no Jira writes
+- `src/triage_service/adapters/jira_action_executor.py`: on success, applies `triagebot-reviewed` plus mismatch labels and a templated **TriageBot** ADF comment when needed; on `TriageFailure`, performs no Jira writes
 - `src/triage_service/adapters/openrouter_inference_client.py`: OpenRouter chat completions using `OPENROUTER_MODEL` (see `src/triage_service/core/settings.py`)
 - `src/triage_service/core/settings.py`: environment-backed runtime settings, including `TRIAGE_ALLOWED_PROJECTS` allowlist parsing
 - `src/triage_service/core/policy_context.py`: loads bug and priority definition text from `src/triage_service/core/policy/` for prompts
@@ -29,7 +29,7 @@ See `TODO.md` for the active implementation backlog.
 - `src/triage_service/core/triage_recommendation_parser.py`: validates merged LLM JSON into `TriageRecommendation` (throws `InvalidTriageRecommendationError` when invalid)
 - `src/triage_service/core/triage_mismatch.py`: `compute_mismatch_flags(issue, recommendation)` for deterministic type/priority mismatch (Jira executor / comments)
 - `src/triage_service/core/triage_fallback.py`: `TriageFailure` plus `fallback_for_exception()` to map fetch/inference/parse errors to a stable category + message for orchestration
-- `triage_manual_cli.py`: infer project from `PROJ-123` keys, run `TriageHandler.run_sync(..., "manual_cli")`, and `main()` for the CLI
+- `triage_manual_cli.py`: infer project from `PROJ-123` keys, run `TriageHandler.run_sync(..., source="manual_cli", run_id=...)`, and `main()` for the CLI
 - `dev_tunnel.py`: load repo `.env`, start `uvicorn`, then run `ngrok` or `cloudflared` for Jira-facing HTTPS during local development (`scripts/run_dev_tunnel.py`)
 - `src/triage_service/core/policy/`: `bug_definition.md` and `priority_definition.md` (edit to match your org)
 - `scripts/fetch_jira_issue.py`: manual CLI smoke script for a single Jira issue
@@ -45,7 +45,7 @@ See `TODO.md` for the active implementation backlog.
 
 ## Current implemented components
 
-- **API layer**: `POST /triage` accepts `issue_key`, `project`, `source` (`bug_created` or `priority_changed` for Jira Automation; `manual_cli` for the local runner; closed `Literal`)
+- **API layer**: `POST /triage` accepts `issue_key`, `project`, `source` (`bug_created` or `priority_changed` for Jira Automation; `manual_cli` for the local runner; closed `Literal`); JSON responses include a generated `run_id` for correlation with downstream observability
 - **Validation**: rejects missing fields and unsupported `source` values; rejects projects outside `TRIAGE_ALLOWED_PROJECTS` with `TriageFailure` category `project_not_allowed`
 - **Jira adapter**: fetches and flattens selected Jira issue fields
 - **OpenRouter adapter**: `OpenRouterInferenceClient` posts chat completions using the configured model id
@@ -67,6 +67,9 @@ From repository root:
    - optional: `OPENROUTER_MODEL` (defaults to `openai/gpt-4o-mini` if unset)
    - optional: `TRIAGE_PROMPT_TEMPLATES_PATH` (path to external JSON prompt templates; defaults to `src/triage_service/core/prompt_templates.json`)
    - optional: `JIRA_CLOUD_ID`, `JIRA_USER_EMAIL`, logging values
+   - optional: `TRIAGE_JIRA_HTTP_TIMEOUT_SECONDS` (per-attempt timeout for Jira REST, default `30`) and `TRIAGE_JIRA_HTTP_MAX_RETRIES` (extra attempts after a transient HTTP 429/502/503/504 or transport failure, default `2`, max `10`)
+   - optional: `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, and `LANGFUSE_BASE_URL` (when the first two are set, OpenRouter steps are traced in Langfuse under a deterministic trace id derived from `run_id`, and canonical lifecycle audit events can also be mirrored to Langfuse; `POST /triage` and the manual CLI call `flush_inference_telemetry()` after each run so buffers are not stuck in short-lived processes)
+   - optional audit routing and redaction (defaults: structured JSON logs **on**, Langfuse audit mirror **on** when Langfuse keys exist, model input redaction **on**, model output redaction **off**): `TRIAGE_AUDIT_STRUCTURED_LOG_ENABLED`, `TRIAGE_AUDIT_LANGFUSE_ENABLED`, `TRIAGE_AUDIT_REDACT_MODEL_INPUT`, `TRIAGE_AUDIT_REDACT_MODEL_OUTPUT`. Filter JSON log lines by `run_id` (API response field or CLI-generated UUID) or use the same `run_id` in the Langfuse UI to align traces, generations, and audit events.
 3. Run quality gates:
    - `.venv/bin/pytest -m lint`
    - `.venv/bin/mypy .`
@@ -135,10 +138,10 @@ The production integration model is Jira Cloud Automation running on a schedule 
 
 - Rule cadence: every 5 minutes (or similar), aligned to the JQL window.
 - Reference JQL:
-  `project = TJC AND issuetype = Bug AND labels not in (ai-reviewed) AND created >= -30m AND created <= -5m`
+  `project = TJC AND issuetype = Bug AND labels not in (triagebot-reviewed) AND created >= -30m AND created <= -5m`
 - Rationale:
   - `created <= -5m`: stabilization delay before first triage attempt.
-  - `labels not in (ai-reviewed)`: dedupe marker so successful issues drop out.
+  - `labels not in (triagebot-reviewed)`: dedupe marker so successful issues drop out.
   - `created >= -30m`: retry backstop window for temporary failures.
 
 For the **Send web request** action, use custom JSON data:
@@ -154,12 +157,12 @@ For the **Send web request** action, use custom JSON data:
 Use `"source": "bug_created"` for a newly-created Bug rule and `"source": "priority_changed"`
 for a priority-change rule.
 
-### `ai-reviewed` lifecycle
+### `triagebot-reviewed` lifecycle
 
-- On successful triage (mismatch or not), the executor applies `ai-reviewed`.
+- On successful triage (mismatch or not), the executor applies `triagebot-reviewed`.
 - On triage failure (`status: failed` / `TriageFailure`), no labels or comments are posted.
-- To force re-triage on an issue that already succeeded, remove `ai-reviewed` manually.
-- If an issue is older than the JQL window and still has no `ai-reviewed`, treat it as a
+- To force re-triage on an issue that already succeeded, remove `triagebot-reviewed` manually.
+- If an issue is older than the JQL window and still has no `triagebot-reviewed`, treat it as a
   manual follow-up case and run triage via CLI or direct API call.
 
 ### MVP limitations

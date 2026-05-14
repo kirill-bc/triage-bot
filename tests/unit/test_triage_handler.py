@@ -6,6 +6,7 @@ from typing import Any
 
 import httpx
 import pytest
+from unittest.mock import MagicMock
 
 from triage_service.adapters.jira_issue_fetcher import FetchedIssue, JiraIssueFetcher
 from triage_service.adapters.openrouter_inference_client import OpenRouterInferenceClient
@@ -14,11 +15,17 @@ from triage_service.core.triage_fallback import TriageFailure
 from triage_service.core.triage_handler import TriageActionExecutor, TriageHandler
 from triage_service.core.policy_context import PolicyContext
 from triage_service.core.triage_recommendation_parser import TriageRecommendation
+from triage_service.observability.audit_events import (
+    ClassificationCompletedAuditEvent,
+    PriorityCompletedAuditEvent,
+    TriageCompletedAuditEvent,
+    TriageFailedAuditEvent,
+)
 
 
 class _RecordingExecutor(TriageActionExecutor):
     def __init__(self) -> None:
-        self.calls: list[tuple[FetchedIssue | None, Any]] = []
+        self.calls: list[tuple[FetchedIssue | None, Any, str]] = []
 
     def apply_triage_outcome(
         self,
@@ -28,8 +35,18 @@ class _RecordingExecutor(TriageActionExecutor):
         project: str,
         source: str,
         outcome: TriageRecommendation | TriageFailure,
+        run_id: str,
     ) -> None:
-        self.calls.append((issue, outcome))
+        _ = (issue_key, project, source)
+        self.calls.append((issue, outcome, run_id))
+
+
+class _RecordingAuditStore:
+    def __init__(self) -> None:
+        self.events: list[object] = []
+
+    def record(self, event: object) -> None:
+        self.events.append(event)
 
 
 def _app_settings(monkeypatch: pytest.MonkeyPatch) -> AppSettings:
@@ -87,15 +104,17 @@ def test_handler_story_path_calls_inference_once_and_returns_recommendation(
                 issue_key="TJC-9",
                 project="TJC",
                 source="bug_created",
+                run_id="run-correlation-1",
             )
 
     assert isinstance(outcome, TriageRecommendation)
     assert outcome.recommended_issue_type == "Story"
     assert outcome.recommended_priority is None
     assert len(executor.calls) == 1
-    applied_issue, applied_outcome = executor.calls[0]
+    applied_issue, applied_outcome, applied_run_id = executor.calls[0]
     assert applied_issue == issue
     assert applied_outcome == outcome
+    assert applied_run_id == "run-correlation-1"
 
 
 @pytest.mark.unit
@@ -147,6 +166,7 @@ def test_handler_bug_path_calls_inference_twice_and_merges_priority(
                 issue_key="TJC-10",
                 project="TJC",
                 source="bug_created",
+                run_id="run-correlation-2",
             )
 
     assert isinstance(outcome, TriageRecommendation)
@@ -155,6 +175,75 @@ def test_handler_bug_path_calls_inference_twice_and_merges_priority(
     assert outcome.confidence == 0.88
     assert outcome.reason == "Data loss risk."
     assert idx["i"] == 2
+
+
+@pytest.mark.unit
+def test_handler_emits_stage_timing_for_fetch_model_and_executor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _app_settings(monkeypatch)
+    issue = FetchedIssue(
+        issue_key="TJC-12",
+        summary="s",
+        description="d",
+        issue_type="Bug",
+        priority="P3",
+        reporter="r",
+    )
+
+    def jira_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_jira_payload_for(issue))
+
+    cls_json = '{"recommended_issue_type":"Bug","confidence":0.51,"reason":"Defect."}'
+    pri_json = '{"recommended_priority":"P1","confidence":0.8,"reason":"Customer impact."}'
+    responses = [cls_json, pri_json]
+    idx = {"i": 0}
+
+    def openrouter_handler(request: httpx.Request) -> httpx.Response:
+        i = idx["i"]
+        idx["i"] = i + 1
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": responses[i]}}]},
+        )
+
+    perf_values = iter([1.0, 1.01, 2.0, 2.02, 3.0, 3.04, 4.0, 4.03])
+    monkeypatch.setattr(
+        "triage_service.core.triage_handler.perf_counter",
+        lambda: next(perf_values),
+    )
+    logger = MagicMock()
+    monkeypatch.setattr("triage_service.core.triage_handler.LOGGER", logger)
+
+    transport_j = httpx.MockTransport(jira_handler)
+    transport_o = httpx.MockTransport(openrouter_handler)
+    with httpx.Client(transport=transport_j) as j_client:
+        with httpx.Client(transport=transport_o) as o_client:
+            fetcher = JiraIssueFetcher(settings, client=j_client)
+            inference = OpenRouterInferenceClient(settings, client=o_client)
+            executor = _RecordingExecutor()
+            handler = TriageHandler(
+                allowed_projects=("TJC",),
+                fetcher=fetcher,
+                inference=inference,
+                policy=_policy(),
+                executor=executor,
+            )
+            _ = handler.run_sync(
+                issue_key="TJC-12",
+                project="TJC",
+                source="bug_created",
+                run_id="run-correlation-latency",
+            )
+
+    stage_names = [call.kwargs["extra"]["stage"] for call in logger.info.call_args_list]
+    assert stage_names == [
+        "jira_fetch",
+        "classification_inference",
+        "priority_inference",
+        "jira_action",
+    ]
+    assert logger.info.call_count == 4
 
 
 @pytest.mark.unit
@@ -200,14 +289,16 @@ def test_run_sync_on_fetched_story_path_skips_jira_fetch(
                 issue=issue,
                 project="TJC",
                 source="manual_cli",
+                run_id="run-correlation-3",
             )
 
     assert isinstance(outcome, TriageRecommendation)
     assert outcome.recommended_issue_type == "Story"
     assert len(executor.calls) == 1
-    applied_issue, applied_outcome = executor.calls[0]
+    applied_issue, applied_outcome, applied_run_id = executor.calls[0]
     assert applied_issue == issue
     assert applied_outcome == outcome
+    assert applied_run_id == "run-correlation-3"
 
 
 @pytest.mark.unit
@@ -237,6 +328,7 @@ def test_handler_rejects_project_not_in_allowlist_without_fetch(
                 issue_key="XX-1",
                 project="XX",
                 source="bug_created",
+                run_id="run-correlation-4",
             )
 
     assert isinstance(outcome, TriageFailure)
@@ -244,6 +336,7 @@ def test_handler_rejects_project_not_in_allowlist_without_fetch(
     assert len(executor.calls) == 1
     assert executor.calls[0][0] is None
     assert executor.calls[0][1] == outcome
+    assert executor.calls[0][2] == "run-correlation-4"
 
 
 def _fail(request: httpx.Request) -> httpx.Response:
@@ -277,12 +370,14 @@ def test_handler_passes_triage_failure_to_executor_on_jira_error(
                 issue_key="TJC-1",
                 project="TJC",
                 source="bug_created",
+                run_id="run-correlation-5",
             )
 
     assert isinstance(outcome, TriageFailure)
     assert outcome.category == "jira_fetch_failed"
     assert executor.calls[0][0] is None
     assert executor.calls[0][1] == outcome
+    assert executor.calls[0][2] == "run-correlation-5"
 
 
 def _jira_payload_for(issue: FetchedIssue) -> dict[str, Any]:
@@ -301,3 +396,168 @@ def _jira_payload_for(issue: FetchedIssue) -> dict[str, Any]:
             "reporter": {"displayName": issue.reporter},
         },
     }
+
+
+@pytest.mark.unit
+def test_handler_bug_path_emits_classification_priority_and_triage_completed_audit_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _app_settings(monkeypatch)
+    issue = FetchedIssue(
+        issue_key="TJC-10",
+        summary="crash",
+        description="segfault",
+        issue_type="Bug",
+        priority="Low",
+        reporter="bob",
+    )
+
+    def jira_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_jira_payload_for(issue))
+
+    cls_json = '{"recommended_issue_type":"Bug","confidence":0.55,"reason":"Defect."}'
+    pri_json = '{"recommended_priority":"P1","confidence":0.88,"reason":"Data loss risk."}'
+    responses = [cls_json, pri_json]
+    idx = {"i": 0}
+
+    def openrouter_handler(request: httpx.Request) -> httpx.Response:
+        i = idx["i"]
+        idx["i"] = i + 1
+        content = responses[i]
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": content}}]},
+        )
+
+    audit = _RecordingAuditStore()
+    transport_j = httpx.MockTransport(jira_handler)
+    transport_o = httpx.MockTransport(openrouter_handler)
+    with httpx.Client(transport=transport_j) as j_client:
+        with httpx.Client(transport=transport_o) as o_client:
+            fetcher = JiraIssueFetcher(settings, client=j_client)
+            inference = OpenRouterInferenceClient(settings, client=o_client)
+            executor = _RecordingExecutor()
+            handler = TriageHandler(
+                allowed_projects=("TJC",),
+                fetcher=fetcher,
+                inference=inference,
+                policy=_policy(),
+                executor=executor,
+                audit_store=audit,
+            )
+            _ = handler.run_sync(
+                issue_key="TJC-10",
+                project="TJC",
+                source="bug_created",
+                run_id="run-audit-bug",
+            )
+
+    assert len(audit.events) == 3
+    assert isinstance(audit.events[0], ClassificationCompletedAuditEvent)
+    assert isinstance(audit.events[1], PriorityCompletedAuditEvent)
+    assert isinstance(audit.events[2], TriageCompletedAuditEvent)
+    e0 = audit.events[0]
+    assert e0.run_id == "run-audit-bug"
+    assert e0.issue_key == "TJC-10"
+    assert e0.recommended_issue_type == "Bug"
+
+
+@pytest.mark.unit
+def test_handler_story_path_emits_classification_and_triage_completed_without_priority_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _app_settings(monkeypatch)
+    issue = FetchedIssue(
+        issue_key="TJC-9",
+        summary="s",
+        description=None,
+        issue_type="Bug",
+        priority="Medium",
+        reporter="r",
+    )
+
+    def jira_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_jira_payload_for(issue))
+
+    story_json = '{"recommended_issue_type":"Story","confidence":0.7,"reason":"Narrative work."}'
+
+    def openrouter_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": story_json}}]},
+        )
+
+    audit = _RecordingAuditStore()
+    transport_j = httpx.MockTransport(jira_handler)
+    transport_o = httpx.MockTransport(openrouter_handler)
+    with httpx.Client(transport=transport_j) as j_client:
+        with httpx.Client(transport=transport_o) as o_client:
+            fetcher = JiraIssueFetcher(settings, client=j_client)
+            inference = OpenRouterInferenceClient(settings, client=o_client)
+            executor = _RecordingExecutor()
+            handler = TriageHandler(
+                allowed_projects=("TJC",),
+                fetcher=fetcher,
+                inference=inference,
+                policy=_policy(),
+                executor=executor,
+                audit_store=audit,
+            )
+            _ = handler.run_sync(
+                issue_key="TJC-9",
+                project="TJC",
+                source="priority_changed",
+                run_id="run-audit-story",
+            )
+
+    assert len(audit.events) == 2
+    assert isinstance(audit.events[0], ClassificationCompletedAuditEvent)
+    assert isinstance(audit.events[1], TriageCompletedAuditEvent)
+    assert audit.events[1].recommended_issue_type == "Story"
+    assert audit.events[1].recommended_priority is None
+
+
+@pytest.mark.unit
+def test_handler_jira_fetch_failure_emits_triage_failed_audit_with_http_telemetry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _app_settings(monkeypatch)
+    monkeypatch.setattr(
+        "triage_service.adapters.jira_http_retry.time.sleep",
+        lambda _s: None,
+    )
+
+    def jira_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, text="unavailable")
+
+    audit = _RecordingAuditStore()
+    transport_j = httpx.MockTransport(jira_handler)
+    with httpx.Client(transport=transport_j) as j_client:
+        fetcher = JiraIssueFetcher(settings, client=j_client)
+        or_transport = httpx.MockTransport(_fail)
+        with httpx.Client(transport=or_transport) as o_client:
+            inference = OpenRouterInferenceClient(settings, client=o_client)
+            executor = _RecordingExecutor()
+            handler = TriageHandler(
+                allowed_projects=("TJC",),
+                fetcher=fetcher,
+                inference=inference,
+                policy=_policy(),
+                executor=executor,
+                audit_store=audit,
+            )
+            outcome = handler.run_sync(
+                issue_key="TJC-1",
+                project="TJC",
+                source="bug_created",
+                run_id="run-audit-fail",
+            )
+
+    assert isinstance(outcome, TriageFailure)
+    assert len(audit.events) == 1
+    ev = audit.events[0]
+    assert isinstance(ev, TriageFailedAuditEvent)
+    assert ev.category == "jira_fetch_failed"
+    assert ev.telemetry is not None
+    assert ev.telemetry.get("http_status") == 503
+    assert ev.telemetry.get("http_attempts") == settings.jira_http_max_retries + 1

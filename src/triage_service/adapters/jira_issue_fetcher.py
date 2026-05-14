@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 from pydantic import BaseModel
 
+from triage_service.adapters.jira_http_retry import request_with_retries
 from triage_service.core.settings import AppSettings
 
 _ATLASSIAN_GATEWAY = "https://api.atlassian.com/ex/jira"
@@ -27,6 +28,19 @@ class FetchedIssue(BaseModel):
 
 class JiraIssueFetchError(RuntimeError):
     """Raised when configuration or HTTP prevents loading an issue."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        attempts: int | None = None,
+        http_status: int | None = None,
+        transport_timeout: bool | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.attempts = attempts
+        self.http_status = http_status
+        self.transport_timeout = transport_timeout
 
 
 def _extract_text_from_adf(node: Any) -> str:
@@ -131,7 +145,8 @@ class JiraIssueFetcher:
         self._settings = settings
         self._client = client
 
-    def fetch(self, issue_key: str) -> FetchedIssue:
+    def fetch(self, issue_key: str, *, run_id: str) -> FetchedIssue:
+        _ = run_id
         url = _issue_get_url(self._settings, issue_key)
         email = self._settings.jira_user_email
         if email is None or not str(email).strip():
@@ -147,7 +162,8 @@ class JiraIssueFetcher:
         if self._client is not None:
             return self._request(self._client, url, params, headers)
 
-        with httpx.Client(timeout=30.0) as client:
+        timeout = httpx.Timeout(self._settings.jira_http_timeout_seconds)
+        with httpx.Client(timeout=timeout) as client:
             return self._request(client, url, params, headers)
 
     def _request(
@@ -157,11 +173,28 @@ class JiraIssueFetcher:
         params: dict[str, str],
         headers: dict[str, str],
     ) -> FetchedIssue:
-        response = client.get(url, params=params, headers=headers)
+        try:
+            response, attempts = request_with_retries(
+                client,
+                "GET",
+                url,
+                max_retries=self._settings.jira_http_max_retries,
+                params=params,
+                headers=headers,
+            )
+        except httpx.RequestError as exc:
+            timeout = isinstance(exc, httpx.TimeoutException)
+            raise JiraIssueFetchError(
+                f"Jira issue request failed after retries: {exc}",
+                attempts=self._settings.jira_http_max_retries + 1,
+                transport_timeout=timeout,
+            ) from exc
         if response.is_error:
             snippet = response.text[:200]
             raise JiraIssueFetchError(
                 f"Jira issue request failed with HTTP {response.status_code}: {snippet}",
+                attempts=attempts,
+                http_status=response.status_code,
             )
         payload = response.json()
         return _parse_issue_payload(payload)

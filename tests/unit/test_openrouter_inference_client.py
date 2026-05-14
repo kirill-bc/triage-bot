@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from triage_service.adapters.openrouter_inference_client import (
+    OpenRouterCompletionResult,
     OpenRouterInferenceClient,
     OpenRouterInferenceError,
 )
@@ -51,6 +52,7 @@ def test_chat_completion_sends_model_from_settings_and_returns_assistant_text(
                 {"role": "system", "content": "You are a classifier."},
                 {"role": "user", "content": "Classify this issue."},
             ],
+            run_id="run-test",
         )
 
     assert text == '{"recommended_issue_type": "Bug"}'
@@ -86,7 +88,10 @@ def test_chat_completion_uses_model_override_when_provided(
             client=client,
             model_override="meta-llama/llama-3.1-8b-instruct",
         )
-        assert inference.chat_completion(messages=[{"role": "user", "content": "x"}]) == "ok"
+        assert inference.chat_completion(
+            messages=[{"role": "user", "content": "x"}],
+            run_id="run-test",
+        ) == "ok"
 
     payload = captured["json"]
     assert isinstance(payload, dict)
@@ -102,7 +107,10 @@ def test_chat_completion_raises_on_http_error(openrouter_app_settings: AppSettin
     with httpx.Client(transport=transport) as client:
         inference = OpenRouterInferenceClient(openrouter_app_settings, client=client)
         with pytest.raises(OpenRouterInferenceError) as exc:
-            inference.chat_completion(messages=[{"role": "user", "content": "hi"}])
+            inference.chat_completion(
+                messages=[{"role": "user", "content": "hi"}],
+                run_id="run-test",
+            )
     assert "429" in str(exc.value)
 
 
@@ -118,7 +126,10 @@ def test_chat_completion_raises_when_response_has_no_assistant_content(
     with httpx.Client(transport=transport) as client:
         inference = OpenRouterInferenceClient(openrouter_app_settings, client=client)
         with pytest.raises(OpenRouterInferenceError) as exc:
-            inference.chat_completion(messages=[{"role": "user", "content": "x"}])
+            inference.chat_completion(
+                messages=[{"role": "user", "content": "x"}],
+                run_id="run-test",
+            )
     assert "content" in str(exc.value).lower() or "empty" in str(exc.value).lower()
 
 
@@ -143,10 +154,35 @@ def test_chat_completion_uses_default_model_when_env_omitted(
     transport = httpx.MockTransport(handler)
     with httpx.Client(transport=transport) as client:
         inference = OpenRouterInferenceClient(settings, client=client)
-        assert inference.chat_completion(messages=[{"role": "user", "content": "x"}]) == "ok"
+        assert inference.chat_completion(
+            messages=[{"role": "user", "content": "x"}],
+            run_id="run-test",
+        ) == "ok"
 
     assert isinstance(captured["json"], dict)
     assert captured["json"]["model"] == settings.openrouter_model
+
+
+@pytest.mark.unit
+def test_effective_model_id_prefers_override_then_settings(
+    openrouter_app_settings: AppSettings,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": "ok"}}]},
+        )
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        default_inf = OpenRouterInferenceClient(openrouter_app_settings, client=client)
+        assert default_inf.effective_model_id == "anthropic/claude-3-haiku"
+        override_inf = OpenRouterInferenceClient(
+            openrouter_app_settings,
+            client=client,
+            model_override="meta-llama/llama-3.1-8b-instruct",
+        )
+        assert override_inf.effective_model_id == "meta-llama/llama-3.1-8b-instruct"
 
 
 @pytest.mark.unit
@@ -167,9 +203,47 @@ def test_chat_completion_includes_max_tokens_in_json_when_provided(
         inference = OpenRouterInferenceClient(openrouter_app_settings, client=client)
         inference.chat_completion(
             messages=[{"role": "user", "content": "hi"}],
+            run_id="run-test",
             max_tokens=8,
         )
 
     payload = captured["json"]
     assert isinstance(payload, dict)
     assert payload.get("max_tokens") == 8
+
+
+@pytest.mark.unit
+def test_chat_completion_with_details_returns_usage_and_cost_when_present(
+    openrouter_app_settings: AppSettings,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        _ = request
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+                "usage": {
+                    "prompt_tokens": 11,
+                    "completion_tokens": 7,
+                    "total_tokens": 18,
+                    "cost": 0.00042,
+                },
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        inference = OpenRouterInferenceClient(openrouter_app_settings, client=client)
+        result = inference.chat_completion_with_details(
+            messages=[{"role": "user", "content": "x"}],
+            run_id="run-test",
+        )
+
+    assert isinstance(result, OpenRouterCompletionResult)
+    assert result.content == "ok"
+    assert result.usage_details == {
+        "prompt_tokens": 11,
+        "completion_tokens": 7,
+        "total_tokens": 18,
+    }
+    assert result.cost_details == {"cost": 0.00042}

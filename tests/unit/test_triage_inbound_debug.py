@@ -53,7 +53,10 @@ class _StubRunner:
         issue_key: str,
         project: str,
         source: str,
+        *,
+        run_id: str,
     ) -> TriageRecommendation | TriageFailure:
+        _ = run_id
         return TriageRecommendation(
             recommended_issue_type="Story",
             recommended_priority=None,

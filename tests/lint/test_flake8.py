@@ -18,6 +18,7 @@ def test_flake8_passes_on_src_and_tests() -> None:
             str(root / "src" / "triage_service" / "core" / "settings.py"),
             str(root / "src" / "triage_service" / "adapters" / "jira_action_executor.py"),
             str(root / "src" / "triage_service" / "adapters" / "jira_issue_fetcher.py"),
+            str(root / "src" / "triage_service" / "adapters" / "jira_http_retry.py"),
             str(root / "src" / "triage_service" / "adapters" / "openrouter_inference_client.py"),
             str(root / "src" / "triage_service" / "core" / "policy_context.py"),
             str(root / "src" / "triage_service" / "core" / "prompt_composer.py"),
@@ -27,6 +28,24 @@ def test_flake8_passes_on_src_and_tests() -> None:
             str(root / "src" / "triage_service" / "core" / "triage_mismatch.py"),
             str(root / "triage_manual_cli.py"),
             str(root / "src" / "triage_service" / "core" / "triage_recommendation_parser.py"),
+            str(root / "src" / "triage_service" / "observability" / "audit_events.py"),
+            str(root / "src" / "triage_service" / "observability" / "audit_store.py"),
+            str(
+                root
+                / "src"
+                / "triage_service"
+                / "observability"
+                / "langfuse_inference_tracing.py",
+            ),
+            str(
+                root
+                / "src"
+                / "triage_service"
+                / "observability"
+                / "langfuse_audit_store.py",
+            ),
+            str(root / "src" / "triage_service" / "observability" / "observability_wiring.py"),
+            str(root / "src" / "triage_service" / "observability" / "payload_redaction.py"),
             str(root / "dev_tunnel.py"),
             str(root / "scripts" / "fetch_jira_issue.py"),
             str(root / "scripts" / "run_triage_cli.py"),

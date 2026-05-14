@@ -27,6 +27,45 @@ class AppSettings(BaseSettings):
         description="OpenRouter model id, e.g. openai/gpt-4o-mini or anthropic/claude-3-haiku.",
     )
 
+    langfuse_public_key: str | None = Field(
+        default=None,
+        validation_alias="LANGFUSE_PUBLIC_KEY",
+        description="LangFuse public key; omit to disable LangFuse inference tracing.",
+    )
+    langfuse_secret_key: str | None = Field(
+        default=None,
+        validation_alias="LANGFUSE_SECRET_KEY",
+        description="LangFuse secret key; both keys required to enable tracing.",
+    )
+    langfuse_base_url: str | None = Field(
+        default=None,
+        validation_alias="LANGFUSE_BASE_URL",
+        description="LangFuse API base URL (e.g. https://cloud.langfuse.com); optional.",
+    )
+    audit_structured_log_enabled: bool = Field(
+        default=True,
+        validation_alias="TRIAGE_AUDIT_STRUCTURED_LOG_ENABLED",
+        description="Enable structured JSON audit logs for triage lifecycle events.",
+    )
+    audit_langfuse_enabled: bool = Field(
+        default=True,
+        validation_alias="TRIAGE_AUDIT_LANGFUSE_ENABLED",
+        description="Enable LangFuse audit sink when credentials are configured.",
+    )
+    audit_redact_model_input: bool = Field(
+        default=True,
+        validation_alias="TRIAGE_AUDIT_REDACT_MODEL_INPUT",
+        description="Redact model input payloads before audit persistence.",
+    )
+    audit_redact_model_output: bool = Field(
+        default=False,
+        validation_alias="TRIAGE_AUDIT_REDACT_MODEL_OUTPUT",
+        description=(
+            "Redact model output payloads before audit persistence "
+            "(default false for internal debugging visibility)."
+        ),
+    )
+
     jira_cloud_id: str | None = Field(
         default=None,
         description=(
@@ -37,6 +76,20 @@ class AppSettings(BaseSettings):
     jira_user_email: str | None = Field(
         default=None,
         description="Atlassian account email paired with jira_api_key for Cloud REST auth.",
+    )
+    jira_http_timeout_seconds: float = Field(
+        default=30.0,
+        ge=1.0,
+        le=300.0,
+        validation_alias="TRIAGE_JIRA_HTTP_TIMEOUT_SECONDS",
+        description="Per-attempt timeout (seconds) for Jira REST fetch and write calls.",
+    )
+    jira_http_max_retries: int = Field(
+        default=2,
+        ge=0,
+        le=10,
+        validation_alias="TRIAGE_JIRA_HTTP_MAX_RETRIES",
+        description="Extra attempts after first transient failure (429/502/503/504 or transport).",
     )
 
     log_level: str = Field(default="INFO", description="Standard library log level name.")

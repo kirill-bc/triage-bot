@@ -21,6 +21,7 @@ import json
 import logging
 import sys
 import time
+import uuid
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -211,6 +212,7 @@ def _run_for_model(
                 issue=issue,
                 project=project_key_from_issue_key(key),
                 source=source,
+                run_id=str(uuid.uuid4()),
             )
             elapsed_ms = (time.perf_counter() - t0) * 1000.0
             total_latency += elapsed_ms
