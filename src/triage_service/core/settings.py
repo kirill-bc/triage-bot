@@ -10,6 +10,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing_extensions import Self
 
 
+def _strip_matching_quotes(value: str) -> str:
+    """Drop one matching outer quote pair (Docker --env-file keeps quote chars)."""
+    trimmed = value.strip()
+    if len(trimmed) >= 2 and trimmed[0] == trimmed[-1] and trimmed[0] in ("'", '"'):
+        return trimmed[1:-1].strip()
+    return trimmed
+
+
 class AppSettings(BaseSettings):
     """Credentials and tuning values for Jira, OpenRouter, and logging."""
 
@@ -135,6 +143,14 @@ class AppSettings(BaseSettings):
         if upper not in allowed:
             raise ValueError(f"log_level must be one of {sorted(allowed)}")
         return upper
+
+    @field_validator("langfuse_base_url", mode="before")
+    @classmethod
+    def normalize_langfuse_base_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = _strip_matching_quotes(str(value))
+        return normalized or None
 
     @model_validator(mode="after")
     def allowed_projects_nonempty(self) -> Self:

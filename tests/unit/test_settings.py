@@ -11,6 +11,9 @@ _APP_ENV_KEYS = (
     "JIRA_API_KEY",
     "OPENROUTER_API_KEY",
     "OPENROUTER_MODEL",
+    "LANGFUSE_PUBLIC_KEY",
+    "LANGFUSE_SECRET_KEY",
+    "LANGFUSE_BASE_URL",
     "JIRA_CLOUD_ID",
     "JIRA_USER_EMAIL",
     "LOG_LEVEL",
@@ -187,6 +190,18 @@ def test_app_settings_reads_from_process_environment(
     settings = AppSettings()
     assert settings.jira_api_key == "from-env"
     assert settings.openrouter_api_key == "or-from-env"
+
+
+@pytest.mark.unit
+def test_app_settings_strips_outer_quotes_from_langfuse_base_url(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("JIRA_API_KEY", "from-env")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-from-env")
+    monkeypatch.setenv("LANGFUSE_BASE_URL", '"https://us.cloud.langfuse.com"')
+    settings = AppSettings()
+    assert settings.langfuse_base_url == "https://us.cloud.langfuse.com"
 
 
 @pytest.mark.unit

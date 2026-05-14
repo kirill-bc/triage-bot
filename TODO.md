@@ -78,17 +78,19 @@
 - Done when: transient failures are retried safely, permanent failures are observable, and hosting health checks are supported.
 
 ## 7. Deployment to stable AWS URL (EKS target)
-- [ ] Add local container smoke check command in this repo (`POST /triage` with fixture payload containing `issue_key`, verify response shape and no unintended Jira writes in mocked/local mode).
-- [ ] Prepare platform repo PR for the image build: add `build/docker/<jira-triage-image>/Dockerfile` plus any Dockerfile support files/dependencies needed to run the FastAPI app.
+- [x] Add local container smoke check command in this repo (`POST /triage` with fixture payload containing `issue_key`, verify response shape and no unintended Jira writes in mocked/local mode).
+- [x] Add **live container smoke** path (separate from mock mode): run the container with mounted real secrets/env vars, execute one triage request that performs real Jira fetch + OpenRouter inference, and capture/inspect the returned payload/log correlation (`run_id`).
+- [x] Add operator guardrails for the live smoke path while keeping executor active (dedicated test issue/project, explicit runbook pre-checks, and post-run verification of expected Jira labels/comments).
+- [ ] Prepare platform repo PR for the image build: add `build/docker/<jira-triage-image>/Dockerfile` plus any Dockerfile support files/dependencies needed to run the FastAPI app, following existing platform build conventions.
 - [ ] Register the new image in platform `build/images.yaml` so the existing automation builds/publishes it.
 - [ ] Document how local source maps into the platform Docker build context, including which files must be copied or vendored into `build/docker/<jira-triage-image>`.
 - [ ] Confirm runtime workflow contract for Jira Automation: Jira sends only `issue_key`, service fetches issue details from Jira, runs AI triage, builds the internal comment payload, and posts suggested action + reasoning + reporter tag back to the ticket.
 - [ ] Confirm EKS deployment shape with the cloud team: deployment, service/ingress, health checks, TLS/DNS, image promotion, rollback, and ownership expectations.
-- [ ] Create a hosted env-var inventory in docs/TODO notes that explicitly marks each key as `Secret` vs `ConfigMap` (`JIRA_*`, `OPENROUTER_*`, optional `LANGFUSE_*` post-MVP, model id/config, allowed projects, feature flags).
-- [ ] Confirm secrets/config wiring for hosted runtime: mount required secrets (`JIRA_*`, `OPENROUTER_*`); add `LANGFUSE_*` when Post-MVP Langfuse onboarding is done. Use a ConfigMap or equivalent for non-secret env vars (model id/config, allowed projects, feature flags).
+- [ ] Create a hosted env-var inventory in docs/TODO notes that explicitly marks each key as `Secret` vs `ConfigMap` (`JIRA_*`, `OPENROUTER_*`, optional `LANGFUSE_*` post-MVP, model id/config, allowed projects, feature flags), and map each to the Kubernetes resource that will supply it.
+- [ ] Confirm secrets/config wiring for hosted runtime: Deployment mounts required secrets (`JIRA_*`, `OPENROUTER_*`); add `LANGFUSE_*` when Post-MVP Langfuse onboarding is done. Use a ConfigMap (or equivalent) for non-secret env vars (model id/config, allowed projects, feature flags).
 - [ ] Adopt LangFuse as the primary model observability/audit sink for teams that have project keys (after Post-MVP credential task); structured CloudWatch logs remain baseline operational telemetry regardless.
 - [ ] Verify the platform automation builds and publishes the first tagged image.
-- [ ] Add Kubernetes deployment artifacts or repo-specific deployment instructions for EKS (deployment, service, ingress, health checks, env/secrets references).
+- [ ] Add Kubernetes deployment artifacts or repo-specific deployment instructions for EKS (deployment, service, ingress, health checks, env/secrets/configMap references).
 - [ ] Add a minimal deployment checklist (manifest-level) covering: Deployment, Service, Ingress, Secret mounts, ConfigMap envs, readiness/liveness probes, and rollout/rollback commands.
 - [ ] Verify Jira Automation can call the hosted `/triage` URL end-to-end on one real issue.
 - [ ] Verify hosted observability: one triage run can be traced by `run_id` in service logs and any audit sink that is actually configured in that environment (structured logs required; LangFuse when keys exist per Post-MVP), including model output and final Jira comment action.

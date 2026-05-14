@@ -13,7 +13,11 @@ from triage_service.adapters.jira_issue_fetcher import FetchedIssue, JiraIssueFe
 from triage_service.adapters.openrouter_inference_client import OpenRouterInferenceClient
 from triage_service.core.settings import AppSettings
 from triage_service.core.triage_fallback import TriageFailure
-from triage_service.core.triage_handler import TriageActionExecutor, TriageHandler
+from triage_service.core.triage_handler import (
+    TriageActionExecutor,
+    TriageHandler,
+    build_default_triage_handler,
+)
 from triage_service.core.policy_context import PolicyContext
 from triage_service.core.triage_recommendation_parser import TriageRecommendation
 from triage_service.observability.audit_events import (
@@ -625,3 +629,28 @@ def test_handler_openrouter_failure_emits_audit_with_resilience_telemetry_and_lo
     assert ev.telemetry.get("http_status") == 503
     assert ev.telemetry.get("failure_category") == "http_transient"
     assert any(getattr(r, "event_type", None) == "triage_resilience_notice" for r in caplog.records)
+
+
+@pytest.mark.unit
+def test_build_default_triage_handler_local_mock_mode_skips_external_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
+    monkeypatch.setenv("TRIAGE_ALLOWED_PROJECTS", "TJC")
+    monkeypatch.setenv("TRIAGE_LOCAL_MOCK_MODE", "1")
+    monkeypatch.delenv("JIRA_CLOUD_ID", raising=False)
+    monkeypatch.delenv("JIRA_USER_EMAIL", raising=False)
+
+    runner = build_default_triage_handler()
+    outcome = runner.run_sync(
+        issue_key="TJC-123",
+        project="TJC",
+        source="manual_cli",
+        run_id="local-mock-run",
+    )
+
+    assert isinstance(outcome, TriageRecommendation)
+    assert outcome.recommended_issue_type == "Story"
+    assert outcome.recommended_priority is None
+    assert "local mock mode" in outcome.reason.lower()

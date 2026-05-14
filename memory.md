@@ -2,6 +2,12 @@
 
 ## 2026-05-14
 
+- **Phase close (`/close-phase`) verification refresh:** From `.venv`, `pytest -m lint`, `mypy .`, and `pytest -m "unit or integration"` all passed after the container-smoke + observability updates (**280 passed**, **1 skipped**, **5 deselected** in the unit/integration slice). Current docs/TODO now reflect: local container smoke + live tunnel smoke are complete (including TJC-only/operator guardrails), while platform-repo image registration/deployment wiring remains open in Phase 7.
+
+- **Live container smoke guardrails (TJC-only):** `scripts/run_container_tunnel.sh` now parses the payload before startup, refuses runs unless `project == "TJC"` and `issue_key` starts with `TJC-`, prints explicit pre-checks, and requires `LIVE_SMOKE_CONFIRM=YES` before any live Jira/OpenRouter execution. After posting `/triage`, it still verifies `run_id` log correlation and now prints a post-run Jira checklist for `triagebot-reviewed`, mismatch labels (`triagebot-likely-story`, `triagebot-priority-mismatch`), and expected comment behavior. Coverage added in `tests/integration/test_container_smoke_setup.py` (`test_live_container_tunnel_script_enforces_tjc_only_smoke_scope`, `test_live_container_tunnel_script_includes_explicit_operator_guardrails`). README local container tunnel section updated to document the confirmation env var and guardrail flow. Verification from `.venv`: `pytest tests/integration/test_container_smoke_setup.py -m integration`, `pytest -m lint`, `mypy .` (all green).
+
+- **Live container smoke `run_id` correlation hardened:** `scripts/run_container_tunnel.sh` now extracts `run_id` from the live `POST /triage` response, reads `docker logs` from the running container, and fails fast if the same `run_id` is absent from logs; on success it prints recent matching log lines before opening the tunnel. Coverage added in `tests/integration/test_container_smoke_setup.py::test_live_container_tunnel_script_checks_run_id_in_container_logs`. Verification from `.venv`: `pytest tests/integration/test_container_smoke_setup.py -m integration`, `pytest -m lint`, `mypy .`, and `pytest -m "unit or integration"` (all green).
+
 - **Phase close (`/close-phase`):** From `.venv`, `pytest -m lint`, `mypy .` (70 files, clean), `pytest -m "unit or integration"` — **265 passed**, **1 skipped** (`OPENROUTER_LIVE_SMOKE`). **OpenRouter → Langfuse usage/cost:** `OpenRouterInferenceClient.chat_completion_with_details` returns `OpenRouterCompletionResult` with optional `usage_details` (prompt/completion/total token counts from the `usage` object) and `cost_details` (`total`, `input`, `output` mapped from `total_cost` / `prompt_cost` / `completion_cost` or legacy `cost` / top-level fields). `TriageHandler` passes those into each inference generation’s `finish(...)`; `langfuse_inference_tracing._apply_langfuse_generation_update` forwards them to Langfuse `generation.update` as `usage_details` / `cost_details` when set. **Generation `trace_context`:** `_safe_current_trace_context` reads `Langfuse.get_current_trace_id` and `get_current_observation_id` when available and passes that `trace_context` into `start_as_current_observation` for `inference_*` generations so the SDK nests them under `triage_issue_pipeline` without breaking the root span model.
 
 - **Phase close (`/close-phase`):** From `.venv`, `./scripts/run_tests.sh lint` (5 tests, flake8 gate), `./scripts/run_tests.sh types` (`mypy .`, 70 files, clean), `./scripts/run_tests.sh fast` (`263 passed`, `1 skipped`: `OPENROUTER_LIVE_SMOKE` integration smoke unless enabled). README corrected: `scripts/run_tests.sh` requires a subcommand (`all`, `fast`, `lint`, etc.); `./scripts/run_tests.sh` alone exits with “Unknown command”.
@@ -375,3 +381,29 @@
   Used by `StructuredLoggerAuditStore`, `LangfuseAuditStore`, Langfuse generation `input` / `update` metadata and
   `output`, and by `preview_bytes_for_log` / `triage_api.preview_request_body_for_log` for consistent byte-preview
   markers. Tests: `tests/unit/test_log_payload_guard.py`, extended audit and Langfuse tracing unit tests.
+- **Local container setup baseline:** added repo-root `Dockerfile` (Python 3.12 slim, installs `.[dev]`, serves
+  `triage_service.api.triage_api:app` via uvicorn) and `scripts/run_container_smoke.sh` that builds/runs the image,
+  waits for `/health`, posts `tests/fixtures/triage_smoke_payload.json` to `POST /triage`, and validates response shape.
+- **Mock triage mode for container smoke:** `triage_handler.build_default_triage_handler()` now returns
+  `LocalMockTriageRunner` when `TRIAGE_LOCAL_MOCK_MODE` is truthy. This path avoids Jira/OpenRouter I/O and returns a
+  deterministic Story recommendation so local smoke can verify API/container wiring without unintended Jira writes.
+  Tests: `tests/unit/test_triage_handler.py::test_build_default_triage_handler_local_mock_mode_skips_external_calls`,
+  `tests/integration/test_container_smoke_setup.py`.
+- **Phase 7 scope refinement (deployment):** local mock smoke is now treated as complete baseline. Next explicit tasks are
+  (1) live container smoke with mounted real secrets and actual Jira/OpenRouter calls, (2) a safety guard to prove live
+  end-to-end calls without unintended Jira writes, and (3) platform repo image build/deploy wiring under
+  `build/docker/<jira-triage-image>` + `build/images.yaml` with Deployment Secret/ConfigMap mapping.
+- **Container tunnel workflow for Jira Automation:** `scripts/run_container_tunnel.sh` builds and runs the local image
+  with `--env-file` secrets, posts one live `POST /triage` payload (prints full JSON + `run_id`), then starts a tunnel
+  (default `cloudflared`, optional `ngrok`) pointing Jira Automation at the container URL. This keeps executor active for
+  true end-to-end validation; runbook now emphasizes dedicated test issues/projects and post-run Jira verification.
+- **Langfuse visibility log at startup wiring:** `build_triage_observability()` now emits a safe
+  `triage_observability_config` info log that reports booleans only (keys present flags, base-url configured flag,
+  langfuse inference enabled, langfuse audit sink enabled, structured-log flag) without printing secret values. Tests:
+  `tests/unit/test_observability_wiring.py` includes missing-keys vs keys-present assertions on emitted log extras.
+- **GET /health observability:** `triage_api` exposes booleans under `observability` when `ready` is true
+  (via `observability_status_summary()` in `observability_wiring.py`), including **`langfuse_export_env_ready`**
+  (Langfuse keys plus SDK export env: `LANGFUSE_TRACING_ENABLED` not `false`, `OTEL_SDK_DISABLED` not `true`).
+  Container scripts print this block after the health wait. `build_triage_observability()` logs
+  `langfuse_runtime_tracing_enabled` from the Langfuse client when constructed. Inference “enabled” still does not prove
+  Langfuse API reachability.

@@ -25,6 +25,7 @@ from triage_service.core.triage_fallback import TriageFailure
 from triage_service.core.triage_handler import TriageRunner, build_default_triage_handler
 from triage_service.core.triage_recommendation_parser import TriageRecommendation
 from triage_service.observability.log_payload_guard import preview_bytes_for_log
+from triage_service.observability.observability_wiring import observability_status_summary
 
 TriageSource = Literal["bug_created", "priority_changed", "manual_cli"]
 
@@ -83,11 +84,30 @@ class TriageRequest(BaseModel):
     )
 
 
+class ObservabilityHealth(BaseModel):
+    """Safe Langfuse / audit flags for operators (no secret values)."""
+
+    langfuse_public_key_present: bool
+    langfuse_secret_key_present: bool
+    langfuse_base_url_configured: bool
+    langfuse_inference_enabled: bool
+    langfuse_sdk_tracing_env_enabled: bool
+    otel_sdk_disabled: bool
+    langfuse_export_env_ready: bool
+    audit_langfuse_enabled: bool
+    langfuse_audit_sink_enabled: bool
+    audit_structured_log_enabled: bool
+
+
 class HealthResponse(BaseModel):
     """Liveness body plus ``ready`` when required settings validate (hosted readiness probes)."""
 
     service: Literal["jira-triage"] = "jira-triage"
     ready: bool
+    observability: ObservabilityHealth | None = Field(
+        default=None,
+        description="Present when ``ready`` is true: Langfuse and audit wiring status from env.",
+    )
 
 
 class TriagePostResponse(BaseModel):
@@ -143,13 +163,14 @@ def create_app(*, triage_handler_factory: Callable[[], TriageRunner] | None = No
     def health() -> HealthResponse | JSONResponse:
         """Process liveness; ``ready`` is true only when :func:`load_settings` succeeds."""
         try:
-            load_settings()
+            settings = load_settings()
         except Exception:
             return JSONResponse(
                 status_code=503,
                 content={"service": "jira-triage", "ready": False},
             )
-        return HealthResponse(ready=True)
+        obs = ObservabilityHealth(**observability_status_summary(settings))
+        return HealthResponse(ready=True, observability=obs)
 
     @app.post("/triage", response_model=TriagePostResponse)
     def accept_triage_trigger(

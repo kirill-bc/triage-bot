@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 import logging
+import os
 from time import perf_counter
 from typing import Protocol, cast
 
@@ -170,6 +171,40 @@ class NoOpTriageActionExecutor:
         run_id: str,
     ) -> None:
         _ = run_id
+        return None
+
+
+def _env_truthy(name: str) -> bool:
+    token = os.environ.get(name, "").strip().lower()
+    return token in ("1", "true", "yes", "on")
+
+
+class LocalMockTriageRunner:
+    """Deterministic local runner for container smoke checks without Jira/OpenRouter."""
+
+    def __init__(self, *, allowed_projects: Sequence[str]) -> None:
+        self._allowed = frozenset(allowed_projects)
+
+    def run_sync(
+        self,
+        issue_key: str,
+        project: str,
+        source: str,
+        *,
+        run_id: str,
+    ) -> TriageRecommendation | TriageFailure:
+        _ = (issue_key, source, run_id)
+        if project not in self._allowed:
+            msg = f"Project {project} is not allowed for triage."
+            return fallback_for_exception(ProjectNotAllowedError(msg))
+        return TriageRecommendation(
+            recommended_issue_type="Story",
+            recommended_priority=None,
+            confidence=1.0,
+            reason="Local mock mode recommendation (external Jira/OpenRouter calls disabled).",
+        )
+
+    def flush_inference_telemetry(self) -> None:
         return None
 
 
@@ -551,7 +586,7 @@ class TriageHandler:
         )
 
 
-def build_default_triage_handler() -> TriageHandler:
+def build_default_triage_handler() -> TriageRunner:
     """Build handler from settings, policy, and Jira executor if Jira env is set."""
     from triage_service.adapters.jira_action_executor import JiraTriageActionExecutor
     from triage_service.core.policy_context import load_policy_context
@@ -559,6 +594,8 @@ def build_default_triage_handler() -> TriageHandler:
     from triage_service.observability.observability_wiring import build_triage_observability
 
     settings = load_settings()
+    if _env_truthy("TRIAGE_LOCAL_MOCK_MODE"):
+        return LocalMockTriageRunner(allowed_projects=settings.allowed_projects)
     policy = load_policy_context()
     fetcher = JiraIssueFetcher(settings)
     inference = OpenRouterInferenceClient(settings)
