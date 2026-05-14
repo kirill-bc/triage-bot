@@ -247,6 +247,76 @@ def test_tracer_redacts_generation_input_and_output_when_redaction_enabled() -> 
 
 
 @pytest.mark.unit
+def test_tracer_truncates_oversized_generation_output_and_metadata() -> None:
+    gen_obs = MagicMock()
+
+    @contextmanager
+    def gen_ctx(**kwargs: Any) -> Any:
+        _ = kwargs
+        yield gen_obs
+
+    @contextmanager
+    def root_ctx(**kwargs: Any) -> Any:
+        _ = kwargs
+        yield MagicMock()
+
+    client = MagicMock()
+    client.start_as_current_observation.side_effect = [root_ctx(), gen_ctx()]
+    tracer = LangfuseInferenceTracer(client, redact_model_input=False, redact_model_output=False)
+    huge = "H" * 9000
+    huge_reason = "R" * 9000
+
+    with tracer.triage_issue_trace(run_id=str(uuid.uuid4()), issue_key="A-1", project="A"):
+        with tracer.model_generation(
+            step="classification",
+            model="m",
+            messages=[{"role": "user", "content": "ok"}],
+            model_parameters={"temperature": 0.1},
+        ) as finish:
+            finish(huge, {"parsed": {"recommended_issue_type": "Bug", "reason": huge_reason}})
+
+    ukwargs = gen_obs.update.call_args.kwargs
+    assert ukwargs["metadata"]["log_payload_truncated"] is True
+    assert len(ukwargs["output"]) < len(huge)
+    assert "truncated" in ukwargs["output"]
+    assert len(ukwargs["metadata"]["parsed"]["reason"]) < len(huge_reason)
+
+
+@pytest.mark.unit
+def test_tracer_marks_truncation_on_oversized_generation_input() -> None:
+    gen_obs = MagicMock()
+
+    @contextmanager
+    def gen_ctx(**kwargs: Any) -> Any:
+        _ = kwargs
+        yield gen_obs
+
+    @contextmanager
+    def root_ctx(**kwargs: Any) -> Any:
+        _ = kwargs
+        yield MagicMock()
+
+    client = MagicMock()
+    client.start_as_current_observation.side_effect = [root_ctx(), gen_ctx()]
+    tracer = LangfuseInferenceTracer(client, redact_model_input=False, redact_model_output=False)
+    long_content = "C" * 9000
+
+    with tracer.triage_issue_trace(run_id=str(uuid.uuid4()), issue_key="A-1", project="A"):
+        with tracer.model_generation(
+            step="priority",
+            model="m",
+            messages=[{"role": "user", "content": long_content}],
+            model_parameters={"temperature": 0.1},
+        ) as finish:
+            finish("small", {"parsed": {"recommended_priority": "P1"}})
+
+    gen_call = client.start_as_current_observation.call_args_list[1]
+    assert gen_call.kwargs["metadata"]["log_payload_truncated"] is True
+    assert len(gen_call.kwargs["input"][0]["content"]) < len(long_content)
+    assert "truncated" in gen_call.kwargs["input"][0]["content"]
+
+
+@pytest.mark.unit
 def test_build_langfuse_inference_tracer_noop_without_keys() -> None:
     tracer = build_langfuse_inference_tracer(public_key=None, secret_key=None)
     assert tracer._client is None

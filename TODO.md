@@ -70,11 +70,11 @@
 
 ## 6. Resilience + runtime safeguards
 - [x] Add explicit timeout/retry policy for Jira fetch and Jira write operations with bounded retries.
-- [ ] Add explicit timeout/retry policy for OpenRouter calls with safe fallback on exhaustion.
-- [ ] Emit retry counters and timeout/failure categories to audit events and logs.
-- [ ] Add guardrails for oversized payload logging (truncate consistently and mark truncation).
-- [ ] Add health endpoint (`GET /health`) and minimal readiness signal for hosted environments.
-- [ ] Add unit tests for retry behavior, timeout mapping, and fallback category correctness.
+- [x] Add explicit timeout/retry policy for OpenRouter calls with safe fallback on exhaustion.
+- [x] Emit retry counters and timeout/failure categories to audit events and logs.
+- [x] Add guardrails for oversized payload logging (truncate consistently and mark truncation).
+- [x] Add health endpoint (`GET /health`) and minimal readiness signal for hosted environments.
+- [x] Add unit tests for retry behavior, timeout mapping, and fallback category correctness.
 - Done when: transient failures are retried safely, permanent failures are observable, and hosting health checks are supported.
 
 ## 7. Deployment to stable AWS URL (EKS target)

@@ -11,6 +11,10 @@ from langfuse.types import TraceContext
 from triage_service.observability.audit_events import TriageAuditEvent, dump_triage_audit_event
 from triage_service.observability.audit_store import AuditStore
 from triage_service.observability.langfuse_inference_tracing import stable_langfuse_trace_id
+from triage_service.observability.log_payload_guard import (
+    DEFAULT_MAX_LOG_STRING_CHARS,
+    truncate_payload_tree,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -32,19 +36,29 @@ class _LangfuseEventClient(Protocol):
 class LangfuseAuditStore(AuditStore):
     """Writes validated triage lifecycle events to LangFuse as trace events."""
 
-    def __init__(self, client: _LangfuseEventClient | None) -> None:
+    def __init__(
+        self,
+        client: _LangfuseEventClient | None,
+        *,
+        max_audit_string_chars: int = DEFAULT_MAX_LOG_STRING_CHARS,
+    ) -> None:
         self._client = client
+        self._max_audit_string_chars = max_audit_string_chars
 
     def record(self, event: TriageAuditEvent) -> None:
         if self._client is None:
             return
         payload = dump_triage_audit_event(event)
-        run_id = str(payload["run_id"])
+        safe_payload, _ = truncate_payload_tree(
+            payload,
+            max_string_chars=self._max_audit_string_chars,
+        )
+        run_id = str(safe_payload["run_id"])
         try:
             if self._client.get_current_trace_id():
                 self._client.create_event(
-                    name=str(payload["event_type"]),
-                    metadata=payload,
+                    name=str(safe_payload["event_type"]),
+                    metadata=safe_payload,
                 )
             else:
                 tc = cast(
@@ -52,9 +66,9 @@ class LangfuseAuditStore(AuditStore):
                     {"trace_id": stable_langfuse_trace_id(run_id)},
                 )
                 self._client.create_event(
-                    name=str(payload["event_type"]),
+                    name=str(safe_payload["event_type"]),
                     trace_context=tc,
-                    metadata=payload,
+                    metadata=safe_payload,
                 )
         except Exception:
             LOGGER.warning("Langfuse audit event emission failed", exc_info=True)

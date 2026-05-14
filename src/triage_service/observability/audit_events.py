@@ -44,7 +44,10 @@ class _CorrelationMixin(BaseModel):
     source: TriageSourceLiteral
     telemetry: dict[str, Any] | None = Field(
         default=None,
-        description="Optional resilience metadata (HTTP attempts, timeouts, status).",
+        description=(
+            "Optional resilience metadata: http_attempts, http_status, transport_timeout, "
+            "transport_error_kind, failure_category (query-friendly), boundary."
+        ),
     )
 
 

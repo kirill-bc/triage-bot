@@ -2,6 +2,14 @@
 
 ## 2026-05-14
 
+- **Phase close (`/close-phase`):** From `.venv`, `./scripts/run_tests.sh lint` (5 tests, flake8 gate), `./scripts/run_tests.sh types` (`mypy .`, 70 files, clean), `./scripts/run_tests.sh fast` (`263 passed`, `1 skipped`: `OPENROUTER_LIVE_SMOKE` integration smoke unless enabled). README corrected: `scripts/run_tests.sh` requires a subcommand (`all`, `fast`, `lint`, etc.); `./scripts/run_tests.sh` alone exits with “Unknown command”.
+
+- **`GET /health`:** `create_app` registers liveness/readiness at `/health`. Handler calls `load_settings()` (same dotenv + env validation as the rest of the service). Success → HTTP 200 and `{"service":"jira-triage","ready":true}`; any validation failure → HTTP 503 and `{"service":"jira-triage","ready":false}`. Does not instantiate the triage runner. `response_model=None` because FastAPI cannot union `HealthResponse` with `JSONResponse`. Unit tests: `tests/unit/test_health_endpoint.py` (isolated `tmp_path` cwd so `find_dotenv` does not pull repo `.env` into `os.environ` and break ordering-sensitive tests).
+
+- **Resilience audit + logs:** `TransportRetriesExhausted` in `jira_http_retry` carries accurate `attempts` after retriable transport failures. `JiraIssueFetchError` gains `transport_error_kind`; `OpenRouterInferenceError` gains `attempts`, `http_status`, transport fields, and `failure_category`. `TriageHandler` enriches `triage_failed` audit `telemetry` with `failure_category` (e.g. `http_transient`, `http_rate_limited`, `timeout`, `connect_error`, `configuration`) and emits a structured `triage_resilience_notice` log line (same fields plus `triage_failure_category`) when telemetry is present. Tests: `test_jira_http_retry.py` (includes `classify_transport_request_error`, HTTP retry/no-retry on `request_with_retries`), `test_jira_issue_fetcher.py` (incl. read-timeout exhaustion), `test_openrouter_inference_client.py` (incl. HTTP 500 `http_error`, read-timeout `failure_category`), `test_triage_fallback.py` (inference/Jira transport variants → `TriageFailure` categories), `test_triage_handler.py`.
+
+- **OpenRouter REST timeout and bounded retries:** `AppSettings` adds `TRIAGE_OPENROUTER_HTTP_TIMEOUT_SECONDS` (default 60) and `TRIAGE_OPENROUTER_HTTP_MAX_RETRIES` (default 2). `OpenRouterInferenceClient` uses `jira_http_retry.request_with_retries` for POST chat completions; exhausted transport errors raise `OpenRouterInferenceError` with an `after retries` message. Unit tests in `tests/unit/test_openrouter_inference_client.py`; settings in `tests/unit/test_settings.py`.
+
 - **Phase close (Langfuse trace tree):** `pytest -m lint`, `mypy .`, and `pytest -m "unit or integration"` (229 passed, 1 skipped) from `.venv`. **Langfuse Python SDK ~4.6:** the pipeline span `triage_issue_pipeline` is started **without** `trace_context` so OpenTelemetry nesting applies; `inference_classification` / `inference_priority` are children of that span. Passing `trace_context` into `start_as_current_observation` / `create_event` was forcing remote-parent handling and flattening the UI root view. **Audit events:** `LangfuseAuditStore` calls `create_event` **without** `trace_context` when `get_current_trace_id()` is non-empty (handler still inside the pipeline span); otherwise it falls back to `trace_context={"trace_id": stable_langfuse_trace_id(run_id)}` for correlation. `create_event(..., trace_id=...)` is invalid on this SDK; use `trace_context` only where needed.
 
 - **Phase close (verification):** from `.venv`, `./scripts/run_tests.sh lint` (flake8 via `pytest -m lint`, 5 tests), `./scripts/run_tests.sh types` (`mypy .`, 67 files, clean), and `./scripts/run_tests.sh fast` (`pytest -m "unit or integration"`, 228 passed, 1 skipped: `OPENROUTER_LIVE_SMOKE` integration smoke). README repository-layout line aligned with gateway auth: executor wiring when `JIRA_CLOUD_ID` and `JIRA_USER_EMAIL` are set.
@@ -357,3 +365,11 @@
 - `policy_context.load_policy_context()`: reads UTF-8 `policy/bug_definition.md` and
   `policy/priority_definition.md` (`policy_dir=` for tests). Returns frozen `PolicyContext` (stripped text);
   raises `PolicyContextLoadError` if a file is missing. Tests: `tests/unit/test_policy_context.py`.
+
+## 2026-05-14
+
+- **Log payload guard:** `observability/log_payload_guard.py` deep-truncates long strings in JSON-like trees (default
+  `DEFAULT_MAX_LOG_STRING_CHARS` = 8192). Root dicts gain `log_payload_truncated: true` when any string was clipped.
+  Used by `StructuredLoggerAuditStore`, `LangfuseAuditStore`, Langfuse generation `input` / `update` metadata and
+  `output`, and by `preview_bytes_for_log` / `triage_api.preview_request_body_for_log` for consistent byte-preview
+  markers. Tests: `tests/unit/test_log_payload_guard.py`, extended audit and Langfuse tracing unit tests.

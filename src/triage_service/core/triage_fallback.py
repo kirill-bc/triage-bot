@@ -10,7 +10,7 @@ The supported categories cover every error surface the pipeline owns:
   when configuration is missing or the Jira REST call returns a non-2xx response.
 - ``inference_failed`` — raised by
   :class:`openrouter_inference_client.OpenRouterInferenceClient` on HTTP errors
-  or unusable completion payloads.
+  or unusable completion payloads after bounded retries for transient upstream failures.
 - ``invalid_model_output`` — raised by the recommendation parser when the model
   reply is not JSON or fails the schema (see
   :class:`triage_service.core.triage_recommendation_parser.InvalidTriageRecommendationError`).

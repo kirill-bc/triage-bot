@@ -8,7 +8,11 @@ from typing import Any
 import httpx
 from pydantic import BaseModel
 
-from triage_service.adapters.jira_http_retry import request_with_retries
+from triage_service.adapters.jira_http_retry import (
+    TransportRetriesExhausted,
+    classify_transport_request_error,
+    request_with_retries,
+)
 from triage_service.core.settings import AppSettings
 
 _ATLASSIAN_GATEWAY = "https://api.atlassian.com/ex/jira"
@@ -36,11 +40,13 @@ class JiraIssueFetchError(RuntimeError):
         attempts: int | None = None,
         http_status: int | None = None,
         transport_timeout: bool | None = None,
+        transport_error_kind: str | None = None,
     ) -> None:
         super().__init__(message)
         self.attempts = attempts
         self.http_status = http_status
         self.transport_timeout = transport_timeout
+        self.transport_error_kind = transport_error_kind
 
 
 def _extract_text_from_adf(node: Any) -> str:
@@ -182,12 +188,21 @@ class JiraIssueFetcher:
                 params=params,
                 headers=headers,
             )
-        except httpx.RequestError as exc:
-            timeout = isinstance(exc, httpx.TimeoutException)
+        except TransportRetriesExhausted as tre:
+            timeout, kind = classify_transport_request_error(tre.cause)
             raise JiraIssueFetchError(
-                f"Jira issue request failed after retries: {exc}",
-                attempts=self._settings.jira_http_max_retries + 1,
+                f"Jira issue request failed after retries: {tre.cause}",
+                attempts=tre.attempts,
                 transport_timeout=timeout,
+                transport_error_kind=kind,
+            ) from tre.cause
+        except httpx.RequestError as exc:
+            timeout, kind = classify_transport_request_error(exc)
+            raise JiraIssueFetchError(
+                f"Jira issue request failed: {exc}",
+                attempts=1,
+                transport_timeout=timeout,
+                transport_error_kind=kind,
             ) from exc
         if response.is_error:
             snippet = response.text[:200]

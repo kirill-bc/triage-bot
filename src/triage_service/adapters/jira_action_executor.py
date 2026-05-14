@@ -7,7 +7,10 @@ from typing import Any
 
 import httpx
 
-from triage_service.adapters.jira_http_retry import request_with_retries
+from triage_service.adapters.jira_http_retry import (
+    TransportRetriesExhausted,
+    request_with_retries,
+)
 from triage_service.core.settings import AppSettings
 from triage_service.adapters.jira_issue_fetcher import FetchedIssue
 from triage_service.core.triage_fallback import TriageFailure
@@ -224,7 +227,7 @@ class JiraTriageActionExecutor:
                 max_retries=self._settings.jira_http_max_retries,
                 **kwargs,
             )
-        except httpx.RequestError as exc:
+        except (TransportRetriesExhausted, httpx.RequestError) as exc:
             msg = f"Jira request failed after retries: {exc}"
             raise JiraActionExecutorError(msg) from exc
         return response

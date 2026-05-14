@@ -17,12 +17,14 @@ from fastapi import Depends, FastAPI
 from pydantic import BaseModel, Field, model_validator
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import Response
+from starlette.responses import JSONResponse, Response
 from typing_extensions import Self
 
+from triage_service.core.settings import load_settings
 from triage_service.core.triage_fallback import TriageFailure
 from triage_service.core.triage_handler import TriageRunner, build_default_triage_handler
 from triage_service.core.triage_recommendation_parser import TriageRecommendation
+from triage_service.observability.log_payload_guard import preview_bytes_for_log
 
 TriageSource = Literal["bug_created", "priority_changed", "manual_cli"]
 
@@ -35,17 +37,7 @@ def triage_inbound_debug_enabled() -> bool:
 
 def preview_request_body_for_log(body: bytes, *, max_len: int = 8192) -> str:
     """Return a UTF-8 string or repr for logging; truncate very large bodies."""
-    if len(body) <= max_len:
-        try:
-            return body.decode("utf-8")
-        except UnicodeDecodeError:
-            return repr(body)
-    head = body[:max_len]
-    try:
-        fragment = head.decode("utf-8")
-    except UnicodeDecodeError:
-        fragment = repr(head)
-    return f"{fragment}… (truncated, {len(body)} bytes total)"
+    return preview_bytes_for_log(body, max_bytes=max_len)
 
 
 class _DebugInboundTriageBodyMiddleware(BaseHTTPMiddleware):
@@ -89,6 +81,13 @@ class TriageRequest(BaseModel):
             "or manual_cli (local runner)."
         ),
     )
+
+
+class HealthResponse(BaseModel):
+    """Liveness body plus ``ready`` when required settings validate (hosted readiness probes)."""
+
+    service: Literal["jira-triage"] = "jira-triage"
+    ready: bool
 
 
 class TriagePostResponse(BaseModel):
@@ -139,6 +138,18 @@ def create_app(*, triage_handler_factory: Callable[[], TriageRunner] | None = No
         return factory()
 
     app = FastAPI(title="Jira Triage", version="0.1.0")
+
+    @app.get("/health", response_model=None)
+    def health() -> HealthResponse | JSONResponse:
+        """Process liveness; ``ready`` is true only when :func:`load_settings` succeeds."""
+        try:
+            load_settings()
+        except Exception:
+            return JSONResponse(
+                status_code=503,
+                content={"service": "jira-triage", "ready": False},
+            )
+        return HealthResponse(ready=True)
 
     @app.post("/triage", response_model=TriagePostResponse)
     def accept_triage_trigger(

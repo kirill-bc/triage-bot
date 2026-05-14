@@ -60,23 +60,69 @@ _PRIORITY_SYSTEM = (
 LOGGER = logging.getLogger(__name__)
 
 
+def _failure_category_for_jira_http_status(status: int) -> str:
+    if status == 429:
+        return "http_rate_limited"
+    if status in (502, 503, 504):
+        return "http_transient"
+    if 400 <= status < 600:
+        return "http_error"
+    return "http_error"
+
+
+def _failure_category_for_jira_fetch(exc: JiraIssueFetchError) -> str | None:
+    if exc.http_status is not None:
+        return _failure_category_for_jira_http_status(exc.http_status)
+    if exc.transport_timeout:
+        return "timeout"
+    if exc.transport_error_kind:
+        return exc.transport_error_kind
+    if exc.attempts is None and exc.http_status is None:
+        return "configuration"
+    return None
+
+
+def _jira_fetch_error_telemetry(exc: JiraIssueFetchError) -> dict[str, object]:
+    meta: dict[str, object] = {"boundary": "jira_http"}
+    if exc.attempts is not None:
+        meta["http_attempts"] = exc.attempts
+    if exc.http_status is not None:
+        meta["http_status"] = exc.http_status
+    if exc.transport_timeout is not None:
+        meta["transport_timeout"] = exc.transport_timeout
+    if exc.transport_error_kind is not None:
+        meta["transport_error_kind"] = exc.transport_error_kind
+    fc = _failure_category_for_jira_fetch(exc)
+    if fc is not None:
+        meta["failure_category"] = fc
+    return meta
+
+
+def _openrouter_error_telemetry(exc: OpenRouterInferenceError) -> dict[str, object]:
+    meta: dict[str, object] = {"boundary": "openrouter"}
+    if exc.attempts is not None:
+        meta["http_attempts"] = exc.attempts
+    if exc.http_status is not None:
+        meta["http_status"] = exc.http_status
+    if exc.transport_timeout is not None:
+        meta["transport_timeout"] = exc.transport_timeout
+    if exc.transport_error_kind is not None:
+        meta["transport_error_kind"] = exc.transport_error_kind
+    if exc.failure_category is not None:
+        meta["failure_category"] = exc.failure_category
+    return meta
+
+
 def _audit_telemetry_for_exception(exc: BaseException) -> dict[str, object] | None:
     """Attach HTTP/retry hints for triage_failed audit events when available."""
     if isinstance(exc, JiraIssueFetchError):
-        meta: dict[str, object] = {"boundary": "jira_http"}
-        if exc.attempts is not None:
-            meta["http_attempts"] = exc.attempts
-        if exc.http_status is not None:
-            meta["http_status"] = exc.http_status
-        if exc.transport_timeout is not None:
-            meta["transport_timeout"] = exc.transport_timeout
-        return meta
+        return _jira_fetch_error_telemetry(exc)
     if isinstance(exc, OpenRouterInferenceError):
-        return {"boundary": "openrouter"}
+        return _openrouter_error_telemetry(exc)
     if isinstance(exc, InvalidTriageRecommendationError):
-        return {"boundary": "model_output_parse"}
+        return {"boundary": "model_output_parse", "failure_category": "invalid_model_output"}
     if isinstance(exc, ProjectNotAllowedError):
-        return {"boundary": "policy_validation"}
+        return {"boundary": "policy_validation", "failure_category": "project_not_allowed"}
     return None
 
 
@@ -329,6 +375,19 @@ class TriageHandler:
                 telemetry=telemetry,
             ),
         )
+        if telemetry:
+            LOGGER.info(
+                "triage_resilience_notice",
+                extra={
+                    "event_type": "triage_resilience_notice",
+                    "run_id": run_id,
+                    "issue_key": issue_key,
+                    "project": project,
+                    "source": source,
+                    "triage_failure_category": failure.category,
+                    **telemetry,
+                },
+            )
 
     def _ensure_project_allowed(self, project: str) -> None:
         if project not in self._allowed:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import httpx
@@ -561,3 +562,66 @@ def test_handler_jira_fetch_failure_emits_triage_failed_audit_with_http_telemetr
     assert ev.telemetry is not None
     assert ev.telemetry.get("http_status") == 503
     assert ev.telemetry.get("http_attempts") == settings.jira_http_max_retries + 1
+    assert ev.telemetry.get("failure_category") == "http_transient"
+
+
+@pytest.mark.unit
+def test_handler_openrouter_failure_emits_audit_with_resilience_telemetry_and_log(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="triage_service.core.triage_handler")
+    settings = _app_settings(monkeypatch)
+    monkeypatch.setattr(
+        "triage_service.adapters.jira_http_retry.time.sleep",
+        lambda *_a, **_k: None,
+    )
+    issue = FetchedIssue(
+        issue_key="TJC-1",
+        summary="s",
+        description=None,
+        issue_type="Bug",
+        priority="P2",
+        reporter="r",
+    )
+
+    def jira_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_jira_payload_for(issue))
+
+    def openrouter_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, text="unavailable")
+
+    audit = _RecordingAuditStore()
+    transport_j = httpx.MockTransport(jira_handler)
+    transport_o = httpx.MockTransport(openrouter_handler)
+    with httpx.Client(transport=transport_j) as j_client:
+        with httpx.Client(transport=transport_o) as o_client:
+            fetcher = JiraIssueFetcher(settings, client=j_client)
+            inference = OpenRouterInferenceClient(settings, client=o_client)
+            executor = _RecordingExecutor()
+            handler = TriageHandler(
+                allowed_projects=("TJC",),
+                fetcher=fetcher,
+                inference=inference,
+                policy=_policy(),
+                executor=executor,
+                audit_store=audit,
+            )
+            outcome = handler.run_sync(
+                issue_key="TJC-1",
+                project="TJC",
+                source="bug_created",
+                run_id="run-or-fail",
+            )
+
+    assert isinstance(outcome, TriageFailure)
+    assert outcome.category == "inference_failed"
+    assert len(audit.events) == 1
+    ev = audit.events[0]
+    assert isinstance(ev, TriageFailedAuditEvent)
+    assert ev.telemetry is not None
+    assert ev.telemetry.get("boundary") == "openrouter"
+    assert ev.telemetry.get("http_attempts") == settings.openrouter_http_max_retries + 1
+    assert ev.telemetry.get("http_status") == 503
+    assert ev.telemetry.get("failure_category") == "http_transient"
+    assert any(getattr(r, "event_type", None) == "triage_resilience_notice" for r in caplog.records)

@@ -7,6 +7,11 @@ from typing import Any
 
 import httpx
 
+from triage_service.adapters.jira_http_retry import (
+    TransportRetriesExhausted,
+    classify_transport_request_error,
+    request_with_retries,
+)
 from triage_service.core.settings import AppSettings
 
 OPENROUTER_CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -14,6 +19,31 @@ OPENROUTER_CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions
 
 class OpenRouterInferenceError(RuntimeError):
     """Raised when OpenRouter returns an error or an unusable completion payload."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        attempts: int | None = None,
+        http_status: int | None = None,
+        transport_timeout: bool | None = None,
+        transport_error_kind: str | None = None,
+        failure_category: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.attempts = attempts
+        self.http_status = http_status
+        self.transport_timeout = transport_timeout
+        self.transport_error_kind = transport_error_kind
+        self.failure_category = failure_category
+
+
+def _failure_category_for_http_status(status: int) -> str:
+    if status == 429:
+        return "http_rate_limited"
+    if status in (502, 503, 504):
+        return "http_transient"
+    return "http_error"
 
 
 @dataclass(frozen=True)
@@ -84,7 +114,8 @@ class OpenRouterInferenceClient:
         if self._client is not None:
             return self._post(self._client, body, headers)
 
-        with httpx.Client(timeout=60.0) as client:
+        timeout = httpx.Timeout(self._settings.openrouter_http_timeout_seconds)
+        with httpx.Client(timeout=timeout) as client:
             return self._post(client, body, headers)
 
     def _post(
@@ -93,26 +124,72 @@ class OpenRouterInferenceClient:
         body: dict[str, Any],
         headers: dict[str, str],
     ) -> OpenRouterCompletionResult:
-        response = client.post(OPENROUTER_CHAT_COMPLETIONS_URL, headers=headers, json=body)
+        try:
+            response, attempts = request_with_retries(
+                client,
+                "POST",
+                OPENROUTER_CHAT_COMPLETIONS_URL,
+                max_retries=self._settings.openrouter_http_max_retries,
+                headers=headers,
+                json=body,
+            )
+        except TransportRetriesExhausted as tre:
+            timeout, kind = classify_transport_request_error(tre.cause)
+            category = "timeout" if timeout else kind
+            raise OpenRouterInferenceError(
+                f"OpenRouter request failed after retries: {tre.cause}",
+                attempts=tre.attempts,
+                transport_timeout=timeout,
+                transport_error_kind=kind,
+                failure_category=category,
+            ) from tre.cause
+        except httpx.RequestError as exc:
+            timeout, kind = classify_transport_request_error(exc)
+            category = "timeout" if timeout else kind
+            raise OpenRouterInferenceError(
+                f"OpenRouter request failed: {exc}",
+                attempts=1,
+                transport_timeout=timeout,
+                transport_error_kind=kind,
+                failure_category=category,
+            ) from exc
         if response.is_error:
             snippet = response.text[:200]
+            fc = _failure_category_for_http_status(response.status_code)
             raise OpenRouterInferenceError(
                 f"OpenRouter request failed with HTTP {response.status_code}: {snippet}",
+                attempts=attempts,
+                http_status=response.status_code,
+                failure_category=fc,
             )
         payload = response.json()
         choices = payload.get("choices")
         if not isinstance(choices, list) or not choices:
-            raise OpenRouterInferenceError("OpenRouter response missing choices.")
+            raise OpenRouterInferenceError(
+                "OpenRouter response missing choices.",
+                attempts=attempts,
+                failure_category="invalid_upstream_payload",
+            )
         first = choices[0]
         if not isinstance(first, dict):
-            raise OpenRouterInferenceError("OpenRouter response has invalid choice shape.")
+            raise OpenRouterInferenceError(
+                "OpenRouter response has invalid choice shape.",
+                attempts=attempts,
+                failure_category="invalid_upstream_payload",
+            )
         message = first.get("message")
         if not isinstance(message, dict):
-            raise OpenRouterInferenceError("OpenRouter response missing message object.")
+            raise OpenRouterInferenceError(
+                "OpenRouter response missing message object.",
+                attempts=attempts,
+                failure_category="invalid_upstream_payload",
+            )
         content = message.get("content")
         if not isinstance(content, str) or not content.strip():
             raise OpenRouterInferenceError(
                 "OpenRouter response missing non-empty assistant content.",
+                attempts=attempts,
+                failure_category="invalid_upstream_payload",
             )
         usage_details = _extract_usage_details(payload)
         cost_details = _extract_cost_details(payload)

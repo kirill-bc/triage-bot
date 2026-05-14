@@ -7,10 +7,15 @@ import logging
 import uuid
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from langfuse import Langfuse
 
+from triage_service.observability.log_payload_guard import (
+    DEFAULT_MAX_LOG_STRING_CHARS,
+    truncate_log_string,
+    truncate_logging_value,
+)
 from triage_service.observability.payload_redaction import (
     sanitize_chat_messages,
     sanitize_model_output_text,
@@ -32,6 +37,10 @@ def _apply_langfuse_generation_update(
     cost_details: dict[str, float] | None,
 ) -> None:
     out_text = sanitize_model_output_text(raw, redact=redact_model_output)
+    out_text, out_trunc = truncate_log_string(
+        out_text,
+        max_chars=DEFAULT_MAX_LOG_STRING_CHARS,
+    )
     merged_meta = dict(meta)
     if redact_model_output:
         merged_meta = {
@@ -39,6 +48,13 @@ def _apply_langfuse_generation_update(
             "redacted_output": True,
             "output_length": len(raw),
         }
+    merged_any, meta_trunc = truncate_logging_value(
+        merged_meta,
+        max_string_chars=DEFAULT_MAX_LOG_STRING_CHARS,
+    )
+    merged_meta = cast(dict[str, Any], merged_any)
+    if out_trunc or meta_trunc:
+        merged_meta["log_payload_truncated"] = True
     update_data: dict[str, Any] = {"output": out_text, "metadata": merged_meta}
     if usage_details is not None:
         update_data["usage_details"] = usage_details
@@ -137,6 +153,13 @@ class LangfuseInferenceTracer:
             messages,
             redact=self._redact_model_input,
         )
+        traced_input, input_trunc = truncate_logging_value(
+            traced_input,
+            max_string_chars=DEFAULT_MAX_LOG_STRING_CHARS,
+        )
+        gen_metadata: dict[str, Any] = {"operation": gen_name, "step": step}
+        if input_trunc:
+            gen_metadata["log_payload_truncated"] = True
         try:
             with self._client.start_as_current_observation(
                 name=gen_name,
@@ -144,7 +167,7 @@ class LangfuseInferenceTracer:
                 model=model,
                 input=traced_input,
                 model_parameters=model_parameters,
-                metadata={"operation": gen_name, "step": step},
+                metadata=gen_metadata,
             ) as gen:
 
                 def finish(

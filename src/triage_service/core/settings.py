@@ -91,6 +91,20 @@ class AppSettings(BaseSettings):
         validation_alias="TRIAGE_JIRA_HTTP_MAX_RETRIES",
         description="Extra attempts after first transient failure (429/502/503/504 or transport).",
     )
+    openrouter_http_timeout_seconds: float = Field(
+        default=60.0,
+        ge=1.0,
+        le=300.0,
+        validation_alias="TRIAGE_OPENROUTER_HTTP_TIMEOUT_SECONDS",
+        description="Per-attempt timeout (seconds) for OpenRouter chat completion calls.",
+    )
+    openrouter_http_max_retries: int = Field(
+        default=2,
+        ge=0,
+        le=10,
+        validation_alias="TRIAGE_OPENROUTER_HTTP_MAX_RETRIES",
+        description="Extra attempts after first transient failure (429/502/503/504 or transport).",
+    )
 
     log_level: str = Field(default="INFO", description="Standard library log level name.")
     logging_api_key: str | None = Field(

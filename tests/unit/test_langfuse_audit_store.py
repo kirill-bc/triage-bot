@@ -83,6 +83,33 @@ def test_langfuse_audit_store_uses_active_parent_span_when_available() -> None:
 
 
 @pytest.mark.unit
+def test_langfuse_audit_store_truncates_oversized_metadata() -> None:
+    from triage_service.observability.langfuse_audit_store import LangfuseAuditStore
+
+    long_reason = "Z" * 300
+    client = MagicMock()
+    client.get_current_trace_id.return_value = None
+    store = LangfuseAuditStore(client=client, max_audit_string_chars=100)
+    event = ClassificationCompletedAuditEvent(
+        event_type="classification_completed",
+        run_id="550e8400-e29b-41d4-a716-446655440000",
+        issue_key="TJC-12",
+        project="TJC",
+        source="manual_cli",
+        recommended_issue_type="Bug",
+        confidence=0.87,
+        reason=long_reason,
+    )
+
+    store.record(event)
+
+    meta = client.create_event.call_args.kwargs["metadata"]
+    assert meta["log_payload_truncated"] is True
+    assert len(meta["reason"]) < len(long_reason)
+    assert "truncated" in meta["reason"]
+
+
+@pytest.mark.unit
 def test_langfuse_audit_store_swallows_client_errors() -> None:
     from triage_service.observability.langfuse_audit_store import LangfuseAuditStore
 

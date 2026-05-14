@@ -89,12 +89,58 @@ def test_fallback_for_jira_fetch_error_maps_to_jira_fetch_failed() -> None:
 
 
 @pytest.mark.unit
+def test_fallback_for_jira_fetch_after_transport_timeout_maps_to_jira_fetch_failed() -> None:
+    failure = fallback_for_exception(
+        JiraIssueFetchError(
+            "Jira issue request failed after retries: timed out",
+            attempts=3,
+            transport_timeout=True,
+            transport_error_kind="timeout",
+        ),
+    )
+    assert failure.category == "jira_fetch_failed"
+    assert "timed out" in failure.message.lower() or "retries" in failure.message.lower()
+
+
+@pytest.mark.unit
 def test_fallback_for_openrouter_error_maps_to_inference_failed() -> None:
     failure = fallback_for_exception(
         OpenRouterInferenceError("OpenRouter request failed with HTTP 429"),
     )
     assert failure.category == "inference_failed"
     assert "429" in failure.message
+
+
+@pytest.mark.parametrize(
+    "inference_exc",
+    [
+        OpenRouterInferenceError(
+            "after retries",
+            attempts=3,
+            transport_timeout=True,
+            transport_error_kind="timeout",
+            failure_category="timeout",
+        ),
+        OpenRouterInferenceError(
+            "http 502",
+            attempts=3,
+            http_status=502,
+            failure_category="http_transient",
+        ),
+        OpenRouterInferenceError(
+            "bad payload",
+            attempts=1,
+            failure_category="invalid_upstream_payload",
+        ),
+    ],
+)
+@pytest.mark.unit
+def test_fallback_maps_openrouter_errors_to_inference_failed_for_all_failure_categories(
+    inference_exc: OpenRouterInferenceError,
+) -> None:
+    failure = fallback_for_exception(inference_exc)
+    assert failure.category == "inference_failed"
+    assert failure.message.strip() != ""
 
 
 @pytest.mark.unit

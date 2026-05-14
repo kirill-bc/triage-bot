@@ -283,3 +283,67 @@ def test_fetch_issue_raises_after_exhausting_retries_on_persistent_503(
     assert "503" in str(exc.value)
     assert exc.value.attempts == 2
     assert exc.value.http_status == 503
+
+
+@pytest.mark.unit
+def test_fetch_issue_read_timeout_exhausted_sets_transport_timeout_and_kind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
+    monkeypatch.setenv("JIRA_CLOUD_ID", "cloud-id-test")
+    monkeypatch.setenv("JIRA_USER_EMAIL", "bot@example.com")
+    monkeypatch.setattr(
+        "triage_service.adapters.jira_http_retry.time.sleep",
+        lambda *_a, **_k: None,
+    )
+    settings = AppSettings()
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        raise httpx.ReadTimeout("read stalled", request=request)
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        fetcher = JiraIssueFetcher(settings, client=client)
+        with pytest.raises(JiraIssueFetchError) as exc:
+            fetcher.fetch("TJC-1", run_id="run-test")
+    assert calls["n"] == 3
+    assert exc.value.attempts == 3
+    assert exc.value.transport_timeout is True
+    assert exc.value.transport_error_kind == "timeout"
+    assert exc.value.http_status is None
+
+
+@pytest.mark.unit
+def test_fetch_issue_transport_exhausted_records_attempts_and_error_kind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
+    monkeypatch.setenv("JIRA_CLOUD_ID", "cloud-id-test")
+    monkeypatch.setenv("JIRA_USER_EMAIL", "bot@example.com")
+    monkeypatch.setenv("TRIAGE_JIRA_HTTP_MAX_RETRIES", "2")
+    monkeypatch.setattr(
+        "triage_service.adapters.jira_http_retry.time.sleep",
+        lambda *_a, **_k: None,
+    )
+    settings = AppSettings()
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        _ = request
+        calls["n"] += 1
+        raise httpx.ConnectError("refused", request=httpx.Request("GET", "https://x"))
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        fetcher = JiraIssueFetcher(settings, client=client)
+        with pytest.raises(JiraIssueFetchError) as exc:
+            fetcher.fetch("TJC-1", run_id="run-test")
+    assert calls["n"] == 3
+    assert exc.value.attempts == 3
+    assert exc.value.http_status is None
+    assert exc.value.transport_timeout is False
+    assert exc.value.transport_error_kind == "connect_error"

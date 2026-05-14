@@ -46,6 +46,14 @@ def test_flake8_passes_on_src_and_tests() -> None:
             ),
             str(root / "src" / "triage_service" / "observability" / "observability_wiring.py"),
             str(root / "src" / "triage_service" / "observability" / "payload_redaction.py"),
+            str(root / "src" / "triage_service" / "observability" / "log_payload_guard.py"),
+            str(
+                root
+                / "src"
+                / "triage_service"
+                / "observability"
+                / "structured_logger_audit_store.py",
+            ),
             str(root / "dev_tunnel.py"),
             str(root / "scripts" / "fetch_jira_issue.py"),
             str(root / "scripts" / "run_triage_cli.py"),

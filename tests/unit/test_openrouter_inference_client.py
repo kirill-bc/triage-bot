@@ -99,7 +99,15 @@ def test_chat_completion_uses_model_override_when_provided(
 
 
 @pytest.mark.unit
-def test_chat_completion_raises_on_http_error(openrouter_app_settings: AppSettings) -> None:
+def test_chat_completion_raises_on_http_error(
+    openrouter_app_settings: AppSettings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "triage_service.adapters.jira_http_retry.time.sleep",
+        lambda *_a, **_k: None,
+    )
+
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(429, text="Rate limited")
 
@@ -112,6 +120,11 @@ def test_chat_completion_raises_on_http_error(openrouter_app_settings: AppSettin
                 run_id="run-test",
             )
     assert "429" in str(exc.value)
+    err = exc.value
+    assert isinstance(err, OpenRouterInferenceError)
+    assert err.http_status == 429
+    assert err.attempts == 3
+    assert err.failure_category == "http_rate_limited"
 
 
 @pytest.mark.unit
@@ -131,6 +144,7 @@ def test_chat_completion_raises_when_response_has_no_assistant_content(
                 run_id="run-test",
             )
     assert "content" in str(exc.value).lower() or "empty" in str(exc.value).lower()
+    assert exc.value.failure_category == "invalid_upstream_payload"
 
 
 @pytest.mark.unit
@@ -247,3 +261,211 @@ def test_chat_completion_with_details_returns_usage_and_cost_when_present(
         "total_tokens": 18,
     }
     assert result.cost_details == {"cost": 0.00042}
+
+
+@pytest.mark.unit
+def test_chat_completion_retries_on_502_then_succeeds(
+    openrouter_app_settings: AppSettings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "triage_service.adapters.jira_http_retry.time.sleep",
+        lambda *_a, **_k: None,
+    )
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        _ = request
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(502, text="bad gateway")
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": "recovered"}}]},
+        )
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        inference = OpenRouterInferenceClient(openrouter_app_settings, client=client)
+        text = inference.chat_completion(
+            messages=[{"role": "user", "content": "x"}],
+            run_id="run-retry",
+        )
+    assert text == "recovered"
+    assert calls["n"] == 2
+
+
+@pytest.mark.unit
+def test_chat_completion_raises_after_retries_exhausted_on_503(
+    openrouter_app_settings: AppSettings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "triage_service.adapters.jira_http_retry.time.sleep",
+        lambda *_a, **_k: None,
+    )
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        _ = request
+        calls["n"] += 1
+        return httpx.Response(503, text="unavailable")
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        inference = OpenRouterInferenceClient(openrouter_app_settings, client=client)
+        with pytest.raises(OpenRouterInferenceError) as exc:
+            inference.chat_completion(
+                messages=[{"role": "user", "content": "x"}],
+                run_id="run-exhaust",
+            )
+    assert "503" in str(exc.value)
+    assert calls["n"] == 3
+    assert exc.value.attempts == 3
+    assert exc.value.http_status == 503
+    assert exc.value.failure_category == "http_transient"
+
+
+@pytest.mark.unit
+def test_chat_completion_retries_on_connect_error_then_succeeds(
+    openrouter_app_settings: AppSettings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "triage_service.adapters.jira_http_retry.time.sleep",
+        lambda *_a, **_k: None,
+    )
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise httpx.ConnectError("refused", request=request)
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": "ok"}}]},
+        )
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        inference = OpenRouterInferenceClient(openrouter_app_settings, client=client)
+        assert inference.chat_completion(
+            messages=[{"role": "user", "content": "x"}],
+            run_id="run-transport",
+        ) == "ok"
+    assert calls["n"] == 2
+
+
+@pytest.mark.unit
+def test_chat_completion_wraps_request_error_after_retries(
+    openrouter_app_settings: AppSettings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "triage_service.adapters.jira_http_retry.time.sleep",
+        lambda *_a, **_k: None,
+    )
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        raise httpx.ConnectError("always down", request=request)
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        inference = OpenRouterInferenceClient(openrouter_app_settings, client=client)
+        with pytest.raises(OpenRouterInferenceError) as exc:
+            inference.chat_completion(
+                messages=[{"role": "user", "content": "x"}],
+                run_id="run-dead",
+            )
+    assert calls["n"] == 3
+    assert "retries" in str(exc.value).lower()
+    assert exc.value.attempts == 3
+    assert exc.value.transport_error_kind == "connect_error"
+    assert exc.value.failure_category == "connect_error"
+
+
+@pytest.mark.unit
+def test_chat_completion_raises_on_500_with_http_error_failure_category(
+    openrouter_app_settings: AppSettings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "triage_service.adapters.jira_http_retry.time.sleep",
+        lambda *_a, **_k: None,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="internal")
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        inference = OpenRouterInferenceClient(openrouter_app_settings, client=client)
+        with pytest.raises(OpenRouterInferenceError) as exc:
+            inference.chat_completion(
+                messages=[{"role": "user", "content": "x"}],
+                run_id="run-500",
+            )
+    assert exc.value.http_status == 500
+    assert exc.value.attempts == 1
+    assert exc.value.failure_category == "http_error"
+
+
+@pytest.mark.unit
+def test_chat_completion_read_timeout_after_retries_sets_failure_category_timeout(
+    openrouter_app_settings: AppSettings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "triage_service.adapters.jira_http_retry.time.sleep",
+        lambda *_a, **_k: None,
+    )
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        raise httpx.ReadTimeout("slow", request=request)
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        inference = OpenRouterInferenceClient(openrouter_app_settings, client=client)
+        with pytest.raises(OpenRouterInferenceError) as exc:
+            inference.chat_completion(
+                messages=[{"role": "user", "content": "x"}],
+                run_id="run-timeout",
+            )
+    assert calls["n"] == 3
+    assert exc.value.attempts == 3
+    assert exc.value.transport_timeout is True
+    assert exc.value.transport_error_kind == "timeout"
+    assert exc.value.failure_category == "timeout"
+
+
+@pytest.mark.unit
+def test_chat_completion_zero_retries_fails_immediately_on_429(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-secret")
+    monkeypatch.setenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
+    monkeypatch.setenv("TRIAGE_OPENROUTER_HTTP_MAX_RETRIES", "0")
+    settings = AppSettings()
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(429, text="rate limited")
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        inference = OpenRouterInferenceClient(settings, client=client)
+        with pytest.raises(OpenRouterInferenceError) as exc:
+            inference.chat_completion(
+                messages=[{"role": "user", "content": "x"}],
+                run_id="run-429",
+            )
+    assert calls["n"] == 1
+    assert exc.value.attempts == 1
+    assert exc.value.http_status == 429
+    assert exc.value.failure_category == "http_rate_limited"

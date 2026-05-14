@@ -23,6 +23,8 @@ _APP_ENV_KEYS = (
     "TRIAGE_AUDIT_LANGFUSE_ENABLED",
     "TRIAGE_AUDIT_REDACT_MODEL_INPUT",
     "TRIAGE_AUDIT_REDACT_MODEL_OUTPUT",
+    "TRIAGE_OPENROUTER_HTTP_TIMEOUT_SECONDS",
+    "TRIAGE_OPENROUTER_HTTP_MAX_RETRIES",
 )
 
 
@@ -115,6 +117,8 @@ def test_load_settings_optional_fields_default_when_omitted(
     assert settings.audit_langfuse_enabled is True
     assert settings.audit_redact_model_input is True
     assert settings.audit_redact_model_output is False
+    assert settings.openrouter_http_timeout_seconds == 60.0
+    assert settings.openrouter_http_max_retries == 2
 
 
 @pytest.mark.unit
@@ -153,6 +157,23 @@ def test_load_settings_reads_jira_http_timeout_and_max_retries(
     settings = load_settings()
     assert settings.jira_http_timeout_seconds == 45.0
     assert settings.jira_http_max_retries == 0
+
+
+@pytest.mark.unit
+def test_load_settings_reads_openrouter_http_timeout_and_max_retries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text(
+        "JIRA_API_KEY=jira-token\n"
+        "OPENROUTER_API_KEY=or-token\n"
+        "TRIAGE_OPENROUTER_HTTP_TIMEOUT_SECONDS=90\n"
+        "TRIAGE_OPENROUTER_HTTP_MAX_RETRIES=1\n",
+        encoding="utf-8",
+    )
+    settings = load_settings()
+    assert settings.openrouter_http_timeout_seconds == 90.0
+    assert settings.openrouter_http_max_retries == 1
 
 
 @pytest.mark.unit
