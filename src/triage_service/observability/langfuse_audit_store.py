@@ -6,6 +6,7 @@ import logging
 from typing import Protocol, cast
 
 from langfuse import Langfuse
+from langfuse.types import TraceContext
 
 from triage_service.observability.audit_events import TriageAuditEvent, dump_triage_audit_event
 from triage_service.observability.audit_store import AuditStore
@@ -15,11 +16,14 @@ LOGGER = logging.getLogger(__name__)
 
 
 class _LangfuseEventClient(Protocol):
+    def get_current_trace_id(self) -> str | None:
+        """Return active trace id when executing inside an observation context."""
+
     def create_event(
         self,
         *,
         name: str,
-        trace_id: str,
+        trace_context: TraceContext | None = None,
         metadata: dict[str, object],
     ) -> object:
         """Record one event attached to a LangFuse trace."""
@@ -37,11 +41,21 @@ class LangfuseAuditStore(AuditStore):
         payload = dump_triage_audit_event(event)
         run_id = str(payload["run_id"])
         try:
-            self._client.create_event(
-                name=str(payload["event_type"]),
-                trace_id=stable_langfuse_trace_id(run_id),
-                metadata=payload,
-            )
+            if self._client.get_current_trace_id():
+                self._client.create_event(
+                    name=str(payload["event_type"]),
+                    metadata=payload,
+                )
+            else:
+                tc = cast(
+                    TraceContext,
+                    {"trace_id": stable_langfuse_trace_id(run_id)},
+                )
+                self._client.create_event(
+                    name=str(payload["event_type"]),
+                    trace_context=tc,
+                    metadata=payload,
+                )
         except Exception:
             LOGGER.warning("Langfuse audit event emission failed", exc_info=True)
 

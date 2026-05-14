@@ -2,6 +2,8 @@
 
 ## 2026-05-14
 
+- **Phase close (Langfuse trace tree):** `pytest -m lint`, `mypy .`, and `pytest -m "unit or integration"` (229 passed, 1 skipped) from `.venv`. **Langfuse Python SDK ~4.6:** the pipeline span `triage_issue_pipeline` is started **without** `trace_context` so OpenTelemetry nesting applies; `inference_classification` / `inference_priority` are children of that span. Passing `trace_context` into `start_as_current_observation` / `create_event` was forcing remote-parent handling and flattening the UI root view. **Audit events:** `LangfuseAuditStore` calls `create_event` **without** `trace_context` when `get_current_trace_id()` is non-empty (handler still inside the pipeline span); otherwise it falls back to `trace_context={"trace_id": stable_langfuse_trace_id(run_id)}` for correlation. `create_event(..., trace_id=...)` is invalid on this SDK; use `trace_context` only where needed.
+
 - **Phase close (verification):** from `.venv`, `./scripts/run_tests.sh lint` (flake8 via `pytest -m lint`, 5 tests), `./scripts/run_tests.sh types` (`mypy .`, 67 files, clean), and `./scripts/run_tests.sh fast` (`pytest -m "unit or integration"`, 228 passed, 1 skipped: `OPENROUTER_LIVE_SMOKE` integration smoke). README repository-layout line aligned with gateway auth: executor wiring when `JIRA_CLOUD_ID` and `JIRA_USER_EMAIL` are set.
 
 - **Jira REST timeout and bounded retries:** `AppSettings` adds `TRIAGE_JIRA_HTTP_TIMEOUT_SECONDS`
@@ -42,14 +44,14 @@
   with optional Langfuse + structured-log sinks and payload redaction per settings.
 
 - **LangFuse inference tracing:** `src/triage_service/observability/langfuse_inference_tracing.py`
-  provides `LangfuseInferenceTracer` (root span `triage_issue` + nested `classification` /
-  `priority` generations). `TriageHandler` wires it via `build_langfuse_inference_tracer(...)`
-  when `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` are set (`AppSettings`); each generation
-  records OpenRouter `messages`, model id, temperature, raw assistant JSON as `output`, and
-  parsed step fields under `metadata.parsed`. Trace id is derived from `run_id` (UUID hex or
-  SHA-256 prefix for non-UUID run ids). SDK failures are logged and never fail triage.
-  `TriageHandler.flush_inference_telemetry` / `POST /triage` and `run_cli_triage` call LangFuse
-  `flush()` after each run so short-lived processes still export spans.
+  provides `LangfuseInferenceTracer` (root span `triage_issue_pipeline` + nested
+  `inference_classification` / `inference_priority` generations). `TriageHandler` wires it via
+  `build_langfuse_inference_tracer(...)` when `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY`
+  are set; each generation records OpenRouter `messages`, model id, temperature, raw assistant
+  JSON as `output`, and parsed step fields under `metadata.parsed`. Span metadata includes
+  `run_id`, `issue_key`, and `project` on the root span. SDK failures are logged and never fail
+  triage. `TriageHandler.flush_inference_telemetry` / `POST /triage` and `run_cli_triage` call
+  LangFuse `flush()` after each run so short-lived processes still export spans.
 
 - **`run_id` correlation:** `POST /triage` generates `str(uuid.uuid4())` at ingress (`triage_api`),
   returns it on `TriagePostResponse`, and passes `run_id=` through `TriageRunner.run_sync` →
@@ -58,13 +60,13 @@
   generates its own `run_id` per invocation.
   Benchmark prefetch/triage paths pass `run_id` into fetch / `run_sync_on_fetched`.
 
-- **LangFuse audit store sink:** added `src/triage_service/observability/langfuse_audit_store.py`
-  with `LangfuseAuditStore` implementing the `AuditStore` contract by serializing
-  `TriageAuditEvent` via `dump_triage_audit_event` and sending it to LangFuse `create_event`
-  using a stable per-run trace id (`stable_langfuse_trace_id(run_id)`). Added
-  `build_langfuse_audit_store(public_key, secret_key, base_url)` (no-op without both keys),
-  exported both from `triage_service.observability`, and covered behavior in
-  `tests/unit/test_langfuse_audit_store.py` (happy path + failure-safe no-raise).
+- **LangFuse audit store sink:** `src/triage_service/observability/langfuse_audit_store.py`
+  implements `AuditStore` by serializing `TriageAuditEvent` via `dump_triage_audit_event` and
+  calling LangFuse `create_event`. When an observation context is active, events attach as
+  children of the current span (no `trace_context`). Otherwise `create_event` uses
+  `trace_context={"trace_id": stable_langfuse_trace_id(run_id)}` so a run can still be
+  correlated by deterministic id. `build_langfuse_audit_store(public_key, secret_key, base_url)`
+  is a no-op without both keys. Covered in `tests/unit/test_langfuse_audit_store.py`.
 
 - **Structured logger audit sink:** added
   `src/triage_service/observability/structured_logger_audit_store.py` with

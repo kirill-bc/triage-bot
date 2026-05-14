@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import uuid
 from contextlib import contextmanager
-from typing import Any, cast
+from typing import Any
 from unittest.mock import MagicMock, call
 
 import pytest
-from langfuse.types import TraceContext
 
 from triage_service.observability.langfuse_inference_tracing import (
     LangfuseInferenceTracer,
@@ -115,10 +114,8 @@ def test_tracer_records_root_span_and_classification_generation() -> None:
             )
 
     assert client.start_as_current_observation.call_count == 2
-    tc = cast(TraceContext, {"trace_id": "550e8400e29b41d4a716446655440000"})
     first = client.start_as_current_observation.call_args_list[0]
     assert first == call(
-        trace_context=tc,
         name="triage_issue_pipeline",
         as_type="span",
         metadata={

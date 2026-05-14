@@ -31,10 +31,11 @@ def test_langfuse_audit_store_record_noop_without_client() -> None:
 
 
 @pytest.mark.unit
-def test_langfuse_audit_store_records_event_with_trace_id_and_metadata() -> None:
+def test_langfuse_audit_store_records_event_with_trace_context_and_metadata() -> None:
     from triage_service.observability.langfuse_audit_store import LangfuseAuditStore
 
     client = MagicMock()
+    client.get_current_trace_id.return_value = None
     store = LangfuseAuditStore(client=client)
     event = _sample_event()
 
@@ -42,7 +43,32 @@ def test_langfuse_audit_store_records_event_with_trace_id_and_metadata() -> None
 
     client.create_event.assert_called_once_with(
         name="classification_completed",
-        trace_id="550e8400e29b41d4a716446655440000",
+        trace_context={"trace_id": "550e8400e29b41d4a716446655440000"},
+        metadata={
+            "event_type": "classification_completed",
+            "run_id": "550e8400-e29b-41d4-a716-446655440000",
+            "issue_key": "TJC-12",
+            "project": "TJC",
+            "source": "manual_cli",
+            "recommended_issue_type": "Bug",
+            "confidence": 0.87,
+            "reason": "Contains production outage signals.",
+        },
+    )
+
+
+@pytest.mark.unit
+def test_langfuse_audit_store_uses_active_parent_span_when_available() -> None:
+    from triage_service.observability.langfuse_audit_store import LangfuseAuditStore
+
+    client = MagicMock()
+    client.get_current_trace_id.return_value = "550e8400e29b41d4a716446655440000"
+    store = LangfuseAuditStore(client=client)
+
+    store.record(_sample_event())
+
+    client.create_event.assert_called_once_with(
+        name="classification_completed",
         metadata={
             "event_type": "classification_completed",
             "run_id": "550e8400-e29b-41d4-a716-446655440000",

@@ -65,6 +65,7 @@
 - [x] Add config surface in `src/triage_service/core/settings.py` for LangFuse keys/host, audit enable flags, and redaction toggles.
 - [x] Ensure confidence remains advisory metadata only (never a direct mutation decision switch).
 - [x] Add unit tests for event schema validation, audit fan-out behavior, and failure-safe logging/LangFuse emission paths.
+- [x] Align Langfuse Python SDK v4 observation usage so the UI trace tree and root view nest `triage_issue_pipeline`, inference generations, and in-span audit events (avoid incorrect `trace_context` / deprecated kwargs on `create_event`).
 - Done when: every triage attempt emits correlated audit data to structured logs (required baseline). LangFuse traces and `LANGFUSE_*` secrets for **hosted** environments are optional at MVP ship and tracked under **§8 Post-MVP → Langfuse project credentials**; when keys are set, the same run also emits model metadata to LangFuse with redaction policy applied, including confidence, with passing lint/mypy/unit.
 
 ## 6. Resilience + runtime safeguards

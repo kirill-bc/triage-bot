@@ -7,10 +7,9 @@ import logging
 import uuid
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
-from typing import Any, Literal, cast
+from typing import Any, Literal
 
 from langfuse import Langfuse
-from langfuse.types import TraceContext
 
 from triage_service.observability.payload_redaction import (
     sanitize_chat_messages,
@@ -96,12 +95,7 @@ class LangfuseInferenceTracer:
             yield
             return
         try:
-            tc = cast(
-                TraceContext,
-                {"trace_id": stable_langfuse_trace_id(run_id)},
-            )
             with self._client.start_as_current_observation(
-                trace_context=tc,
                 name="triage_issue_pipeline",
                 as_type="span",
                 metadata={
