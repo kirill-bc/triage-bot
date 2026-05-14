@@ -260,7 +260,44 @@ def test_chat_completion_with_details_returns_usage_and_cost_when_present(
         "completion_tokens": 7,
         "total_tokens": 18,
     }
-    assert result.cost_details == {"cost": 0.00042}
+    assert result.cost_details == {"total": 0.00042}
+
+
+@pytest.mark.unit
+def test_chat_completion_with_details_maps_openrouter_prompt_and_completion_costs(
+    openrouter_app_settings: AppSettings,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        _ = request
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+                "usage": {
+                    "prompt_tokens": 11,
+                    "completion_tokens": 7,
+                    "total_tokens": 18,
+                    "prompt_cost": 0.0003,
+                    "completion_cost": 0.00012,
+                    "total_cost": 0.00042,
+                },
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        inference = OpenRouterInferenceClient(openrouter_app_settings, client=client)
+        result = inference.chat_completion_with_details(
+            messages=[{"role": "user", "content": "x"}],
+            run_id="run-test",
+        )
+
+    assert isinstance(result, OpenRouterCompletionResult)
+    assert result.cost_details == {
+        "input": 0.0003,
+        "output": 0.00012,
+        "total": 0.00042,
+    }
 
 
 @pytest.mark.unit

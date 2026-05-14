@@ -317,6 +317,42 @@ def test_tracer_marks_truncation_on_oversized_generation_input() -> None:
 
 
 @pytest.mark.unit
+def test_model_generation_uses_explicit_trace_context_when_available() -> None:
+    gen_obs = MagicMock()
+
+    @contextmanager
+    def gen_ctx(**kwargs: Any) -> Any:
+        _ = kwargs
+        yield gen_obs
+
+    @contextmanager
+    def root_ctx(**kwargs: Any) -> Any:
+        _ = kwargs
+        yield MagicMock()
+
+    client = MagicMock()
+    client.get_current_trace_id.return_value = "a" * 32
+    client.get_current_observation_id.return_value = "b" * 16
+    client.start_as_current_observation.side_effect = [root_ctx(), gen_ctx()]
+    tracer = LangfuseInferenceTracer(client)
+
+    with tracer.triage_issue_trace(run_id=str(uuid.uuid4()), issue_key="A-1", project="A"):
+        with tracer.model_generation(
+            step="priority",
+            model="m",
+            messages=[{"role": "user", "content": "x"}],
+            model_parameters={"temperature": 0.1},
+        ) as finish:
+            finish("raw", {"parsed": {"recommended_priority": "P1"}})
+
+    gen_call = client.start_as_current_observation.call_args_list[1]
+    assert gen_call.kwargs["trace_context"] == {
+        "trace_id": "a" * 32,
+        "parent_span_id": "b" * 16,
+    }
+
+
+@pytest.mark.unit
 def test_build_langfuse_inference_tracer_noop_without_keys() -> None:
     tracer = build_langfuse_inference_tracer(public_key=None, secret_key=None)
     assert tracer._client is None

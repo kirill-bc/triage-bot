@@ -221,10 +221,16 @@ def _extract_cost_details(payload: dict[str, Any]) -> dict[str, float] | None:
     usage = payload.get("usage")
     usage_dict = usage if isinstance(usage, dict) else {}
     details: dict[str, float] = {}
-    for key in ("cost", "total_cost", "prompt_cost", "completion_cost"):
-        value = usage_dict.get(key, payload.get(key))
-        if isinstance(value, bool):
-            continue
-        if isinstance(value, (int, float)):
-            details[key] = float(value)
+    total_cost = usage_dict.get("total_cost", payload.get("total_cost"))
+    if total_cost is None:
+        total_cost = usage_dict.get("cost", payload.get("cost"))
+    prompt_cost = usage_dict.get("prompt_cost", payload.get("prompt_cost"))
+    completion_cost = usage_dict.get("completion_cost", payload.get("completion_cost"))
+
+    if isinstance(total_cost, (int, float)) and not isinstance(total_cost, bool):
+        details["total"] = float(total_cost)
+    if isinstance(prompt_cost, (int, float)) and not isinstance(prompt_cost, bool):
+        details["input"] = float(prompt_cost)
+    if isinstance(completion_cost, (int, float)) and not isinstance(completion_cost, bool):
+        details["output"] = float(completion_cost)
     return details or None

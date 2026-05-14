@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from typing import Any, Literal, cast
 
 from langfuse import Langfuse
+from langfuse.types import TraceContext
 
 from triage_service.observability.log_payload_guard import (
     DEFAULT_MAX_LOG_STRING_CHARS,
@@ -65,6 +66,30 @@ def _apply_langfuse_generation_update(
         update(**update_data)
     except Exception:
         LOGGER.warning("Langfuse generation update failed", exc_info=True)
+
+
+def _safe_current_trace_context(client: object) -> TraceContext | None:
+    """Return explicit trace context when both current trace/span ids are available."""
+    get_trace = getattr(client, "get_current_trace_id", None)
+    get_observation = getattr(client, "get_current_observation_id", None)
+    if not callable(get_trace) or not callable(get_observation):
+        return None
+    try:
+        trace_id = get_trace()
+        parent_span_id = get_observation()
+    except Exception:
+        return None
+    if not isinstance(trace_id, str) or not trace_id.strip():
+        return None
+    if not isinstance(parent_span_id, str) or not parent_span_id.strip():
+        return None
+    return cast(
+        TraceContext,
+        {
+            "trace_id": trace_id,
+            "parent_span_id": parent_span_id,
+        },
+    )
 
 
 def stable_langfuse_trace_id(run_id: str) -> str:
@@ -161,7 +186,9 @@ class LangfuseInferenceTracer:
         if input_trunc:
             gen_metadata["log_payload_truncated"] = True
         try:
+            trace_context = _safe_current_trace_context(self._client)
             with self._client.start_as_current_observation(
+                trace_context=trace_context,
                 name=gen_name,
                 as_type="generation",
                 model=model,
