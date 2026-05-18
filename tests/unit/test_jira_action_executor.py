@@ -23,6 +23,7 @@ from triage_service.core.triage_mismatch import TriageMismatchFlags
 def _settings(monkeypatch: pytest.MonkeyPatch) -> AppSettings:
     monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
     monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
+    monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
     monkeypatch.setenv("JIRA_CLOUD_ID", "cloud-id-test")
     monkeypatch.setenv("JIRA_USER_EMAIL", "bot@example.com")
     return AppSettings()
@@ -169,7 +170,6 @@ def test_executor_posts_mismatch_comment_with_reporter_mention(
     assert "accessLevel" in mention["attrs"]
     intro = first_para[1]["text"].lower()
     assert "triagebot" in intro
-    assert "automated triage" in intro
     assert "informational message" in intro
     assert "no modifications were made" in intro
     mid = paras[1]["content"][0]["text"].lower()
@@ -270,7 +270,7 @@ def test_executor_mismatch_comment_without_account_id_has_no_mention_node(
             ),
             issue_key="TJC-3",
             project="TJC",
-            source="manual_cli",
+            source="manual_trigger",
             outcome=_rec(recommended_priority="P3", reason="defect"),
             run_id="run-test",
         )
@@ -360,6 +360,7 @@ def test_executor_raises_when_jira_rest_target_missing(
     monkeypatch.delenv("JIRA_CLOUD_ID", raising=False)
     monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
     monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
+    monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
     monkeypatch.setenv("JIRA_USER_EMAIL", "bot@example.com")
     settings = AppSettings()
 
@@ -385,6 +386,7 @@ def test_executor_uses_atlassian_gateway_when_jira_cloud_id_set(
 ) -> None:
     monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
     monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
+    monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
     monkeypatch.setenv("JIRA_CLOUD_ID", "550e8400-e29b-41d4-a716-446655440000")
     monkeypatch.setenv("JIRA_USER_EMAIL", "bot@example.com")
     settings = AppSettings()

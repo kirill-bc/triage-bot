@@ -23,6 +23,7 @@ def test_repo_has_local_container_smoke_command_script() -> None:
     content = smoke_script.read_text(encoding="utf-8")
     assert "TRIAGE_LOCAL_MOCK_MODE=1" in content
     assert "POST /triage" in content or "/triage" in content
+    assert "X-Triage-Token" in content
 
 
 @pytest.mark.integration
@@ -33,6 +34,7 @@ def test_repo_has_container_tunnel_command_script_for_jira_automation() -> None:
     assert "cloudflared" in content
     assert "docker run" in content
     assert "/triage" in content
+    assert "X-Triage-Token" in content
     assert "GET /health" in content or "/health" in content
 
 

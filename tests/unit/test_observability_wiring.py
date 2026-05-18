@@ -20,6 +20,7 @@ from triage_service.observability.structured_logger_audit_store import Structure
 def _minimal_settings(monkeypatch: pytest.MonkeyPatch) -> AppSettings:
     monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
     monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
+    monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
     return AppSettings()
 
 
@@ -73,6 +74,7 @@ def test_build_triage_observability_composite_when_langfuse_keys_present(
 ) -> None:
     monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
     monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
+    monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
     monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
     monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
     settings = AppSettings()
@@ -90,6 +92,7 @@ def test_build_triage_observability_langfuse_audit_only_when_structured_disabled
 ) -> None:
     monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
     monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
+    monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
     monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
     monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
     monkeypatch.setenv("TRIAGE_AUDIT_STRUCTURED_LOG_ENABLED", "false")
@@ -106,6 +109,7 @@ def test_build_triage_observability_skips_langfuse_audit_when_flag_disabled(
 ) -> None:
     monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
     monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
+    monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
     monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
     monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
     monkeypatch.setenv("TRIAGE_AUDIT_LANGFUSE_ENABLED", "false")
@@ -121,6 +125,7 @@ def test_build_triage_observability_noop_audit_when_both_sinks_disabled(
 ) -> None:
     monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
     monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
+    monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
     monkeypatch.setenv("TRIAGE_AUDIT_STRUCTURED_LOG_ENABLED", "false")
     monkeypatch.setenv("TRIAGE_AUDIT_LANGFUSE_ENABLED", "false")
     settings = AppSettings()
@@ -165,6 +170,7 @@ def test_build_triage_observability_logs_langfuse_status_when_keys_present(
     )
     monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
     monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
+    monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
     monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
     monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
     settings = AppSettings()
@@ -195,6 +201,7 @@ def test_build_triage_observability_logs_runtime_tracing_false_when_sdk_disabled
     )
     monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
     monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
+    monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
     monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
     monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
     monkeypatch.setenv("LANGFUSE_TRACING_ENABLED", "false")

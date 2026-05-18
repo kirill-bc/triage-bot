@@ -1,4 +1,4 @@
-"""Local manual triage entry: infer project from issue key, run with ``source=manual_cli``."""
+"""Local manual triage entry: infer project from issue key, run with ``source=manual_trigger``."""
 
 from __future__ import annotations
 
@@ -39,11 +39,11 @@ def run_cli_triage(
     project: str | None = None,
     runner: TriageRunner | None = None,
 ) -> TriageRecommendation | TriageFailure:
-    """Run synchronous triage with ``source="manual_cli"`` (same pipeline as the webhook)."""
+    """Run synchronous triage with ``source="manual_trigger"`` (same pipeline as the webhook)."""
     key = issue_key.strip()
     proj = project.strip() if project is not None else infer_project_from_issue_key(key)
     resolved = runner if runner is not None else build_default_triage_handler()
-    outcome = resolved.run_sync(key, proj, "manual_cli", run_id=str(uuid.uuid4()))
+    outcome = resolved.run_sync(key, proj, "manual_trigger", run_id=str(uuid.uuid4()))
     flush = getattr(resolved, "flush_inference_telemetry", None)
     if callable(flush):
         flush()
@@ -54,7 +54,7 @@ def main(argv: list[str] | None = None) -> int:
     """Parse CLI args, validate settings, run triage, print JSON outcome to stdout."""
     parser = argparse.ArgumentParser(
         description=(
-            "Run full triage for one issue (source=manual_cli; "
+            "Run full triage for one issue (source=manual_trigger; "
             "no Jira Automation required)."
         ),
     )

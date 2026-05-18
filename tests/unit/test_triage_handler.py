@@ -57,6 +57,7 @@ class _RecordingAuditStore:
 def _app_settings(monkeypatch: pytest.MonkeyPatch) -> AppSettings:
     monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
     monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
+    monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
     monkeypatch.setenv("JIRA_CLOUD_ID", "cloud-id-test")
     monkeypatch.setenv("JIRA_USER_EMAIL", "bot@example.com")
     return AppSettings()
@@ -293,7 +294,7 @@ def test_run_sync_on_fetched_story_path_skips_jira_fetch(
             outcome = handler.run_sync_on_fetched(
                 issue=issue,
                 project="TJC",
-                source="manual_cli",
+                source="manual_trigger",
                 run_id="run-correlation-3",
             )
 
@@ -637,6 +638,7 @@ def test_build_default_triage_handler_local_mock_mode_skips_external_calls(
 ) -> None:
     monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
     monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
+    monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
     monkeypatch.setenv("TRIAGE_ALLOWED_PROJECTS", "TJC")
     monkeypatch.setenv("TRIAGE_LOCAL_MOCK_MODE", "1")
     monkeypatch.delenv("JIRA_CLOUD_ID", raising=False)
@@ -646,7 +648,7 @@ def test_build_default_triage_handler_local_mock_mode_skips_external_calls(
     outcome = runner.run_sync(
         issue_key="TJC-123",
         project="TJC",
-        source="manual_cli",
+        source="manual_trigger",
         run_id="local-mock-run",
     )
 

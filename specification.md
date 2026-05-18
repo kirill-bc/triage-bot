@@ -65,9 +65,10 @@
   - Runtime: AWS Lambda (invoked synchronously by the Jira webhook).
   - Model provider: OpenRouter (cost-efficient model selected by configuration)
   - Endpoint contract: `POST /triage`
+    - Request header: `X-Triage-Token` must match configured `TRIAGE_WEBHOOK_TOKEN` (shared secret); missing or wrong token → `401 Unauthorized`. `GET /health` is unauthenticated.
     - Request body:
-      - `{ "issue_key": "BC-123", "project": "BC", "source": "bug_created" }` (scheduled bug scan), or the same shape with `"source": "priority_changed"` when an automation fires on priority edits; `"source": "manual_cli"` for the local runner.
-      - `source` is a closed enum (Pydantic `Literal`): `bug_created`, `priority_changed`, `manual_cli`.
+      - `{ "issue_key": "BC-123", "project": "BC", "source": "bug_created" }` (scheduled bug scan), or the same shape with `"source": "priority_changed"` when an automation fires on priority edits; `"source": "manual_trigger"` for the local runner.
+      - `source` is a closed enum (Pydantic `Literal`): `bug_created`, `priority_changed`, `manual_trigger`.
     - Response contract (illustrative; exact nullability is enforced in code). Example when classification is Story (no priority step):
       ```json
       {

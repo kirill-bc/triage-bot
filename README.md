@@ -6,7 +6,7 @@ Jira Triage is an MVP service that accepts a triage trigger, fetches Jira issue 
 
 The repository currently includes:
 
-- a working `POST /triage` API that validates the request, runs synchronous triage (fetch → classify → optional priority), and returns `run_id` (per-request UUID), `status: completed|failed`, and a recommendation or `TriageFailure` (also invocable locally via `scripts/run_triage_cli.py` with `source=manual_cli`, which generates its own `run_id` for the CLI attempt). When `JIRA_CLOUD_ID` and `JIRA_USER_EMAIL` are configured, successful triage applies Jira labels/comments via `src/triage_service/adapters/jira_action_executor.py` (see below); failures do not touch the issue.
+- a working `POST /triage` API that validates the request, runs synchronous triage (fetch → classify → optional priority), and returns `run_id` (per-request UUID), `status: completed|failed`, and a recommendation or `TriageFailure` (also invocable locally via `scripts/run_triage_cli.py` with `source=manual_trigger`, which generates its own `run_id` for the CLI attempt). When `JIRA_CLOUD_ID` and `JIRA_USER_EMAIL` are configured, successful triage applies Jira labels/comments via `src/triage_service/adapters/jira_action_executor.py` (see below); failures do not touch the issue.
 - Jira issue fetch support (`summary`, `description`, `issue type`, `priority`, `reporter`)
 - bundled **policy text** for model context (`src/triage_service/core/policy/`) and a **`policy_context`** loader
 - **prompt composer** for separate classification vs priority model inputs (`src/triage_service/core/prompt_composer.py`)
@@ -29,7 +29,7 @@ See `TODO.md` for the active implementation backlog.
 - `src/triage_service/core/triage_recommendation_parser.py`: validates merged LLM JSON into `TriageRecommendation` (throws `InvalidTriageRecommendationError` when invalid)
 - `src/triage_service/core/triage_mismatch.py`: `compute_mismatch_flags(issue, recommendation)` for deterministic type/priority mismatch (Jira executor / comments)
 - `src/triage_service/core/triage_fallback.py`: `TriageFailure` plus `fallback_for_exception()` to map fetch/inference/parse errors to a stable category + message for orchestration
-- `triage_manual_cli.py`: infer project from `PROJ-123` keys, run `TriageHandler.run_sync(..., source="manual_cli", run_id=...)`, and `main()` for the CLI
+- `triage_manual_cli.py`: infer project from `PROJ-123` keys, run `TriageHandler.run_sync(..., source="manual_trigger", run_id=...)`, and `main()` for the CLI
 - `dev_tunnel.py`: load repo `.env`, start `uvicorn`, then run `ngrok` or `cloudflared` for Jira-facing HTTPS during local development (`scripts/run_dev_tunnel.py`)
 - `src/triage_service/core/policy/`: `bug_definition.md` and `priority_definition.md` (edit to match your org)
 - `scripts/fetch_jira_issue.py`: manual CLI smoke script for a single Jira issue
@@ -46,7 +46,7 @@ See `TODO.md` for the active implementation backlog.
 
 ## Current implemented components
 
-- **API layer**: `GET /health` returns JSON including `observability` when `ready` is true: Langfuse key presence, **`langfuse_export_env_ready`** (keys plus SDK export env: not `LANGFUSE_TRACING_ENABLED=false`, not `OTEL_SDK_DISABLED=true`), and audit flags. That does not prove traces reached Langfuse (use UI + `LANGFUSE_DEBUG` for export failures). HTTP 503 with `ready:false` when validation fails (use for Kubernetes readiness). `POST /triage` accepts `issue_key`, `project`, `source` (`bug_created` or `priority_changed` for Jira Automation; `manual_cli` for the local runner; closed `Literal`); JSON responses include a generated `run_id` for correlation with downstream observability
+- **API layer**: `GET /health` returns JSON including `observability` when `ready` is true: Langfuse key presence, **`langfuse_export_env_ready`** (keys plus SDK export env: not `LANGFUSE_TRACING_ENABLED=false`, not `OTEL_SDK_DISABLED=true`), and audit flags. That does not prove traces reached Langfuse (use UI + `LANGFUSE_DEBUG` for export failures). HTTP 503 with `ready:false` when validation fails (use for Kubernetes readiness). `POST /triage` accepts `issue_key`, `project`, `source` (`bug_created` or `priority_changed` for Jira Automation; `manual_trigger` for the local runner; closed `Literal`) and requires header `X-Triage-Token` matching `TRIAGE_WEBHOOK_TOKEN`; JSON responses include a generated `run_id` for correlation with downstream observability
 - **Validation**: rejects missing fields and unsupported `source` values; rejects projects outside `TRIAGE_ALLOWED_PROJECTS` with `TriageFailure` category `project_not_allowed`
 - **Jira adapter**: fetches and flattens selected Jira issue fields
 - **OpenRouter adapter**: `OpenRouterInferenceClient` posts chat completions using the configured model id
@@ -65,6 +65,7 @@ From repository root:
 2. Configure `.env` with required keys:
    - `JIRA_API_KEY`
    - `OPENROUTER_API_KEY`
+   - `TRIAGE_WEBHOOK_TOKEN` (shared secret expected in inbound `X-Triage-Token` header on `POST /triage`)
    - optional: `OPENROUTER_MODEL` (defaults to `openai/gpt-4o-mini` if unset)
    - optional: `TRIAGE_PROMPT_TEMPLATES_PATH` (path to external JSON prompt templates; defaults to `src/triage_service/core/prompt_templates.json`)
    - optional: `JIRA_CLOUD_ID`, `JIRA_USER_EMAIL`, logging values
@@ -136,7 +137,7 @@ Run the same synchronous pipeline as `POST /triage` without Jira Automation (Ope
 .venv/bin/python scripts/run_triage_cli.py YOUR-123
 ```
 
-Optional `--project TJC` overrides the project key inferred from the issue key (`TJC` from `TJC-123`). The handler receives `source="manual_cli"`; stdout is JSON with either `status: completed` and `recommendation` or `status: failed` and `failure`. Exit code `0` on completed triage, `1` on `TriageFailure`, `2` on settings validation errors.
+Optional `--project TJC` overrides the project key inferred from the issue key (`TJC` from `TJC-123`). The handler receives `source="manual_trigger"`; stdout is JSON with either `status: completed` and `recommendation` or `status: failed` and `failure`. Exit code `0` on completed triage, `1` on `TriageFailure`, `2` on settings validation errors.
 
 ## Jira Automation recipe (scheduled scan)
 
@@ -163,6 +164,9 @@ For the **Send web request** action, use custom JSON data:
 
 Use `"source": "bug_created"` for a newly-created Bug rule and `"source": "priority_changed"`
 for a priority-change rule.
+
+Set request header `X-Triage-Token: <TRIAGE_WEBHOOK_TOKEN>` in the Jira Automation action.
+Requests missing this header (or with the wrong value) receive `401 Unauthorized`.
 
 ### `triagebot-reviewed` lifecycle
 
@@ -198,6 +202,8 @@ Use this when you want Jira Cloud **Send web request** to hit `POST /triage` on 
    **Manual alternative:** run `.venv/bin/uvicorn triage_service.api.triage_api:app --app-dir src --host 0.0.0.0 --port 8000` in one terminal with `.env` exported, then `ngrok http 8000` or `cloudflared tunnel --url http://127.0.0.1:8000` in another.
 
 4. In Jira Automation, set the web request URL to `{tunnel_base}/triage` (no trailing slash before `triage`). The body must be **your JSON** with `issue_key`, `project`, and `source` — use **Custom data** (or equivalent). Use `"source": "bug_created"` for a new-bug rule and `"source": "priority_changed"` for a priority-change rule (the string must match the API enum exactly). If Jira sends a default payload such as `{"issues":[]}`, the API will return **422** because that is not the triage contract.
+
+   Also add header `X-Triage-Token` with the same value as `TRIAGE_WEBHOOK_TOKEN` from your service environment; mismatches return `401`.
 
    ```json
    {

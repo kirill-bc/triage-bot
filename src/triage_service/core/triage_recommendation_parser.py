@@ -216,22 +216,6 @@ def classification_story_to_final(step: ClassificationStepOutput) -> TriageRecom
     )
 
 
-def classification_bug_to_final(step: ClassificationStepOutput) -> TriageRecommendation:
-    """Error if Bug step was not merged with the priority step (see merge helper)."""
-    if step.recommended_issue_type != "Bug":
-        msg = "classification_bug_to_final requires Bug classification"
-        raise ValueError(msg)
-    if step.recommended_priority is None:
-        msg = "Bug classification step must be merged with priority output"
-        raise ValueError(msg)
-    return TriageRecommendation(
-        recommended_issue_type="Bug",
-        recommended_priority=step.recommended_priority,
-        confidence=step.confidence,
-        reason=step.reason,
-    )
-
-
 def merge_bug_classification_with_priority(
     classification: ClassificationStepOutput,
     priority: PriorityStepOutput,

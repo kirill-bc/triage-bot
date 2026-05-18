@@ -1,5 +1,9 @@
 # Project memory
 
+## 2026-05-18
+
+- **Phase close (`/close-phase`):** From `.venv`, `pytest -m lint`, `mypy .` (71 files), and `pytest -m "unit or integration"` — **283 passed**, **1 skipped** (`OPENROUTER_LIVE_SMOKE`), **5 deselected**. **Webhook auth:** `TRIAGE_WEBHOOK_TOKEN` is required in `AppSettings`; `POST /triage` rejects requests without a matching `X-Triage-Token` header (`401`, constant-time compare via `compare_digest`). `GET /health` is unchanged (no token). **Source enum:** `manual_cli` renamed to `manual_trigger` across API, audit events, CLI (`triage_manual_cli`, `scripts/run_triage_cli.py`), benchmark runner default, and docs (`README.md`, `specification.md`, `TODO.md`). **Container smoke:** `scripts/run_container_smoke.sh` sets `TRIAGE_WEBHOOK_TOKEN=local-smoke` and sends the header; `scripts/run_container_tunnel.sh` reads the token from `--env-file` for live curls. **Cleanup:** removed unused `classification_bug_to_final` from `triage_recommendation_parser.py`. **Jira comment:** mismatch template prefixes the configured TriageBot display name. `.env.example` documents `TRIAGE_WEBHOOK_TOKEN`.
+
 ## 2026-05-14
 
 - **Phase close (`/close-phase`) verification refresh:** From `.venv`, `pytest -m lint`, `mypy .`, and `pytest -m "unit or integration"` all passed after the container-smoke + observability updates (**280 passed**, **1 skipped**, **5 deselected** in the unit/integration slice). Current docs/TODO now reflect: local container smoke + live tunnel smoke are complete (including TJC-only/operator guardrails), while platform-repo image registration/deployment wiring remains open in Phase 7.
@@ -204,7 +208,7 @@
   updates (`post_triage`, triage handler, executor, mismatch). **Product path** §3 TODO item
   (Jira Automation → hosted API) remains open until verified on a real tenant.
 
-- **`POST /triage` `source` enum:** `TriageSource = Literal["bug_created", "priority_changed", "manual_cli"]`
+- **`POST /triage` `source` enum:** `TriageSource = Literal["bug_created", "priority_changed", "manual_trigger"]`
   for Jira bug-creation vs priority-change automations and the local CLI. Replaces the older
   `scheduled_scan` value; payloads using the old string now fail validation (422). README,
   `specification.md`, `TODO.md`, and unit tests (`test_post_triage`, `test_triage_handler`,
@@ -243,9 +247,9 @@
   mismatch). Tests: ``tests/unit/test_triage_mismatch.py``; spec/TODO/README updated.
 - **Local manual CLI:** `triage_manual_cli.py` — `infer_project_from_issue_key()` parses standard
   `PROJ-123` keys; `run_cli_triage(issue_key, project=..., runner=...)` calls
-  `TriageRunner.run_sync(..., "manual_cli")`. `main()` loads `.env` from repo root, validates settings,
+  `TriageRunner.run_sync(..., "manual_trigger")`. `main()` loads `.env` from repo root, validates settings,
   prints JSON (`completed` + `recommendation` or `failed` + `failure`), exit codes `0` / `1` / `2`.
-  Wrapper: `scripts/run_triage_cli.py`. API: `TriageSource` now includes `"manual_cli"`.
+  Wrapper: `scripts/run_triage_cli.py`. API: `TriageSource` now includes `"manual_trigger"`.
   Tests: `tests/unit/test_triage_manual_cli.py`, `test_post_triage_accepts_manual_cli_source`.
 - **Synchronous triage handler:** `triage_handler.py` — `TriageHandler.run_sync(issue_key, project, source)`
   checks project against `TriageCoreConfig.allowed_projects`, fetches via `JiraIssueFetcher`, runs
@@ -275,7 +279,7 @@
   scheduler/queue. Failures (`TriageFailure`) leave the issue unlabeled → next scheduled scan retries
   automatically until success or ageout.
 - **API contract (current):** `POST /triage` body is `{ issue_key, project, source }` where
-  `source: Literal["scheduled_scan", "manual_cli"]`. The old `event_type` field (`issue_created` /
+  `source: Literal["scheduled_scan", "manual_trigger"]`. The old `event_type` field (`issue_created` /
   `issue_updated`) is gone — nothing fires the webhook on a Jira event under the scheduled-rule model.
   `source` is a closed enum; `manual_cli` tags calls from `scripts/run_triage_cli.py` / local tooling. **Thin payload:** Jira sends only `issue_key + project + source`; service re-fetches latest
   issue state via `JiraIssueFetcher` (we already pay the Jira-auth cost for comment/label writes).

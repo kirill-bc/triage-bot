@@ -29,6 +29,11 @@ class AppSettings(BaseSettings):
 
     jira_api_key: str = Field(min_length=1, description="Jira Cloud API token (or server PAT).")
     openrouter_api_key: str = Field(min_length=1, description="OpenRouter API key.")
+    triage_webhook_token: str = Field(
+        min_length=1,
+        validation_alias="TRIAGE_WEBHOOK_TOKEN",
+        description="Shared secret required in X-Triage-Token for POST /triage requests.",
+    )
     openrouter_model: str = Field(
         default="openai/gpt-4o-mini",
         min_length=1,

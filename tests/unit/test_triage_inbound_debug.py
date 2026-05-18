@@ -65,6 +65,15 @@ class _StubRunner:
         )
 
 
+@pytest.fixture(autouse=True)
+def _configure_triage_webhook_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
+
+
+def _auth_headers() -> dict[str, str]:
+    return {"X-Triage-Token": "triage-token"}
+
+
 @pytest.mark.unit
 def test_debug_inbound_logs_raw_body_when_validation_fails(
     monkeypatch: pytest.MonkeyPatch,
@@ -72,7 +81,7 @@ def test_debug_inbound_logs_raw_body_when_validation_fails(
 ) -> None:
     monkeypatch.setenv("TRIAGE_DEBUG_INBOUND", "1")
     client = TestClient(create_app(triage_handler_factory=lambda: _StubRunner()))
-    response = client.post("/triage", json={"issues": []})
+    response = client.post("/triage", json={"issues": []}, headers=_auth_headers())
     assert response.status_code == 422
     err = capsys.readouterr().err
     assert "[TRIAGE_DEBUG_INBOUND]" in err
@@ -86,7 +95,7 @@ def test_debug_inbound_does_not_log_when_disabled(
 ) -> None:
     monkeypatch.delenv("TRIAGE_DEBUG_INBOUND", raising=False)
     client = TestClient(create_app(triage_handler_factory=lambda: _StubRunner()))
-    response = client.post("/triage", json={"issues": []})
+    response = client.post("/triage", json={"issues": []}, headers=_auth_headers())
     assert response.status_code == 422
     assert "[TRIAGE_DEBUG_INBOUND]" not in capsys.readouterr().err
 
@@ -101,6 +110,7 @@ def test_debug_inbound_valid_request_still_succeeds(
     response = client.post(
         "/triage",
         json={"issue_key": "TJC-1", "project": "TJC", "source": "bug_created"},
+        headers=_auth_headers(),
     )
     assert response.status_code == 200
     err = capsys.readouterr().err

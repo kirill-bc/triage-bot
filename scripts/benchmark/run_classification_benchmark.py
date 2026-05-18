@@ -272,8 +272,8 @@ def main() -> int:
     parser.add_argument(
         "--source",
         type=str,
-        default="manual_cli",
-        help="Triage source string recorded on the handler path (default: manual_cli)",
+        default="manual_trigger",
+        help="Triage source string recorded on the handler path (default: manual_trigger)",
     )
     parser.add_argument(
         "-v",

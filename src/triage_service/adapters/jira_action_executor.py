@@ -70,13 +70,13 @@ def _mention_attrs(issue: FetchedIssue) -> dict[str, str]:
 
 _MENTION_INTRO = (
     " — This is an informational message from "
-    f"{_TRIAGEBOT_NAME} (automated triage). "
+    f"{_TRIAGEBOT_NAME}. "
     "No modifications were made to this Jira ticket."
 )
 
 _NO_MENTION_INTRO = (
     "This is an informational message from "
-    f"{_TRIAGEBOT_NAME} (automated triage). "
+    f"{_TRIAGEBOT_NAME}. "
     "No modifications were made to this Jira ticket."
 )
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run full triage for one issue from the CLI (``source=manual_cli``).
+"""Run full triage for one issue from the CLI (``source=manual_trigger``).
 
 Example (from repository root)::
 

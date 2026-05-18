@@ -2,7 +2,7 @@
 
 The request body carries a ``source`` closed enum so callers identify why triage
 was invoked: ``bug_created`` (Jira automation on new bugs), ``priority_changed``
-(Jira automation on priority edits), or ``manual_cli`` (local runner / scripts).
+(Jira automation on priority edits), or ``manual_trigger`` (local runner / scripts).
 """
 
 from __future__ import annotations
@@ -10,10 +10,11 @@ from __future__ import annotations
 import os
 import sys
 import uuid
+from hmac import compare_digest
 from collections.abc import Awaitable, Callable
 from typing import Literal
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Header, HTTPException, status
 from pydantic import BaseModel, Field, model_validator
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -27,7 +28,7 @@ from triage_service.core.triage_recommendation_parser import TriageRecommendatio
 from triage_service.observability.log_payload_guard import preview_bytes_for_log
 from triage_service.observability.observability_wiring import observability_status_summary
 
-TriageSource = Literal["bug_created", "priority_changed", "manual_cli"]
+TriageSource = Literal["bug_created", "priority_changed", "manual_trigger"]
 
 
 def triage_inbound_debug_enabled() -> bool:
@@ -79,7 +80,7 @@ class TriageRequest(BaseModel):
     source: TriageSource = Field(
         description=(
             "Origin of the triage call: bug_created or priority_changed (Jira Automation) "
-            "or manual_cli (local runner)."
+            "or manual_trigger (local runner)."
         ),
     )
 
@@ -157,6 +158,20 @@ def create_app(*, triage_handler_factory: Callable[[], TriageRunner] | None = No
     def get_triage_runner() -> TriageRunner:
         return factory()
 
+    def require_triage_token(
+        x_triage_token: str | None = Header(default=None, alias="X-Triage-Token"),
+    ) -> None:
+        expected_token = os.environ.get("TRIAGE_WEBHOOK_TOKEN", "")
+        if (
+            not expected_token
+            or x_triage_token is None
+            or not compare_digest(x_triage_token, expected_token)
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Unauthorized",
+            )
+
     app = FastAPI(title="Jira Triage", version="0.1.0")
 
     @app.get("/health", response_model=None)
@@ -176,6 +191,7 @@ def create_app(*, triage_handler_factory: Callable[[], TriageRunner] | None = No
     def accept_triage_trigger(
         body: TriageRequest,
         runner: TriageRunner = Depends(get_triage_runner),
+        _: None = Depends(require_triage_token),
     ) -> TriagePostResponse:
         run_id = str(uuid.uuid4())
         outcome = runner.run_sync(body.issue_key, body.project, body.source, run_id=run_id)

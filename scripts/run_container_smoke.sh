@@ -21,6 +21,7 @@ docker run --rm -d \
     -p "${HOST_PORT}:8000" \
     -e JIRA_API_KEY="local-smoke" \
     -e OPENROUTER_API_KEY="local-smoke" \
+    -e TRIAGE_WEBHOOK_TOKEN="local-smoke" \
     -e TRIAGE_ALLOWED_PROJECTS="TJC" \
     -e TRIAGE_LOCAL_MOCK_MODE=1 \
     -e TRIAGE_AUDIT_LANGFUSE_ENABLED=false \
@@ -54,6 +55,7 @@ echo "Posting fixture payload to /triage..."
 response_json="$(
     curl -fsS -X POST "http://127.0.0.1:${HOST_PORT}/triage" \
       -H "Content-Type: application/json" \
+      -H "X-Triage-Token: local-smoke" \
       --data-binary "@${PAYLOAD_PATH}"
 )"
 

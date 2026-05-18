@@ -37,6 +37,7 @@ def test_get_health_returns_200_and_ready_true_when_settings_load(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("JIRA_API_KEY", "jira-token")
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-token")
+    monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
     client = TestClient(create_app(triage_handler_factory=lambda: _StubRunner()))
     response = client.get("/health")
     assert response.status_code == 200
@@ -64,6 +65,7 @@ def test_get_health_returns_503_and_ready_false_when_settings_missing(
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("JIRA_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("TRIAGE_WEBHOOK_TOKEN", raising=False)
     client = TestClient(create_app(triage_handler_factory=lambda: _StubRunner()))
     response = client.get("/health")
     assert response.status_code == 503
@@ -81,6 +83,7 @@ def test_get_health_includes_observability_langfuse_enabled_when_keys_set(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("JIRA_API_KEY", "jira-token")
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-token")
+    monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
     monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
     monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
     client = TestClient(create_app(triage_handler_factory=lambda: _StubRunner()))
@@ -105,6 +108,7 @@ def test_get_health_observability_langfuse_export_not_ready_when_tracing_disable
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("JIRA_API_KEY", "jira-token")
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-token")
+    monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
     monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
     monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
     monkeypatch.setenv("LANGFUSE_TRACING_ENABLED", "false")
@@ -124,6 +128,7 @@ def test_get_health_observability_langfuse_export_not_ready_when_otel_disabled(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("JIRA_API_KEY", "jira-token")
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-token")
+    monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
     monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
     monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
     monkeypatch.setenv("OTEL_SDK_DISABLED", "true")
@@ -143,6 +148,7 @@ def test_get_health_does_not_instantiate_triage_runner(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("JIRA_API_KEY", "jira-token")
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-token")
+    monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
 
     def _should_not_call() -> _StubRunner:
         raise AssertionError("triage runner factory must not run for GET /health")

@@ -9,7 +9,6 @@ import pytest
 from triage_service.core.triage_recommendation_parser import (
     ClassificationStepOutput,
     InvalidTriageRecommendationError,
-    classification_bug_to_final,
     classification_story_to_final,
     merge_bug_classification_with_priority,
     parse_classification_step_text,
@@ -112,18 +111,6 @@ def test_parse_priority_step_and_merge_bug_path() -> None:
     assert merged.recommended_priority == "P3"
     assert merged.confidence == 0.91
     assert merged.reason == "Severity per policy."
-
-
-@pytest.mark.unit
-def test_classification_bug_to_final_requires_priority() -> None:
-    cls = ClassificationStepOutput(
-        recommended_issue_type="Bug",
-        recommended_priority=None,
-        confidence=0.4,
-        reason="x",
-    )
-    with pytest.raises(ValueError, match="priority"):
-        classification_bug_to_final(cls)
 
 
 @pytest.mark.unit

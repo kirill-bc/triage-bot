@@ -66,7 +66,7 @@ def test_run_cli_triage_passes_manual_cli_source_to_runner() -> None:
 
     outcome = run_cli_triage("TJC-7", runner=_RecordingRunner())
     assert isinstance(outcome, TriageRecommendation)
-    assert calls[0][:3] == ("TJC-7", "TJC", "manual_cli")
+    assert calls[0][:3] == ("TJC-7", "TJC", "manual_trigger")
     uuid.UUID(calls[0][3])
 
 
@@ -123,5 +123,5 @@ def test_run_cli_triage_uses_explicit_project_when_given() -> None:
 
     outcome = run_cli_triage("TJC-7", project="BC", runner=_RecordingRunner())
     assert isinstance(outcome, TriageFailure)
-    assert calls[0][:3] == ("TJC-7", "BC", "manual_cli")
+    assert calls[0][:3] == ("TJC-7", "BC", "manual_trigger")
     uuid.UUID(calls[0][3])

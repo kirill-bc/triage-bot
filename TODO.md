@@ -10,7 +10,7 @@
 
 ## 2. Core Backend / API
 - [x] Set up `README.md` from a generic project skeleton description to rough structure we could fill up leading to the final state of this stage
-- [x] Implement `POST /triage` contract accepting `issue_key`, `project`, and `source` (closed `Literal`: `bug_created`, `priority_changed`, `manual_cli`).
+- [x] Implement `POST /triage` contract accepting `issue_key`, `project`, and `source` (closed `Literal`: `bug_created`, `priority_changed`, `manual_trigger`).
 - [x] Add request validation for required fields and supported `source` values.
 - [x] Implement Jira issue fetcher by issue key (summary, description, type, priority, reporter).
 - [x] Add smoke script to fetch one issue by key for manual verification (`scripts/fetch_jira_issue.py`).
@@ -31,7 +31,7 @@
   - [x] Mismatch signals derived in code (`triage_mismatch.compute_mismatch_flags`); model does not emit `recommended_action`
 - [x] Implement fallback/error response path for upstream failures and invalid model output.
 - [x] Implement synchronous triage handler invoked per-issue by the Jira scheduled-scan webhook: validate the request, run the classification → optional priority flow, hand the outcome (recommendation or `TriageFailure`) to the action executor. No internal scheduler/queue (Jira-side JQL owns delay, dedupe, and retry via the `triagebot-reviewed` label filter and `created >= -30m` window).
-- [x] Implement local runner entrypoint (`source="manual_cli"`) to execute full triage for a single issue key from CLI (without Jira Automation dependency).
+- [x] Implement local runner entrypoint (`source="manual_trigger"`) to execute full triage for a single issue key from CLI (without Jira Automation dependency).
 - Done when: service supports both on-command triage and the Jira scheduled-scan webhook path, using sequential classification then optional priority (never both inferences unconditionally).
 
 ## 3. Frontend / UX (Jira-facing outputs)
@@ -41,7 +41,7 @@
   - [x] Post internal comment with recommended values and concise reasoning **only when** mismatch exists (fixed **TriageBot** template; numeric confidence stays in API/audit only, not in the Jira body; optional reporter @mention when `reporter_account_id` is present on the fetched issue).
   - [x] Apply mismatch-specific labels only when applicable: `triagebot-likely-story` (type mismatch when recommending Story), `triagebot-priority-mismatch` (priority mismatch on the Bug path; N/A on the Story path).
 - [x] On `TriageFailure`, apply **no** labels and post **no** comment. The issue stays unlabeled so the next scheduled scan retries it automatically until success or `created >= -30m` ages it out.
-- [x] **Local CLI E2E (developer path):** With `JIRA_CLOUD_ID`, `JIRA_USER_EMAIL`, and model keys set, `scripts/run_triage_cli.py` / `triage_manual_cli.run_cli_triage` runs the full pipeline for a given issue key: fetch → classify → optional priority → mismatch → `JiraTriageActionExecutor` (`source="manual_cli"`). This is the supported way to run triage from a laptop against real Jira without any Jira-side integration.
+- [x] **Local CLI E2E (developer path):** With `JIRA_CLOUD_ID`, `JIRA_USER_EMAIL`, and model keys set, `scripts/run_triage_cli.py` / `triage_manual_cli.run_cli_triage` runs the full pipeline for a given issue key: fetch → classify → optional priority → mismatch → `JiraTriageActionExecutor` (`source="manual_trigger"`). This is the supported way to run triage from a laptop against real Jira without any Jira-side integration.
 - [x] **Local tunnel for Jira → laptop:** Run the HTTP server locally and expose `POST /triage` with a public HTTPS URL (e.g. ngrok, Cloudflare Tunnel) so Jira Automation “Send web request” can reach it during development; note URL churn on free tiers and timeouts. Precursor or parallel to a stable hosted deployment, not a substitute for production hardening. **Instructions:** `README.md` section *Local HTTP server and tunnel*; helper script `scripts/run_dev_tunnel.py` (loads `.env`, uvicorn, tunnel). **Operator smoke:** still confirm Jira → tunnel → service on your tenant when you first wire Automation (not covered by CI).
 - [x] **Jira Automation → deployed API (product path):** In Jira Cloud, configure rules so **Jira** sends `POST` requests to **your hosted** `POST /triage` URL with the real Automation body (`issue_key`, `project`, `source` one of `bug_created` / `priority_changed`). Prove reachability (TLS, DNS, timeouts), any auth fronting the API, and that labels/comments match the same rules as the CLI run on the same issue. Local `curl` / `TestClient` with those sources only proves the handler code, not Jira as the caller.
 - Done when: (a) CLI path above is usable for QA/dev smoke on real issues with the executor live. (b) At least one Jira site has a working Automation → production-like triage URL flow verified end-to-end (Jira is the HTTP client), with runbook steps captured in docs.

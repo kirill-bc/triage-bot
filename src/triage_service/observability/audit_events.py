@@ -28,7 +28,7 @@ TriageAuditFailureCategory = Literal[
     "project_not_allowed",
 ]
 
-TriageSourceLiteral = Literal["bug_created", "priority_changed", "manual_cli"]
+TriageSourceLiteral = Literal["bug_created", "priority_changed", "manual_trigger"]
 
 IssueTypeLiteral = Literal["Bug", "Story"]
 

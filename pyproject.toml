@@ -57,27 +57,13 @@ markers = [
 [tool.mypy]
 python_version = "3.10"
 strict = true
-exclude = ["^build/"]
+exclude = ["^build/", "^\\.venv/"]
+# Directory roots keep `mypy` (no CLI args) aligned with `mypy .` / CI; avoid a brittle per-file list.
 files = [
     "dev_tunnel.py",
-    "src/triage_service/core/settings.py",
-    "src/triage_service/adapters/jira_action_executor.py",
-    "src/triage_service/adapters/jira_issue_fetcher.py",
-    "src/triage_service/adapters/openrouter_inference_client.py",
-    "src/triage_service/core/policy_context.py",
-    "src/triage_service/core/prompt_composer.py",
-    "src/triage_service/api/triage_api.py",
-    "src/triage_service/core/triage_fallback.py",
-    "src/triage_service/core/triage_handler.py",
-    "src/triage_service/core/triage_mismatch.py",
     "triage_manual_cli.py",
-    "src/triage_service/core/triage_recommendation_parser.py",
-    "src/triage_service/observability/audit_events.py",
-    "src/triage_service/observability/audit_store.py",
-    "src/triage_service/observability/langfuse_inference_tracing.py",
-    "src/triage_service/observability/langfuse_audit_store.py",
-    "scripts/benchmark/classification_benchmark.py",
-    "scripts/benchmark/benchmark_summary.py",
+    "src/triage_service",
+    "scripts",
     "tests",
 ]
 plugins = ["pydantic.mypy"]

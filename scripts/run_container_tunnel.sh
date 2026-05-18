@@ -22,6 +22,26 @@ if [[ ! -f "${ENV_FILE}" ]]; then
     exit 1
 fi
 
+triage_webhook_token="$(
+    python - "${ENV_FILE}" <<'PY'
+import sys
+from pathlib import Path
+
+token = ""
+for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#") or "=" not in stripped:
+        continue
+    key, _, value = stripped.partition("=")
+    if key.strip() == "TRIAGE_WEBHOOK_TOKEN":
+        token = value.strip().strip('"').strip("'")
+        break
+if not token:
+    raise SystemExit("TRIAGE_WEBHOOK_TOKEN must be set in env file for /triage auth.")
+print(token)
+PY
+)"
+
 if [[ ! -f "${PAYLOAD_PATH}" ]]; then
     echo "Missing payload file: ${PAYLOAD_PATH}"
     exit 1
@@ -133,6 +153,7 @@ echo "Posting live payload to /triage..."
 response_json="$(
     curl -fsS -X POST "http://127.0.0.1:${HOST_PORT}/triage" \
       -H "Content-Type: application/json" \
+      -H "X-Triage-Token: ${triage_webhook_token}" \
       --data-binary "@${PAYLOAD_PATH}"
 )"
 
