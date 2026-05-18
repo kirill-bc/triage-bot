@@ -90,6 +90,14 @@ class AppSettings(BaseSettings):
         default=None,
         description="Atlassian account email paired with jira_api_key for Cloud REST auth.",
     )
+    jira_reproduction_steps_field_id: str | None = Field(
+        default="customfield_10251",
+        validation_alias="TRIAGE_JIRA_REPRODUCTION_STEPS_FIELD_ID",
+        description=(
+            "Optional Jira field id holding reproduction steps (e.g. customfield_10251). "
+            "When set, issue fetch requests this field and prefers it over description parsing."
+        ),
+    )
     jira_http_timeout_seconds: float = Field(
         default=30.0,
         ge=1.0,

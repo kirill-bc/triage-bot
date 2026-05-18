@@ -25,6 +25,7 @@ def test_classification_prompt_includes_bug_policy_and_issue_excludes_priority_t
         issue_key="TJC-1",
         summary="Login fails",
         description="Steps to reproduce",
+        reproduction_steps="1) Open app\n2) Click login",
         issue_type="Bug",
         priority="P2",
         reporter="support@example.com",
@@ -35,6 +36,8 @@ def test_classification_prompt_includes_bug_policy_and_issue_excludes_priority_t
     assert "PRIORITYPOLICY_UNIQUE_BETA" not in text
     assert "## Role" in text and "TriageBot" in text
     assert "JSON field `reason`" in text
+    assert "Reproduction steps" in text
+    assert "1) Open app" in text
 
 
 @pytest.mark.unit
@@ -66,6 +69,7 @@ def test_classification_prompt_shows_placeholder_when_description_and_priority_m
         issue_key="K-1",
         summary="S",
         description=None,
+        reproduction_steps=None,
         issue_type="Bug",
         priority=None,
         reporter="r",
@@ -73,6 +77,7 @@ def test_classification_prompt_shows_placeholder_when_description_and_priority_m
     text = compose_classification_prompt(policy, issue)
     assert "Current Jira priority: (none)" in text
     assert "Description:\n(none)" in text
+    assert "Reproduction steps:\n(none)" in text
 
 
 @pytest.mark.unit

@@ -127,6 +127,42 @@ def _audit_telemetry_for_exception(exc: BaseException) -> dict[str, object] | No
     return None
 
 
+def _p0_p4_rank(label: str | None) -> int | None:
+    if label is None:
+        return None
+    s = str(label).strip().upper()
+    if len(s) != 2 or s[0] != "P" or s[1] not in "01234":
+        return None
+    return int(s[1])
+
+
+def _triage_completed_telemetry(
+    *,
+    issue: FetchedIssue,
+    recommendation: TriageRecommendation,
+) -> dict[str, object] | None:
+    if recommendation.recommended_issue_type != "Bug":
+        return None
+    rec_pri = recommendation.recommended_priority
+    if rec_pri is None:
+        return None
+    orig_rank = _p0_p4_rank(issue.priority)
+    rec_rank = _p0_p4_rank(str(rec_pri))
+    if orig_rank is None or rec_rank is None:
+        return None
+    if rec_rank < orig_rank:
+        signal = "prioritize"
+    elif rec_rank > orig_rank:
+        signal = "deescalate"
+    else:
+        signal = "aligned"
+    return {
+        "priority_signal": signal,
+        "jira_priority": str(issue.priority).strip() if issue.priority is not None else "",
+        "would_post_jira_comment": signal == "deescalate",
+    }
+
+
 class TriageRunner(Protocol):
     """Callable surface used by :mod:`triage_api` (implemented by :class:`TriageHandler`)."""
 
@@ -500,6 +536,10 @@ class TriageHandler:
                         recommended_priority=final_rec.recommended_priority,
                         confidence=final_rec.confidence,
                         reason=final_rec.reason,
+                        telemetry=_triage_completed_telemetry(
+                            issue=issue,
+                            recommendation=final_rec,
+                        ),
                     ),
                 )
                 return final_rec
@@ -557,6 +597,10 @@ class TriageHandler:
                     recommended_priority=merged.recommended_priority,
                     confidence=merged.confidence,
                     reason=merged.reason,
+                    telemetry=_triage_completed_telemetry(
+                        issue=issue,
+                        recommendation=merged,
+                    ),
                 ),
             )
             return merged

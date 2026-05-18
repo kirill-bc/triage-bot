@@ -55,6 +55,7 @@ def test_fetch_issue_returns_summary_description_type_priority_reporter(
         assert request.method == "GET"
         assert request.url.path == "/ex/jira/cloud-id-test/rest/api/3/issue/TJC-42"
         assert "fields=summary" in str(request.url)
+        assert "customfield_10251" in str(request.url)
         auth = request.headers.get("Authorization", "")
         assert auth.startswith("Basic ")
         return httpx.Response(200, json=body)
@@ -68,11 +69,83 @@ def test_fetch_issue_returns_summary_description_type_priority_reporter(
         issue_key="TJC-42",
         summary="Cannot log in",
         description="Steps to reproduce",
+        reproduction_steps="Steps to reproduce",
         issue_type="Bug",
         priority="High",
         reporter="Alice Support",
         reporter_account_id="61d4a5c6e67ea2006bce3aaa",
     )
+
+
+@pytest.mark.unit
+def test_fetch_issue_extracts_reproduction_steps_section_from_description(
+    jira_app_settings: AppSettings,
+) -> None:
+    body = {
+        "key": "TJC-77",
+        "fields": {
+            "summary": "API call fails",
+            "description": (
+                "Environment: staging\n"
+                "Steps to reproduce:\n"
+                "1. Open client\n"
+                "2. Send payload\n"
+                "3. Observe 500\n"
+                "Expected: 200"
+            ),
+            "issuetype": {"name": "Bug"},
+            "priority": {"name": "High"},
+            "reporter": {"displayName": "Alice Support"},
+        },
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=body)
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        fetcher = JiraIssueFetcher(jira_app_settings, client=client)
+        issue = fetcher.fetch("TJC-77", run_id="run-test")
+
+    assert issue.reproduction_steps is not None
+    assert "open client" in issue.reproduction_steps.lower()
+
+
+@pytest.mark.unit
+def test_fetch_issue_prefers_configured_reproduction_steps_custom_field(
+    jira_app_settings: AppSettings,
+) -> None:
+    body = {
+        "key": "TJC-88",
+        "fields": {
+            "summary": "Upload fails",
+            "description": "No repro marker in this description",
+            "customfield_10251": {
+                "type": "doc",
+                "version": 1,
+                "content": [
+                    {
+                        "type": "paragraph",
+                        "content": [{"type": "text", "text": "See video above"}],
+                    },
+                ],
+            },
+            "issuetype": {"name": "Bug"},
+            "priority": {"name": "High"},
+            "reporter": {"displayName": "Alice Support"},
+        },
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "customfield_10251" in str(request.url)
+        return httpx.Response(200, json=body)
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        fetcher = JiraIssueFetcher(jira_app_settings, client=client)
+        issue = fetcher.fetch("TJC-88", run_id="run-test")
+
+    assert issue.reproduction_steps == "See video above"
 
 
 @pytest.mark.unit

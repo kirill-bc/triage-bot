@@ -14,7 +14,7 @@ from triage_service.adapters.jira_http_retry import (
 from triage_service.core.settings import AppSettings
 from triage_service.adapters.jira_issue_fetcher import FetchedIssue
 from triage_service.core.triage_fallback import TriageFailure
-from triage_service.core.triage_mismatch import TriageMismatchFlags, compute_mismatch_flags
+from triage_service.core.triage_mismatch import compute_mismatch_flags
 from triage_service.core.triage_recommendation_parser import TriageRecommendation
 
 # Display name for Jira mismatch comments (keep consistent with operator-facing bot naming).
@@ -56,7 +56,7 @@ def _labels_for_outcome(recommendation: TriageRecommendation, issue: FetchedIssu
     labels = ["triagebot-reviewed"]
     if flags.type_mismatch and recommendation.recommended_issue_type == "Story":
         labels.append("triagebot-likely-story")
-    if flags.priority_mismatch:
+    if flags.priority_mismatch and _priority_signal(issue, recommendation) == "deescalate":
         labels.append("triagebot-priority-mismatch")
     return labels
 
@@ -189,9 +189,34 @@ def _raise_for_status(response: httpx.Response, action: str) -> None:
         raise JiraActionExecutorError(msg)
 
 
-def _should_post_mismatch_comment(flags: TriageMismatchFlags) -> bool:
-    """Keep confidence advisory-only: comment decisions depend on mismatch flags only."""
-    return flags.any_mismatch()
+def _priority_signal(issue: FetchedIssue, recommendation: TriageRecommendation) -> str | None:
+    """Return ``prioritize``/``deescalate`` when Bug priorities are comparable, else ``None``."""
+    if recommendation.recommended_issue_type != "Bug":
+        return None
+    rec_pri = recommendation.recommended_priority
+    if rec_pri is None:
+        return None
+    orig_rank = _p0_p4_rank(issue.priority)
+    rec_rank = _p0_p4_rank(str(rec_pri))
+    if orig_rank is None or rec_rank is None:
+        return None
+    if rec_rank < orig_rank:
+        return "prioritize"
+    if rec_rank > orig_rank:
+        return "deescalate"
+    return None
+
+
+def _should_post_mismatch_comment(
+    *,
+    issue: FetchedIssue,
+    recommendation: TriageRecommendation,
+) -> bool:
+    """Comment for likely-story or de-escalation; prioritization remains audit-only."""
+    flags = compute_mismatch_flags(issue, recommendation)
+    if flags.type_mismatch and recommendation.recommended_issue_type == "Story":
+        return True
+    return _priority_signal(issue, recommendation) == "deescalate"
 
 
 class JiraTriageActionExecutor:
@@ -247,11 +272,10 @@ class JiraTriageActionExecutor:
             return
         if issue is None:
             return
-        flags = compute_mismatch_flags(issue, outcome)
         labels = _labels_for_outcome(outcome, issue)
         base_url, headers = _jira_base_and_headers(self._settings)
         self._apply_labels(base_url, issue_key, labels, headers)
-        if _should_post_mismatch_comment(flags):
+        if _should_post_mismatch_comment(issue=issue, recommendation=outcome):
             self._post_comment(base_url, issue_key, issue, outcome, headers)
 
     def _apply_labels(

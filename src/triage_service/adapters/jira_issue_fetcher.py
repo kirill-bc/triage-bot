@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import re
 from typing import Any
 
 import httpx
@@ -24,6 +25,7 @@ class FetchedIssue(BaseModel):
     issue_key: str
     summary: str
     description: str | None = None
+    reproduction_steps: str | None = None
     issue_type: str
     priority: str | None = None
     reporter: str
@@ -98,11 +100,37 @@ def _reporter_label(reporter: dict[str, Any]) -> str:
     return ""
 
 
-def _parse_issue_payload(payload: dict[str, Any]) -> FetchedIssue:
+def _extract_reproduction_steps(description: str | None) -> str | None:
+    if description is None:
+        return None
+    text = description.strip()
+    if not text:
+        return None
+    marker = re.search(
+        r"(?is)\b(?:steps?\s+to\s+reproduce|reproduction\s+steps?)\b\s*:?\s*(.*)$",
+        text,
+    )
+    if marker is None:
+        return None
+    extracted = marker.group(1).strip()
+    return extracted if extracted else text
+
+
+def _parse_issue_payload(
+    payload: dict[str, Any],
+    *,
+    reproduction_steps_field_id: str | None = None,
+) -> FetchedIssue:
     key = str(payload["key"])
     fields = payload.get("fields") or {}
     summary = str(fields.get("summary") or "").strip()
     description = _normalize_description(fields.get("description"))
+    reproduction_steps: str | None = None
+    repro_field_id = (reproduction_steps_field_id or "").strip()
+    if repro_field_id and repro_field_id in fields:
+        reproduction_steps = _normalize_description(fields.get(repro_field_id))
+    if reproduction_steps is None:
+        reproduction_steps = _extract_reproduction_steps(description)
     issue_type_obj = fields.get("issuetype") or {}
     issue_type = str(issue_type_obj.get("name") or "").strip()
     priority_obj = fields.get("priority")
@@ -117,6 +145,7 @@ def _parse_issue_payload(payload: dict[str, Any]) -> FetchedIssue:
         issue_key=key,
         summary=summary,
         description=description,
+        reproduction_steps=reproduction_steps,
         issue_type=issue_type,
         priority=priority_name,
         reporter=reporter,
@@ -145,7 +174,7 @@ def _issue_get_url(settings: AppSettings, issue_key: str) -> str:
 class JiraIssueFetcher:
     """Loads issue fields via Jira Cloud REST v3 through Atlassian gateway."""
 
-    _FIELDS = "summary,description,issuetype,priority,reporter"
+    _BASE_FIELDS = ("summary", "description", "issuetype", "priority", "reporter")
 
     def __init__(self, settings: AppSettings, *, client: httpx.Client | None = None) -> None:
         self._settings = settings
@@ -159,7 +188,7 @@ class JiraIssueFetcher:
             raise JiraIssueFetchError(
                 "Jira user email is required for REST auth (set JIRA_USER_EMAIL).",
             )
-        params = {"fields": self._FIELDS}
+        params = {"fields": self._fields_param()}
         headers = {
             "Authorization": _basic_auth_header(email, self._settings.jira_api_key),
             "Accept": "application/json",
@@ -171,6 +200,13 @@ class JiraIssueFetcher:
         timeout = httpx.Timeout(self._settings.jira_http_timeout_seconds)
         with httpx.Client(timeout=timeout) as client:
             return self._request(client, url, params, headers)
+
+    def _fields_param(self) -> str:
+        fields = list(self._BASE_FIELDS)
+        repro_field_id = (self._settings.jira_reproduction_steps_field_id or "").strip()
+        if repro_field_id:
+            fields.append(repro_field_id)
+        return ",".join(fields)
 
     def _request(
         self,
@@ -212,4 +248,7 @@ class JiraIssueFetcher:
                 http_status=response.status_code,
             )
         payload = response.json()
-        return _parse_issue_payload(payload)
+        return _parse_issue_payload(
+            payload,
+            reproduction_steps_field_id=self._settings.jira_reproduction_steps_field_id,
+        )

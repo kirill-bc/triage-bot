@@ -50,6 +50,9 @@ _PROMPT_TEMPLATES = _load_prompt_templates()
 
 def _issue_block(issue: FetchedIssue) -> str:
     description = issue.description if issue.description is not None else "(none)"
+    reproduction_steps = (
+        issue.reproduction_steps if issue.reproduction_steps is not None else "(none)"
+    )
     priority = issue.priority if issue.priority is not None else "(none)"
     return (
         f"Issue key: {issue.issue_key}\n"
@@ -57,7 +60,8 @@ def _issue_block(issue: FetchedIssue) -> str:
         f"Current Jira priority: {priority}\n"
         f"Reporter: {issue.reporter}\n"
         f"Summary:\n{issue.summary}\n"
-        f"Description:\n{description}"
+        f"Description:\n{description}\n"
+        f"Reproduction steps:\n{reproduction_steps}"
     )
 
 

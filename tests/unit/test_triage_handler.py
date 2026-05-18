@@ -414,7 +414,7 @@ def test_handler_bug_path_emits_classification_priority_and_triage_completed_aud
         summary="crash",
         description="segfault",
         issue_type="Bug",
-        priority="Low",
+        priority="P2",
         reporter="bob",
     )
 
@@ -466,6 +466,12 @@ def test_handler_bug_path_emits_classification_priority_and_triage_completed_aud
     assert e0.run_id == "run-audit-bug"
     assert e0.issue_key == "TJC-10"
     assert e0.recommended_issue_type == "Bug"
+    e2 = audit.events[2]
+    assert e2.telemetry == {
+        "priority_signal": "prioritize",
+        "jira_priority": "P2",
+        "would_post_jira_comment": False,
+    }
 
 
 @pytest.mark.unit

@@ -17,7 +17,6 @@ from triage_service.adapters.jira_issue_fetcher import FetchedIssue
 from triage_service.core.settings import AppSettings
 from triage_service.core.triage_fallback import TriageFailure
 from triage_service.core.triage_recommendation_parser import TriageRecommendation
-from triage_service.core.triage_mismatch import TriageMismatchFlags
 
 
 def _settings(monkeypatch: pytest.MonkeyPatch) -> AppSettings:
@@ -77,15 +76,18 @@ def test_executor_no_http_on_triage_failure(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 @pytest.mark.unit
-def test_should_post_mismatch_comment_depends_only_on_mismatch_flags() -> None:
+def test_should_post_mismatch_comment_for_deescalation_and_likely_story_only() -> None:
     assert _should_post_mismatch_comment(
-        TriageMismatchFlags(type_mismatch=True, priority_mismatch=False)
-    )
-    assert _should_post_mismatch_comment(
-        TriageMismatchFlags(type_mismatch=False, priority_mismatch=True)
+        issue=_issue(priority="P1"),
+        recommendation=_rec(recommended_priority="P2"),
     )
     assert not _should_post_mismatch_comment(
-        TriageMismatchFlags(type_mismatch=False, priority_mismatch=False)
+        issue=_issue(priority="P2"),
+        recommendation=_rec(recommended_priority="P1"),
+    )
+    assert _should_post_mismatch_comment(
+        issue=_issue(priority="P1"),
+        recommendation=_rec(recommended_issue_type="Story", recommended_priority=None),
     )
 
 
@@ -187,11 +189,10 @@ def test_executor_priority_mismatch_no_retention_when_bot_raises_priority(
 ) -> None:
     """No retention when Jira is P2+ and the bot recommends P1 (raising urgency)."""
     settings = _settings(monkeypatch)
-    posted: list[dict[str, Any]] = []
+    requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.method == "POST":
-            posted.append(json.loads(request.content.decode()))
+        requests.append(request)
         return httpx.Response(201 if request.method == "POST" else 204)
 
     transport = httpx.MockTransport(handler)
@@ -206,10 +207,11 @@ def test_executor_priority_mismatch_no_retention_when_bot_raises_priority(
             run_id="run-test",
         )
 
-    doc = posted[0]["body"]
-    paras = doc["content"]
-    assert len(paras) == 3
-    assert paras[2]["content"][0]["text"] == "TriageBot rationale: customer impact"
+    assert len(requests) == 1
+    assert requests[0].method == "PUT"
+    assert "/comment" not in str(requests[0].url)
+    body = json.loads(requests[0].content.decode())
+    assert body == {"update": {"labels": [{"add": "triagebot-reviewed"}]}}
 
 
 @pytest.mark.unit
@@ -295,11 +297,10 @@ def test_executor_priority_mismatch_p1_to_p0_omits_retention_prompt(
 ) -> None:
     """When TriageBot recommends a higher (more urgent) priority than Jira, do not ask retention."""
     settings = _settings(monkeypatch)
-    posted: list[dict[str, Any]] = []
+    requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.method == "POST":
-            posted.append(json.loads(request.content.decode()))
+        requests.append(request)
         return httpx.Response(201 if request.method == "POST" else 204)
 
     transport = httpx.MockTransport(handler)
@@ -314,7 +315,9 @@ def test_executor_priority_mismatch_p1_to_p0_omits_retention_prompt(
             run_id="run-test",
         )
 
-    assert len(posted[0]["body"]["content"]) == 3
+    assert len(requests) == 1
+    assert requests[0].method == "PUT"
+    assert "/comment" not in str(requests[0].url)
 
 
 @pytest.mark.unit
@@ -345,6 +348,7 @@ def test_executor_story_mismatch_uses_story_suggestion_template(
             run_id="run-test",
         )
 
+    assert len(posted) == 1
     mid = posted[0]["body"]["content"][1]["content"][0]["text"]
     assert "change this bug to a story" in mid.lower()
     assert "priority" not in mid.lower()
