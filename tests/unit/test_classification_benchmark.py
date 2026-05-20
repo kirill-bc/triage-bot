@@ -7,7 +7,11 @@ from pathlib import Path
 import httpx
 import pytest
 
-from triage_service.adapters.jira_issue_fetcher import FetchedIssue, JiraIssueFetcher
+from triage_service.adapters.jira_issue_fetcher import (
+    AttachmentRef,
+    FetchedIssue,
+    JiraIssueFetcher,
+)
 from triage_service.core.triage_recommendation_parser import TriageRecommendation
 
 
@@ -419,6 +423,138 @@ def test_benchmark_issue_fetch_cache_roundtrip(tmp_path: Path) -> None:
     assert when == "2026-01-01T00:00:00Z"
     assert issues["BC-9"] == issue
     assert failures["BC-8"] == "nope"
+
+
+@pytest.mark.unit
+def test_issue_has_inline_images_true_for_inline_image_attachment() -> None:
+    from triage_service.adapters.image_context_extractor import issue_has_inline_images
+
+    issue = FetchedIssue(
+        issue_key="BC-1",
+        summary="s",
+        description="see screenshot",
+        issue_type="Bug",
+        priority="P2",
+        reporter="r",
+        attachments=[
+            AttachmentRef(
+                id="1",
+                filename="shot.png",
+                mime_type="image/png",
+                inline=True,
+            ),
+        ],
+    )
+    assert issue_has_inline_images(issue) is True
+
+
+@pytest.mark.unit
+def test_issue_has_inline_images_false_without_inline_images() -> None:
+    from triage_service.adapters.image_context_extractor import issue_has_inline_images
+
+    issue = FetchedIssue(
+        issue_key="BC-1",
+        summary="s",
+        description=None,
+        issue_type="Bug",
+        priority="P2",
+        reporter="r",
+        attachments=[
+            AttachmentRef(
+                id="1",
+                filename="log.txt",
+                mime_type="text/plain",
+                inline=True,
+            ),
+            AttachmentRef(
+                id="2",
+                filename="shot.png",
+                mime_type="image/png",
+                inline=False,
+            ),
+        ],
+    )
+    assert issue_has_inline_images(issue) is False
+
+
+@pytest.mark.unit
+def test_aggregate_image_stratum_summaries_splits_has_images_vs_text_only() -> None:
+    from scripts.benchmark.classification_benchmark import (
+        BenchmarkCsvRow,
+        aggregate_image_stratum_summaries,
+        score_benchmark_prediction,
+    )
+
+    row = BenchmarkCsvRow(
+        benchmark_bucket="stable_bug",
+        issue_key="BC-1",
+        priority_change_from="",
+        priority_change_to="",
+        issue_type_change_from="",
+        issue_type_change_to="",
+    )
+    issue = FetchedIssue(
+        issue_key="BC-1",
+        summary="s",
+        description=None,
+        issue_type="Bug",
+        priority="P1",
+        reporter="r",
+    )
+    ok = score_benchmark_prediction(
+        row,
+        issue,
+        TriageRecommendation(
+            recommended_issue_type="Bug",
+            recommended_priority="P1",
+            confidence=1.0,
+            reason="x",
+        ),
+    )
+    bad = score_benchmark_prediction(
+        row,
+        issue,
+        TriageRecommendation(
+            recommended_issue_type="Bug",
+            recommended_priority="P2",
+            confidence=1.0,
+            reason="x",
+        ),
+    )
+    summaries = aggregate_image_stratum_summaries(
+        [
+            (ok, True),
+            (bad, True),
+            (ok, False),
+        ],
+    )
+    by_stratum = {s.stratum: s for s in summaries}
+    assert by_stratum["has_images"].total == 2
+    assert by_stratum["has_images"].successes == 1
+    assert by_stratum["has_images"].accuracy == pytest.approx(0.5)
+    assert by_stratum["text_only"].total == 1
+    assert by_stratum["text_only"].successes == 1
+    assert by_stratum["text_only"].accuracy == pytest.approx(1.0)
+
+
+@pytest.mark.unit
+def test_resolve_benchmark_image_context_enabled_respects_cli_override() -> None:
+    from scripts.benchmark.classification_benchmark import (
+        resolve_benchmark_image_context_enabled,
+    )
+
+    assert (
+        resolve_benchmark_image_context_enabled(cli_enable=True, settings_enabled=False)
+        is True
+    )
+    assert (
+        resolve_benchmark_image_context_enabled(cli_enable=False, settings_enabled=True)
+        is False
+    )
+    assert (
+        resolve_benchmark_image_context_enabled(cli_enable=None, settings_enabled=True)
+        is True
+    )
 
 
 @pytest.mark.unit

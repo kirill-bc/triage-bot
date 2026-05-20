@@ -10,6 +10,8 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
+from triage_service.adapters.image_context_extractor import build_cli_image_context_summary
+from triage_service.core.settings import AppSettings
 from triage_service.core.triage_fallback import TriageFailure
 from triage_service.core.triage_handler import TriageRunner, build_default_triage_handler
 from triage_service.core.triage_recommendation_parser import TriageRecommendation
@@ -73,19 +75,40 @@ def main(argv: list[str] | None = None) -> int:
     try:
         from triage_service.core.settings import load_settings
 
-        load_settings(env_file=dotenv_path if dotenv_path.is_file() else None)
+        settings: AppSettings = load_settings(
+            env_file=dotenv_path if dotenv_path.is_file() else None,
+        )
     except ValidationError as exc:
         print(f"Settings error: {exc}", file=sys.stderr)
         return 2
 
     project_arg = ns.project.strip() if ns.project else None
-    outcome = run_cli_triage(ns.issue_key, project=project_arg)
+    runner = build_default_triage_handler()
+    outcome = run_cli_triage(ns.issue_key, project=project_arg, runner=runner)
+    extraction = getattr(runner, "last_image_extraction", None)
+    image_context = build_cli_image_context_summary(
+        enabled=settings.triage_image_context_enabled,
+        extraction=extraction,
+    )
     if isinstance(outcome, TriageFailure):
-        print(json.dumps({"status": "failed", "failure": outcome.model_dump()}, indent=2))
+        print(
+            json.dumps(
+                {
+                    "status": "failed",
+                    "failure": outcome.model_dump(),
+                    "image_context": image_context,
+                },
+                indent=2,
+            ),
+        )
         return 1
     print(
         json.dumps(
-            {"status": "completed", "recommendation": outcome.model_dump()},
+            {
+                "status": "completed",
+                "recommendation": outcome.model_dump(),
+                "image_context": image_context,
+            },
             indent=2,
             ensure_ascii=False,
         ),

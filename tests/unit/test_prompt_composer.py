@@ -4,14 +4,19 @@ import importlib
 import json
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
+from triage_service.adapters.image_context_extractor import ImageContext
 from triage_service.adapters.jira_issue_fetcher import FetchedIssue
 from triage_service.core.policy_context import PolicyContext
 
 from triage_service.core.prompt_composer import (
+    _issue_block,
     compose_classification_prompt,
+    compose_classification_system_prompt,
     compose_priority_prompt,
+    compose_priority_system_prompt,
 )
 
 
@@ -34,7 +39,10 @@ def test_classification_prompt_includes_bug_policy_and_issue_excludes_priority_t
     assert "BUGPOLICY_UNIQUE_ALPHA" in text
     assert "TJC-1" in text and "Login fails" in text
     assert "PRIORITYPOLICY_UNIQUE_BETA" not in text
-    assert "## Role" in text and "TriageBot" in text
+    assert "## Task" in text
+    assert "## Bug definition (policy)" in text
+    assert "TriageBot" not in text
+    assert "## Role" not in text
     assert "JSON field `reason`" in text
     assert "Reproduction steps" in text
     assert "1) Open app" in text
@@ -58,8 +66,95 @@ def test_priority_prompt_includes_priority_policy_and_issue_excludes_bug_text() 
     assert "PRIORITYPOLICY_UNIQUE_DELTA" in text
     assert "BC-99" in text and "Crash on save" in text
     assert "BUGPOLICY_UNIQUE_GAMMA" not in text
-    assert "## Role" in text and "TriageBot" in text and "still" in text
+    assert "## Task" in text
+    assert "## Priority definition (policy)" in text
+    assert "TriageBot" not in text
+    assert "## Role" not in text
     assert "JSON field `reason`" in text
+
+
+@pytest.mark.unit
+def test_issue_block_omits_attached_images_when_no_contexts() -> None:
+    issue = FetchedIssue(
+        issue_key="TJC-10",
+        summary="Login error",
+        description="Fails on submit",
+        issue_type="Bug",
+        priority="P2",
+        reporter="alice",
+    )
+    block = _issue_block(issue)
+    assert "Attached images" not in block
+    assert "Reproduction steps:" in block
+
+
+@pytest.mark.unit
+def test_issue_block_renders_attached_images_summary_without_transcript() -> None:
+    issue = FetchedIssue(
+        issue_key="TJC-11",
+        summary="UI broken",
+        description="See screenshot",
+        issue_type="Bug",
+        priority="P1",
+        reporter="bob",
+    )
+    contexts = [
+        ImageContext(
+            attachment_id="10001",
+            filename="toast.png",
+            transcript="Error: connection refused",
+            summary="Red toast on the login form.",
+        ),
+    ]
+    block = _issue_block(issue, image_contexts=contexts)
+    assert "Attached images:" in block
+    assert "[Attachment 1: toast.png]" in block
+    assert "Transcript:" not in block
+    assert "connection refused" not in block
+    assert "Summary:\nRed toast on the login form." in block
+
+
+@pytest.mark.unit
+def test_issue_block_renders_soft_failure_placeholder_for_extraction_errors() -> None:
+    issue = FetchedIssue(
+        issue_key="TJC-12",
+        summary="Crash",
+        issue_type="Bug",
+        reporter="carol",
+    )
+    contexts = [
+        ImageContext(
+            attachment_id="10002",
+            filename="huge.png",
+            extraction_failure="exceeds size limit",
+        ),
+    ]
+    block = _issue_block(issue, image_contexts=contexts)
+    assert "[Attachment 1: extraction unavailable — exceeds size limit]" in block
+    assert "Transcript:" not in block
+
+
+@pytest.mark.unit
+def test_classification_prompt_includes_attached_images_from_image_contexts() -> None:
+    policy = PolicyContext(bug_definition="BUG", priority_definition="PRI")
+    issue = FetchedIssue(
+        issue_key="TJC-13",
+        summary="Blank screen",
+        issue_type="Bug",
+        reporter="dave",
+    )
+    contexts = [
+        ImageContext(
+            attachment_id="9",
+            filename="screen.png",
+            transcript="404 Not Found",
+            summary="White page with 404 heading.",
+        ),
+    ]
+    text = compose_classification_prompt(policy, issue, image_contexts=contexts)
+    assert "Attached images:" in text
+    assert "Summary:\nWhite page with 404 heading." in text
+    assert "Transcript:" not in text
 
 
 @pytest.mark.unit
@@ -89,6 +184,8 @@ def test_prompt_composer_loads_templates_from_external_json_path(
         json.dumps(
             {
                 "reason_for_humans": "CUSTOM_REASON_BLOCK\n\n",
+                "classification_system_prompt": "CLASSIFICATION SYSTEM",
+                "priority_system_prompt": "PRIORITY SYSTEM",
                 "classification_template": (
                     "CLASSIFY PREFIX\n"
                     "{reason_for_humans}"
@@ -120,6 +217,8 @@ def test_prompt_composer_loads_templates_from_external_json_path(
 
     classification_text = module.compose_classification_prompt(policy, issue)
     priority_text = module.compose_priority_prompt(policy, issue)
+    classification_system = module.compose_classification_system_prompt()
+    priority_system = module.compose_priority_system_prompt()
 
     assert classification_text.startswith("CLASSIFY PREFIX")
     assert "CUSTOM_REASON_BLOCK" in classification_text
@@ -127,3 +226,223 @@ def test_prompt_composer_loads_templates_from_external_json_path(
     assert priority_text.startswith("PRIORITY PREFIX")
     assert "CUSTOM_REASON_BLOCK" in priority_text
     assert "PRIORITY POLICY:\nP_RULE" in priority_text
+    assert classification_system == "CLASSIFICATION SYSTEM"
+    assert priority_system == "PRIORITY SYSTEM"
+
+
+@pytest.mark.unit
+def test_system_prompts_fall_back_to_local_templates_when_langfuse_not_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("LANGFUSE_PUBLIC_KEY", raising=False)
+    monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
+    monkeypatch.delenv("TRIAGE_PROMPT_TEMPLATES_PATH", raising=False)
+    module = importlib.reload(sys.modules["triage_service.core.prompt_composer"])
+    classification_system = module.compose_classification_system_prompt()
+    priority_system = module.compose_priority_system_prompt()
+    assert "single JSON object only" in classification_system
+    assert "recommended_issue_type" in classification_system
+    assert "TriageBot" in classification_system
+    assert "recommended_priority" in priority_system
+    assert "TriageBot" in priority_system
+    assert "still" in priority_system
+
+
+@pytest.mark.unit
+def test_system_prompts_use_langfuse_when_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
+    monkeypatch.setenv(
+        "TRIAGE_LANGFUSE_CLASSIFICATION_SYSTEM_PROMPT_NAME",
+        "triagebot/classification-system",
+    )
+    monkeypatch.setenv(
+        "TRIAGE_LANGFUSE_PRIORITY_SYSTEM_PROMPT_NAME",
+        "triagebot/priority-system",
+    )
+
+    fake_classification_system = MagicMock()
+    fake_classification_system.compile.return_value = "LF CLASSIFICATION SYSTEM"
+    fake_priority_system = MagicMock()
+    fake_priority_system.compile.return_value = "LF PRIORITY SYSTEM"
+    fake_client = MagicMock()
+
+    def _get_prompt(name: str, **kwargs: object) -> MagicMock:
+        _ = kwargs
+        if name == "triagebot/classification-system":
+            return fake_classification_system
+        if name == "triagebot/priority-system":
+            return fake_priority_system
+        raise AssertionError(f"unexpected prompt name: {name}")
+
+    fake_client.get_prompt.side_effect = _get_prompt
+    monkeypatch.setattr(
+        "triage_service.core.langfuse_prompt_config.get_client",
+        lambda: fake_client,
+    )
+
+    assert compose_classification_system_prompt() == "LF CLASSIFICATION SYSTEM"
+    assert compose_priority_system_prompt() == "LF PRIORITY SYSTEM"
+
+
+@pytest.mark.unit
+def test_reason_for_humans_uses_langfuse_when_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
+    monkeypatch.setenv(
+        "TRIAGE_LANGFUSE_REASON_FOR_HUMANS_PROMPT_NAME",
+        "triagebot/reason-for-humans",
+    )
+
+    fake_reason = MagicMock()
+    fake_reason.compile.return_value = "LANGFUSE REASON BLOCK\n\n"
+    fake_client = MagicMock()
+
+    def _get_prompt(name: str, **kwargs: object) -> MagicMock:
+        _ = kwargs
+        if name == "triagebot/reason-for-humans":
+            return fake_reason
+        if name == "triagebot/classification-user":
+            raise RuntimeError("force local classification template")
+        raise AssertionError(f"unexpected prompt name: {name}")
+
+    fake_client.get_prompt.side_effect = _get_prompt
+    monkeypatch.setattr(
+        "triage_service.core.langfuse_prompt_config.get_client",
+        lambda: fake_client,
+    )
+
+    policy = PolicyContext(bug_definition="BUG_RULE", priority_definition="P_RULE")
+    issue = FetchedIssue(
+        issue_key="TJC-77",
+        summary="Broken flow",
+        description="details",
+        issue_type="Bug",
+        priority="P2",
+        reporter="agent@example.com",
+    )
+
+    text = compose_classification_prompt(policy, issue)
+
+    assert "LANGFUSE REASON BLOCK" in text
+    assert "BUG_RULE" in text
+    fake_reason.compile.assert_called_once_with()
+
+
+@pytest.mark.unit
+def test_classification_prompt_uses_langfuse_prompt_template_when_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
+    monkeypatch.setenv(
+        "TRIAGE_LANGFUSE_CLASSIFICATION_PROMPT_NAME",
+        "triagebot/classification-user",
+    )
+    monkeypatch.setenv("TRIAGE_LANGFUSE_PROMPT_LABEL", "staging")
+    monkeypatch.setenv("TRIAGE_LANGFUSE_PROMPT_CACHE_TTL_SECONDS", "120")
+
+    fake_classification = MagicMock()
+    fake_classification.compile.return_value = "compiled-from-langfuse"
+    fake_client = MagicMock()
+
+    def _get_prompt(name: str, **kwargs: object) -> MagicMock:
+        _ = kwargs
+        if name == "triagebot/classification-user":
+            return fake_classification
+        raise AssertionError(f"unexpected prompt name: {name}")
+
+    fake_client.get_prompt.side_effect = _get_prompt
+    monkeypatch.setattr(
+        "triage_service.core.langfuse_prompt_config.get_client",
+        lambda: fake_client,
+    )
+
+    policy = PolicyContext(bug_definition="unused", priority_definition="unused")
+    issue = FetchedIssue(
+        issue_key="TJC-321",
+        summary="Customer cannot save settings",
+        description="Save button no-op",
+        reproduction_steps="Open settings, click save",
+        issue_type="Bug",
+        priority="P2",
+        reporter="triage@example.com",
+    )
+
+    prompt = compose_classification_prompt(policy, issue)
+
+    assert prompt == "compiled-from-langfuse"
+    fake_client.get_prompt.assert_called_once()
+    compile_kwargs = fake_classification.compile.call_args.kwargs
+    assert set(compile_kwargs) == {"issue_block"}
+    assert "TJC-321" in compile_kwargs["issue_block"]
+    assert "Customer cannot save settings" in compile_kwargs["issue_block"]
+
+
+@pytest.mark.unit
+def test_priority_prompt_uses_langfuse_with_issue_block_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
+
+    fake_priority = MagicMock()
+    fake_priority.compile.return_value = "priority-from-langfuse"
+    fake_client = MagicMock()
+    fake_client.get_prompt.return_value = fake_priority
+    monkeypatch.setattr(
+        "triage_service.core.langfuse_prompt_config.get_client",
+        lambda: fake_client,
+    )
+
+    policy = PolicyContext(bug_definition="unused", priority_definition="unused")
+    issue = FetchedIssue(
+        issue_key="TJC-400",
+        summary="Outage",
+        description="all down",
+        issue_type="Bug",
+        priority="P0",
+        reporter="ops@example.com",
+    )
+
+    prompt = compose_priority_prompt(policy, issue)
+
+    assert prompt == "priority-from-langfuse"
+    compile_kwargs = fake_priority.compile.call_args.kwargs
+    assert set(compile_kwargs) == {"issue_block"}
+    assert "TJC-400" in compile_kwargs["issue_block"]
+
+
+@pytest.mark.unit
+def test_priority_prompt_falls_back_to_local_templates_when_langfuse_fetch_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
+    monkeypatch.setenv("TRIAGE_LANGFUSE_PRIORITY_PROMPT_NAME", "triagebot/priority-user")
+
+    fake_client = MagicMock()
+    fake_client.get_prompt.side_effect = RuntimeError("langfuse unavailable")
+    monkeypatch.setattr(
+        "triage_service.core.langfuse_prompt_config.get_client",
+        lambda: fake_client,
+    )
+
+    policy = PolicyContext(bug_definition="unused", priority_definition="P_DEF_FALLBACK")
+    issue = FetchedIssue(
+        issue_key="TJC-322",
+        summary="App crashes",
+        description="crash details",
+        issue_type="Bug",
+        priority="P1",
+        reporter="triage@example.com",
+    )
+
+    prompt = compose_priority_prompt(policy, issue)
+
+    assert "P_DEF_FALLBACK" in prompt
+    assert "TJC-322" in prompt

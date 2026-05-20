@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from triage_service.observability.payload_redaction import (
     sanitize_chat_messages,
     sanitize_model_output_text,
+    sanitize_vision_messages,
 )
 
 
@@ -37,3 +40,39 @@ def test_sanitize_model_output_text_redacts_when_requested() -> None:
     redacted = sanitize_model_output_text("raw-json", redact=True)
     assert redacted.startswith("[REDACTED] len=")
     assert 'preview="raw-json"' in redacted
+
+
+@pytest.mark.unit
+def test_sanitize_vision_messages_noop_when_redact_false() -> None:
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": "vision system"},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "describe screenshot"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,QUJDRA=="},
+                },
+            ],
+        },
+    ]
+    out = sanitize_vision_messages(messages, redact=False)
+    assert out[1]["content"][1]["image_url"]["url"] == "data:image/png;base64,QUJDRA=="
+
+
+@pytest.mark.unit
+def test_sanitize_vision_messages_redacts_image_data_urls_when_redact_true() -> None:
+    messages: list[dict[str, Any]] = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,QUJDRA=="},
+                },
+            ],
+        },
+    ]
+    out = sanitize_vision_messages(messages, redact=True)
+    assert "base64_len=8" in out[0]["content"][0]["image_url"]["url"]

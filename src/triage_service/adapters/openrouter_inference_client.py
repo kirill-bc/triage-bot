@@ -64,20 +64,22 @@ class OpenRouterInferenceClient:
         *,
         client: httpx.Client | None = None,
         model_override: str | None = None,
+        http_timeout_seconds: float | None = None,
     ) -> None:
         self._settings = settings
         self._client = client
         stripped = model_override.strip() if model_override else ""
         self._model_override = stripped or None
+        self._http_timeout_seconds = http_timeout_seconds
 
     @property
     def effective_model_id(self) -> str:
         """Resolved OpenRouter model id (override or configured default)."""
-        return self._model_override or self._settings.openrouter_model
+        return self._model_override or self._settings.triage_text_model
 
     def chat_completion(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         *,
         run_id: str,
         temperature: float = 0.2,
@@ -92,7 +94,7 @@ class OpenRouterInferenceClient:
 
     def chat_completion_with_details(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         *,
         run_id: str,
         temperature: float = 0.2,
@@ -103,7 +105,7 @@ class OpenRouterInferenceClient:
             "Authorization": f"Bearer {self._settings.openrouter_api_key}",
             "Content-Type": "application/json",
         }
-        model_id = self._model_override or self._settings.openrouter_model
+        model_id = self._model_override or self._settings.triage_text_model
         body: dict[str, Any] = {
             "model": model_id,
             "messages": list(messages),
@@ -114,7 +116,12 @@ class OpenRouterInferenceClient:
         if self._client is not None:
             return self._post(self._client, body, headers)
 
-        timeout = httpx.Timeout(self._settings.openrouter_http_timeout_seconds)
+        timeout_seconds = (
+            self._http_timeout_seconds
+            if self._http_timeout_seconds is not None
+            else self._settings.openrouter_http_timeout_seconds
+        )
+        timeout = httpx.Timeout(timeout_seconds)
         with httpx.Client(timeout=timeout) as client:
             return self._post(client, body, headers)
 

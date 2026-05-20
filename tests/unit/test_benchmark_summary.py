@@ -13,6 +13,7 @@ def _row(
     model: str = "openai/gpt-4o-mini",
     issue_key: str = "BC-1",
     bucket: str = "stable_bug",
+    has_images: bool | None = False,
     latency_ms: float = 1000.0,
     outcome_kind: str = "ok",
     outcome_category: str | None = None,
@@ -41,7 +42,7 @@ def _row(
             "confidence": 0.9,
             "reason": "ok",
         }
-    return {
+    row: dict[str, object] = {
         "model": model,
         "issue_key": issue_key,
         "bucket": bucket,
@@ -60,6 +61,9 @@ def _row(
             "notes": notes,
         },
     }
+    if has_images is not None:
+        row["has_images"] = has_images
+    return row
 
 
 @pytest.mark.unit
@@ -266,6 +270,43 @@ def test_format_summary_text_shows_model_buckets_and_overall(tmp_path: Path) -> 
     assert "openai/gpt-4o-mini" in text
     assert "stable_bug" in text
     assert "OVERALL" in text
+
+
+@pytest.mark.unit
+def test_summarize_model_run_aggregates_image_strata(tmp_path: Path) -> None:
+    from scripts.benchmark.benchmark_summary import summarize_model_run
+
+    records = [
+        _row(has_images=True, success=True),
+        _row(has_images=True, success=False, type_match=True, priority_match=False),
+        _row(has_images=False, success=True),
+    ]
+
+    summary = summarize_model_run(records=records, source_file=tmp_path / "rows_x.jsonl")
+
+    by_stratum = {s.stratum: s for s in summary.image_strata}
+    assert by_stratum["has_images"].total == 2
+    assert by_stratum["has_images"].successes == 1
+    assert by_stratum["text_only"].total == 1
+    assert by_stratum["text_only"].successes == 1
+
+
+@pytest.mark.unit
+def test_format_summary_text_includes_image_strata(tmp_path: Path) -> None:
+    from scripts.benchmark.benchmark_summary import (
+        format_summary_text,
+        summarize_model_run,
+    )
+
+    records = [
+        _row(has_images=True, success=True),
+        _row(has_images=False, success=True),
+    ]
+    summary = summarize_model_run(records=records, source_file=tmp_path / "rows_x.jsonl")
+    text = format_summary_text(summary)
+
+    assert "has_images" in text
+    assert "text_only" in text
 
 
 @pytest.mark.unit

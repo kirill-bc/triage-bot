@@ -66,7 +66,7 @@
 - [x] Ensure confidence remains advisory metadata only (never a direct mutation decision switch).
 - [x] Add unit tests for event schema validation, audit fan-out behavior, and failure-safe logging/LangFuse emission paths.
 - [x] Align Langfuse Python SDK v4 observation usage so the UI trace tree and root view nest `triage_issue_pipeline`, inference generations, and in-span audit events (avoid incorrect `trace_context` / deprecated kwargs on `create_event`).
-- Done when: every triage attempt emits correlated audit data to structured logs (required baseline). LangFuse traces and `LANGFUSE_*` secrets for **hosted** environments are optional at MVP ship and tracked under **§8 Post-MVP → Langfuse project credentials**; when keys are set, the same run also emits model metadata to LangFuse with redaction policy applied, including confidence, with passing lint/mypy/unit.
+- Done when: every triage attempt emits correlated audit data to structured logs (required baseline). LangFuse traces and `LANGFUSE_*` secrets for **hosted** environments are optional at MVP ship and tracked under **§10 Post-MVP → Langfuse project credentials**; when keys are set, the same run also emits model metadata to LangFuse with redaction policy applied, including confidence, with passing lint/mypy/unit.
 
 ## 6. Resilience + runtime safeguards
 - [x] Add explicit timeout/retry policy for Jira fetch and Jira write operations with bounded retries.
@@ -77,25 +77,35 @@
 - [x] Add unit tests for retry behavior, timeout mapping, and fallback category correctness.
 - Done when: transient failures are retried safely, permanent failures are observable, and hosting health checks are supported.
 
-## 7. Deployment to stable AWS URL (EKS target)
-- [x] Add local container smoke check command in this repo (`POST /triage` with fixture payload containing `issue_key`, verify response shape and no unintended Jira writes in mocked/local mode).
-- [x] Add **live container smoke** path (separate from mock mode): run the container with mounted real secrets/env vars, execute one triage request that performs real Jira fetch + OpenRouter inference, and capture/inspect the returned payload/log correlation (`run_id`).
-- [x] Add operator guardrails for the live smoke path while keeping executor active (dedicated test issue/project, explicit runbook pre-checks, and post-run verification of expected Jira labels/comments).
-- [ ] Prepare platform repo PR for the image build: add `build/docker/<jira-triage-image>/Dockerfile` plus any Dockerfile support files/dependencies needed to run the FastAPI app, following existing platform build conventions.
-- [ ] Register the new image in platform `build/images.yaml` so the existing automation builds/publishes it.
-- [ ] Document how local source maps into the platform Docker build context, including which files must be copied or vendored into `build/docker/<jira-triage-image>`.
-- [ ] Confirm runtime workflow contract for Jira Automation: Jira sends only `issue_key`, service fetches issue details from Jira, runs AI triage, builds the internal comment payload, and posts suggested action + reasoning + reporter tag back to the ticket.
-- [ ] Confirm EKS deployment shape with the cloud team: deployment, service/ingress, health checks, TLS/DNS, image promotion, rollback, and ownership expectations.
-- [ ] Create a hosted env-var inventory in docs/TODO notes that explicitly marks each key as `Secret` vs `ConfigMap` (`JIRA_*`, `OPENROUTER_*`, optional `LANGFUSE_*` post-MVP, model id/config, allowed projects, feature flags), and map each to the Kubernetes resource that will supply it.
-- [ ] Confirm secrets/config wiring for hosted runtime: Deployment mounts required secrets (`JIRA_*`, `OPENROUTER_*`); add `LANGFUSE_*` when Post-MVP Langfuse onboarding is done. Use a ConfigMap (or equivalent) for non-secret env vars (model id/config, allowed projects, feature flags).
-- [ ] Adopt LangFuse as the primary model observability/audit sink for teams that have project keys (after Post-MVP credential task); structured CloudWatch logs remain baseline operational telemetry regardless.
-- [ ] Verify the platform automation builds and publishes the first tagged image.
-- [ ] Add Kubernetes deployment artifacts or repo-specific deployment instructions for EKS (deployment, service, ingress, health checks, env/secrets/configMap references).
-- [ ] Add a minimal deployment checklist (manifest-level) covering: Deployment, Service, Ingress, Secret mounts, ConfigMap envs, readiness/liveness probes, and rollout/rollback commands.
-- [ ] Verify Jira Automation can call the hosted `/triage` URL end-to-end on one real issue.
-- [ ] Verify hosted observability: one triage run can be traced by `run_id` in service logs and any audit sink that is actually configured in that environment (structured logs required; LangFuse when keys exist per Post-MVP), including model output and final Jira comment action.
-- [ ] Document DNS/custom-domain follow-up if the initial EKS ingress URL is not the final stable URL.
-- Done when: Jira Automation calls a stable EKS-hosted URL successfully, the service posts the expected advisory Jira comment, and hosted triage runs are auditable end-to-end through the agreed observability stack.
+## 7. Image context extraction (vision-as-preprocessor)
+Bug tickets often pair terse text with load-bearing screenshots (stack traces, error toasts, broken UI states). Convert image **attachments** to text once per attachment so both classification and priority steps consume the same enriched `_issue_block` without going multimodal. Comments and comment attachments are explicitly out of scope — triage fires near issue creation and must not depend on context that accrues afterwards.
+
+- [x] **TDD: write failing tests first** (per workspace rules) covering: ADF `media` / `mediaSingle` walker, `_issue_block` rendering with and without images, `ImageContextExtractor` Protocol contract, and soft-failure placeholder rendering on per-image errors.
+- [x] Extend `FetchedIssue` (`src/triage_service/adapters/jira_issue_fetcher.py`) with `attachments: list[AttachmentRef]` (id, filename, mime_type, size_bytes, `inline` flag). Walk the ADF description for `media` / `mediaSingle` node ids and also pull the issue-level `attachment` field array; add `attachment` to `_BASE_FIELDS`.
+- [x] Add a Jira attachment binary fetch path on the same Atlassian gateway (`_basic_auth_header`, reuse `request_with_retries`) so the timeout / retry contract matches issue fetch.
+- [x] Create `src/triage_service/adapters/image_context_extractor.py`:
+  - [x] `ImageContextExtractor` Protocol returning a list of `ImageContext { attachment_id, filename, transcript, summary, extraction_failure? }`.
+  - [x] `NoOpImageContextExtractor` for the feature-off path and tests.
+  - [x] `OpenRouterVisionImageContextExtractor` default implementation using a dedicated `TRIAGE_VISION_MODEL` (independent from `TRIAGE_TEXT_MODEL`) with a transcription-first prompt: verbatim text first, then a 1–3 sentence UI summary, no root-cause speculation.
+- [x] Per-image errors (HTTP 4xx/5xx, oversize, unsupported MIME, vision call failure) degrade to `[Attachment N: extraction unavailable — {reason}]` in the issue block and **never** raise out of triage. `TriageFailure` remains reserved for the existing fetch / inference / parse boundaries in `triage_fallback.py`.
+- [x] Wire extraction into `TriageHandler.run_sync` (`src/triage_service/core/triage_handler.py`) after `fetcher.fetch(...)` and before `_triage_fetched_issue(...)`; keep `run_sync_on_fetched` extractor-free so benchmark replays accept pre-extracted context.
+- [x] Render results in `_issue_block` (`src/triage_service/core/prompt_composer.py`) as an "Attached images" section so both classification and priority pick it up via the shared `{{issue_block}}` Langfuse variable; user-prompt schemas do not change.
+- [x] Settings (`src/triage_service/core/settings.py`): `TRIAGE_IMAGE_CONTEXT_ENABLED` (default `false`), `TRIAGE_VISION_MODEL`, `TRIAGE_IMAGE_CONTEXT_MAX_ATTACHMENTS` (default `5`), `TRIAGE_IMAGE_CONTEXT_MAX_BYTES_PER_IMAGE`, `TRIAGE_IMAGE_CONTEXT_TIMEOUT_SECONDS`, and `TRIAGE_AUDIT_REDACT_IMAGE_TRANSCRIPT` (default `true` — screenshots leak PII more readily than typed text).
+- [x] Attachment selection / budget: process only inline-in-description image attachments, capped at `TRIAGE_IMAGE_CONTEXT_MAX_ATTACHMENTS` (no issue-level attachment fallback).
+- [x] Observability:
+  - [x] Add Langfuse span `image_context_extraction` nested under `triage_issue_pipeline`, carrying attachment counts, total bytes, and vision cost when returned.
+  - [x] Emit `image_context_extracted` audit event via the existing `AuditStore` fan-out (per-attachment latency, failure breakdown, `run_id` correlation).
+  - [x] Extend `triage_completed` / `triage_failed` telemetry with `image_context_attachments_considered` and `image_context_attachments_extracted` so dashboards can stratify runs with vs. without image signal.
+- [x] Benchmark integration: add an enable / disable flag to `scripts/benchmark/run_classification_benchmark.py`, persist resolved image context into JSONL rows, and extend `summarize_benchmark_rows.py` to break out accuracy by "has images" vs. "text-only".
+- [x] Local CLI parity: `scripts/run_triage_cli.py` honors `TRIAGE_IMAGE_CONTEXT_ENABLED` and prints a compact attachment summary alongside the recommendation for manual smoke checks.
+- [x] Docs: update `README.md` with the feature flag, vision model selection, cost / PII notes, and an example `_issue_block` rendering with attachments.
+
+Out of scope (do not pull in):
+- Comments and comment attachments — triage is creation-time and would invert the `triagebot-reviewed` dedupe lifecycle if it depended on post-creation context.
+- True multimodal classification / priority — doubles image cost across the sequential steps and breaks the text-only Langfuse prompt versioning in `langfuse_prompt_config.py`.
+- Pixel-level UI reasoning beyond a 1–3 sentence vision summary.
+
+Done when: issues with sparse text and load-bearing screenshots produce measurably better classification / priority on the benchmark dataset; extraction is feature-flagged and disabled by default; `pytest -m "unit or integration"`, `mypy .`, and `pytest -m lint` all pass; per-image failures degrade gracefully without aborting triage; benchmark runs can be stratified by image presence.
 
 ## 8. Integration tests (deferred until post-deploy stabilization)
 - [ ] Add API contract tests for `POST /triage` request/response shape and validation errors.
@@ -116,7 +126,8 @@
 - [ ] Record default model-selection rationale and confidence calibration strategy for next phase tuning.
 - Done when: a new engineer can run, operate, observe, and troubleshoot the service using repo docs only.
 
-## 8. Post-MVP
+## 10. Post-MVP
 - [x] **Classification benchmark harness (in-repo):** `scripts/benchmark/classification_benchmark.py` / `scripts/benchmark/benchmark_summary.py`, `scripts/benchmark/run_classification_benchmark.py` (multi-model JSONL + `summary.json`), `scripts/benchmark/summarize_benchmark_rows.py` (offline re-aggregation), unit tests under `tests/unit/test_classification_benchmark.py` and `tests/unit/test_benchmark_summary.py`. Curated rows live under `data/` (combined `issue_benchmark_dataset.csv` plus bucket CSVs). **Jira sampler:** `scripts/benchmark/build_benchmark_dataset.py` (changelog-derived keys; uses `GET /rest/api/3/search/jql` with `nextPageToken` because Cloud removed legacy search). **Composition:** keep the CSV Bug-centric; no requirement to rebalance toward equal Story buckets while Story outcomes stay out of scope—add rows when they help Bug-path / priority signal, and keep human ground truth vs Jira fields explicit where rows encode corrections.
+- [x] Move prompt management to Langfuse for easier prompting and prompt version control.
 - [ ] **Langfuse root trace cost in trace list:** OpenRouter token usage and cost fields (when returned) are forwarded to nested `inference_*` Langfuse generations; nested views and cost dashboards can reflect that. The top-level trace row / trace menu may still show `$0.00` for `triage_issue_pipeline`. Revisit later (SDK trace vs span model, trace-level aggregates vs UI, or Langfuse product behavior). Good enough for MVP observability.
-- Done when: at least one baseline model is scored on the current curated set and swapping `OPENROUTER_MODEL` (or passing alternate model ids to the benchmark runner) reproduces comparable runs with saved result artifacts for A/B comparison (local `benchmark_runs/` is gitignored; operators keep artifacts outside git or attach as CI artifacts).
+- Done when: at least one baseline model is scored on the current curated set and swapping `TRIAGE_TEXT_MODEL` (or passing alternate model ids to the benchmark runner) reproduces comparable runs with saved result artifacts for A/B comparison (local `benchmark_runs/` is gitignored; operators keep artifacts outside git or attach as CI artifacts).

@@ -9,7 +9,7 @@ from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from typing import Any, Literal, cast
 
-from langfuse import Langfuse
+from langfuse import Langfuse, propagate_attributes
 from langfuse.types import TraceContext
 
 from triage_service.observability.log_payload_guard import (
@@ -20,12 +20,16 @@ from triage_service.observability.log_payload_guard import (
 from triage_service.observability.payload_redaction import (
     sanitize_chat_messages,
     sanitize_model_output_text,
+    sanitize_vision_messages,
 )
 
 LOGGER = logging.getLogger(__name__)
 
+_LANGFUSE_SESSION_ID_MAX_LEN = 199
+
 InferenceStepName = Literal["classification", "priority"]
 GenerationFinish = Callable[..., None]
+ImageContextExtractionFinish = Callable[..., None]
 
 
 def _apply_langfuse_generation_update(
@@ -92,6 +96,21 @@ def _safe_current_trace_context(client: object) -> TraceContext | None:
     )
 
 
+def _start_current_observation(
+    client: Langfuse,
+    *,
+    trace_context: TraceContext | None,
+    **kwargs: Any,
+) -> Any:
+    """Start an observation, omitting ``trace_context`` when unavailable.
+
+    Passing ``trace_context=None`` can detach observation parenting in some SDK paths.
+    """
+    if trace_context is None:
+        return client.start_as_current_observation(**kwargs)
+    return client.start_as_current_observation(trace_context=trace_context, **kwargs)
+
+
 def stable_langfuse_trace_id(run_id: str) -> str:
     """Return a 32-char hex id suitable for :class:`langfuse.types.TraceContext`."""
     trimmed = run_id.strip()
@@ -101,6 +120,14 @@ def stable_langfuse_trace_id(run_id: str) -> str:
         return hashlib.sha256(trimmed.encode("utf-8")).hexdigest()[:32]
 
 
+def langfuse_session_id(run_id: str) -> str:
+    """Return a Langfuse session id for grouping traces (US-ASCII, max 199 chars)."""
+    trimmed = run_id.strip()
+    if len(trimmed) <= _LANGFUSE_SESSION_ID_MAX_LEN:
+        return trimmed
+    return trimmed[:_LANGFUSE_SESSION_ID_MAX_LEN]
+
+
 class LangfuseInferenceTracer:
     """Records triage root span plus per-step generation metadata (failure-safe)."""
 
@@ -108,7 +135,7 @@ class LangfuseInferenceTracer:
         self,
         client: Langfuse | None,
         *,
-        redact_model_input: bool = True,
+        redact_model_input: bool = False,
         redact_model_output: bool = True,
     ) -> None:
         self._client = client
@@ -123,6 +150,19 @@ class LangfuseInferenceTracer:
             self._client.flush()
         except Exception:
             LOGGER.warning("Langfuse flush failed", exc_info=True)
+
+    @contextmanager
+    def triage_run_session(self, *, run_id: str) -> Generator[None, None, None]:
+        """Propagate Langfuse ``session_id`` for the full triage run (all traces/spans)."""
+        if self._client is None:
+            yield
+            return
+        try:
+            with propagate_attributes(session_id=langfuse_session_id(run_id)):
+                yield
+        except Exception:
+            LOGGER.warning("Langfuse triage_run session propagation failed", exc_info=True)
+            yield
 
     @contextmanager
     def triage_issue_trace(
@@ -150,6 +190,140 @@ class LangfuseInferenceTracer:
         except Exception:
             LOGGER.warning("Langfuse triage_issue span failed", exc_info=True)
             yield
+
+    @contextmanager
+    def image_context_extraction(self) -> Generator[ImageContextExtractionFinish, None, None]:
+        def noop_finish(
+            *,
+            attachments_considered: int = 0,
+            attachments_extracted: int = 0,
+            total_bytes: int = 0,
+            total_vision_cost: float | None = None,
+        ) -> None:
+            _ = (
+                attachments_considered,
+                attachments_extracted,
+                total_bytes,
+                total_vision_cost,
+            )
+            return None
+
+        if self._client is None:
+            yield noop_finish
+            return
+        try:
+            trace_context = _safe_current_trace_context(self._client)
+            with _start_current_observation(
+                self._client,
+                trace_context=trace_context,
+                name="image_context_extraction",
+                as_type="span",
+                metadata={"operation": "image_context_extraction"},
+            ) as span:
+
+                def finish(
+                    *,
+                    attachments_considered: int,
+                    attachments_extracted: int,
+                    total_bytes: int,
+                    total_vision_cost: float | None,
+                ) -> None:
+                    metadata: dict[str, Any] = {
+                        "attachments_considered": attachments_considered,
+                        "attachments_extracted": attachments_extracted,
+                        "total_bytes": total_bytes,
+                    }
+                    if total_vision_cost is not None:
+                        metadata["total_vision_cost"] = total_vision_cost
+                    try:
+                        update = getattr(span, "update")
+                        update(metadata=metadata)
+                    except Exception:
+                        LOGGER.warning(
+                            "Langfuse image_context_extraction update failed",
+                            exc_info=True,
+                        )
+
+                yield finish
+        except Exception:
+            LOGGER.warning("Langfuse image_context_extraction span failed", exc_info=True)
+            yield noop_finish
+
+    @contextmanager
+    def vision_generation(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, Any]],
+        model_parameters: dict[str, Any],
+        attachment_id: str,
+        filename: str,
+    ) -> Generator[GenerationFinish, None, None]:
+        def noop_finish(
+            _raw: str,
+            _meta: dict[str, Any],
+            *,
+            usage_details: dict[str, int] | None = None,
+            cost_details: dict[str, float] | None = None,
+        ) -> None:
+            _ = (usage_details, cost_details)
+            return None
+
+        if self._client is None:
+            yield noop_finish
+            return
+        traced_input = sanitize_vision_messages(
+            messages,
+            redact=self._redact_model_input,
+        )
+        # Do not truncate vision inputs when storing full traces: mid-string clipping
+        # corrupts data: base64 URLs and Langfuse's media parser then errors.
+        input_trunc = False
+        if self._redact_model_input:
+            traced_input, input_trunc = truncate_logging_value(
+                traced_input,
+                max_string_chars=DEFAULT_MAX_LOG_STRING_CHARS,
+            )
+        gen_metadata: dict[str, Any] = {
+            "operation": "inference_vision",
+            "attachment_id": attachment_id,
+            "filename": filename,
+        }
+        if input_trunc:
+            gen_metadata["log_payload_truncated"] = True
+        try:
+            trace_context = _safe_current_trace_context(self._client)
+            with _start_current_observation(
+                self._client,
+                trace_context=trace_context,
+                name="inference_vision",
+                as_type="generation",
+                model=model,
+                input=traced_input,
+                model_parameters=model_parameters,
+                metadata=gen_metadata,
+            ) as gen:
+
+                def finish(
+                    raw: str,
+                    meta: dict[str, Any],
+                    *,
+                    usage_details: dict[str, int] | None = None,
+                    cost_details: dict[str, float] | None = None,
+                ) -> None:
+                    _apply_langfuse_generation_update(
+                        gen,
+                        raw,
+                        meta,
+                        redact_model_output=self._redact_model_output,
+                        usage_details=usage_details,
+                        cost_details=cost_details,
+                    )
+
+                yield finish
+        except Exception:
+            LOGGER.warning("Langfuse vision generation span failed", exc_info=True)
+            yield noop_finish
 
     @contextmanager
     def model_generation(
@@ -187,7 +361,8 @@ class LangfuseInferenceTracer:
             gen_metadata["log_payload_truncated"] = True
         try:
             trace_context = _safe_current_trace_context(self._client)
-            with self._client.start_as_current_observation(
+            with _start_current_observation(
+                self._client,
                 trace_context=trace_context,
                 name=gen_name,
                 as_type="generation",
@@ -224,7 +399,7 @@ def build_langfuse_inference_tracer(
     public_key: str | None,
     secret_key: str | None,
     base_url: str | None = None,
-    redact_model_input: bool = True,
+    redact_model_input: bool = False,
     redact_model_output: bool = True,
 ) -> LangfuseInferenceTracer:
     """Construct a tracer when LangFuse keys are configured; otherwise a no-op tracer."""

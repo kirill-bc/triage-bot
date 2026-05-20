@@ -2,8 +2,16 @@
 
 from __future__ import annotations
 
+import json
+from typing import cast
+from unittest.mock import patch
+
 import pytest
 
+from triage_service.adapters.image_context_extractor import (
+    ImageContext,
+    ImageContextExtractionResult,
+)
 from triage_service.core.triage_fallback import TriageFailure, fallback_for_exception
 from triage_service.core.triage_recommendation_parser import TriageRecommendation
 
@@ -125,3 +133,173 @@ def test_run_cli_triage_uses_explicit_project_when_given() -> None:
     assert isinstance(outcome, TriageFailure)
     assert calls[0][:3] == ("TJC-7", "BC", "manual_trigger")
     uuid.UUID(calls[0][3])
+
+
+@pytest.mark.unit
+def test_build_cli_image_context_summary_when_disabled() -> None:
+    from triage_service.adapters.image_context_extractor import build_cli_image_context_summary
+
+    assert build_cli_image_context_summary(enabled=False, extraction=None) == {
+        "enabled": False,
+    }
+
+
+@pytest.mark.unit
+def test_build_cli_image_context_summary_when_enabled_no_inline_images() -> None:
+    from triage_service.adapters.image_context_extractor import build_cli_image_context_summary
+
+    summary = build_cli_image_context_summary(
+        enabled=True,
+        extraction=ImageContextExtractionResult(),
+    )
+    assert summary == {
+        "enabled": True,
+        "attachments_considered": 0,
+        "attachments_extracted": 0,
+        "total_bytes": 0,
+        "attachments": [],
+    }
+
+
+@pytest.mark.unit
+def test_build_cli_image_context_summary_compact_attachment_rows() -> None:
+    from triage_service.adapters.image_context_extractor import build_cli_image_context_summary
+
+    extraction = ImageContextExtractionResult(
+        contexts=[
+            ImageContext(
+                attachment_id="1",
+                filename="ok.png",
+                transcript="long transcript " * 50,
+                summary="Error toast visible.",
+            ),
+            ImageContext(
+                attachment_id="2",
+                filename="bad.png",
+                extraction_failure="unsupported MIME",
+            ),
+        ],
+        attachments_considered=2,
+        attachments_extracted=1,
+        total_bytes=4096,
+    )
+    summary = build_cli_image_context_summary(enabled=True, extraction=extraction)
+    assert summary["enabled"] is True
+    assert summary["attachments_considered"] == 2
+    assert summary["attachments_extracted"] == 1
+    assert summary["total_bytes"] == 4096
+    rows = cast(list[dict[str, object]], summary["attachments"])
+    assert rows[0] == {
+        "attachment_id": "1",
+        "filename": "ok.png",
+        "status": "ok",
+        "summary": "Error toast visible.",
+    }
+    assert rows[1] == {
+        "attachment_id": "2",
+        "filename": "bad.png",
+        "status": "failed",
+        "failure": "unsupported MIME",
+    }
+    assert "transcript" not in rows[0]
+
+
+@pytest.mark.unit
+def test_main_json_includes_image_context_summary_from_handler(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from triage_manual_cli import main
+
+    extraction = ImageContextExtractionResult(
+        contexts=[
+            ImageContext(
+                attachment_id="99",
+                filename="ui.png",
+                summary="Broken checkout button.",
+            ),
+        ],
+        attachments_considered=1,
+        attachments_extracted=1,
+        total_bytes=1024,
+    )
+
+    class _RunnerWithImageExtraction:
+        last_image_extraction = extraction
+
+        def run_sync(
+            self,
+            issue_key: str,
+            project: str,
+            source: str,
+            *,
+            run_id: str,
+        ) -> TriageRecommendation:
+            _ = (issue_key, project, source, run_id)
+            return TriageRecommendation(
+                recommended_issue_type="Bug",
+                recommended_priority="P2",
+                confidence=0.8,
+                reason="vision-assisted",
+            )
+
+        def flush_inference_telemetry(self) -> None:
+            return None
+
+    class _Settings:
+        triage_image_context_enabled = True
+
+    with (
+        patch("triage_service.core.settings.load_settings", return_value=_Settings()),
+        patch(
+            "triage_manual_cli.build_default_triage_handler",
+            return_value=_RunnerWithImageExtraction(),
+        ),
+    ):
+        rc = main(["TJC-7"])
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "completed"
+    assert payload["image_context"]["enabled"] is True
+    assert payload["image_context"]["attachments_extracted"] == 1
+    assert payload["image_context"]["attachments"][0]["filename"] == "ui.png"
+
+
+@pytest.mark.unit
+def test_main_json_reports_image_context_disabled(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from triage_manual_cli import main
+
+    class _Runner:
+        def run_sync(
+            self,
+            issue_key: str,
+            project: str,
+            source: str,
+            *,
+            run_id: str,
+        ) -> TriageRecommendation:
+            _ = (issue_key, project, source, run_id)
+            return TriageRecommendation(
+                recommended_issue_type="Story",
+                recommended_priority=None,
+                confidence=0.5,
+                reason="text only",
+            )
+
+        def flush_inference_telemetry(self) -> None:
+            return None
+
+    class _Settings:
+        triage_image_context_enabled = False
+
+    with (
+        patch("triage_service.core.settings.load_settings", return_value=_Settings()),
+        patch("triage_manual_cli.build_default_triage_handler", return_value=_Runner()),
+    ):
+        rc = main(["TJC-7"])
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["image_context"] == {"enabled": False}

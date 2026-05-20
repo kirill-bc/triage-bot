@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from triage_service.adapters.jira_issue_fetcher import (
+    AttachmentRef,
     FetchedIssue,
     JiraIssueFetchError,
     JiraIssueFetcher,
@@ -21,6 +22,151 @@ def jira_app_settings(monkeypatch: pytest.MonkeyPatch) -> AppSettings:
     monkeypatch.setenv("JIRA_CLOUD_ID", "cloud-id-test")
     monkeypatch.setenv("JIRA_USER_EMAIL", "bot@example.com")
     return AppSettings()
+
+
+@pytest.mark.unit
+def test_fetch_issue_parses_attachments_and_marks_inline_from_adf_media(
+    jira_app_settings: AppSettings,
+) -> None:
+    body = {
+        "key": "TJC-50",
+        "fields": {
+            "summary": "Screenshot bug",
+            "description": {
+                "type": "doc",
+                "version": 1,
+                "content": [
+                    {
+                        "type": "mediaSingle",
+                        "content": [
+                            {
+                                "type": "media",
+                                "attrs": {"id": "inline-att-1"},
+                            },
+                        ],
+                    },
+                ],
+            },
+            "issuetype": {"name": "Bug"},
+            "priority": {"name": "P2"},
+            "reporter": {"displayName": "Reporter"},
+            "attachment": [
+                {
+                    "id": "inline-att-1",
+                    "filename": "inline.png",
+                    "mimeType": "image/png",
+                    "size": 2048,
+                },
+                {
+                    "id": "issue-att-2",
+                    "filename": "log.txt",
+                    "mimeType": "text/plain",
+                    "size": 512,
+                },
+            ],
+        },
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "attachment" in str(request.url)
+        return httpx.Response(200, json=body)
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        fetcher = JiraIssueFetcher(jira_app_settings, client=client)
+        issue = fetcher.fetch("TJC-50", run_id="run-test")
+
+    assert issue.attachments == [
+        AttachmentRef(
+            id="inline-att-1",
+            filename="inline.png",
+            mime_type="image/png",
+            size_bytes=2048,
+            inline=True,
+        ),
+        AttachmentRef(
+            id="issue-att-2",
+            filename="log.txt",
+            mime_type="text/plain",
+            size_bytes=512,
+            inline=False,
+        ),
+    ]
+
+
+@pytest.mark.unit
+def test_fetch_issue_marks_inline_from_rendered_description_attachment_urls(
+    jira_app_settings: AppSettings,
+) -> None:
+    body = {
+        "key": "TJC-51",
+        "fields": {
+            "summary": "Screenshot bug",
+            "description": {
+                "type": "doc",
+                "version": 1,
+                "content": [
+                    {
+                        "type": "mediaSingle",
+                        "content": [
+                            {
+                                "type": "media",
+                                "attrs": {"id": "media-uuid-not-attachment-id"},
+                            },
+                        ],
+                    },
+                ],
+            },
+            "issuetype": {"name": "Bug"},
+            "priority": {"name": "P2"},
+            "reporter": {"displayName": "Reporter"},
+            "attachment": [
+                {
+                    "id": "129110",
+                    "filename": "inline.png",
+                    "mimeType": "image/png",
+                    "size": 2048,
+                },
+                {
+                    "id": "129111",
+                    "filename": "other.png",
+                    "mimeType": "image/png",
+                    "size": 1024,
+                },
+            ],
+        },
+        "renderedFields": {
+            "description": (
+                '<p><img src="/secure/attachment/129110/inline.png" /></p>'
+            ),
+        },
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params.get("expand") == "renderedFields"
+        return httpx.Response(200, json=body)
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        fetcher = JiraIssueFetcher(jira_app_settings, client=client)
+        issue = fetcher.fetch("TJC-51", run_id="run-test")
+
+    assert issue.attachments == [
+        AttachmentRef(
+            id="129110",
+            filename="inline.png",
+            mime_type="image/png",
+            size_bytes=2048,
+            inline=True,
+        ),
+        AttachmentRef(
+            id="129111",
+            filename="other.png",
+            mime_type="image/png",
+            size_bytes=1024,
+            inline=False,
+        ),
+    ]
 
 
 @pytest.mark.unit
@@ -268,6 +414,9 @@ def test_fetch_issue_raises_when_jira_cloud_id_and_base_url_missing(
     monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
     monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
     monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
+    monkeypatch.setenv("JIRA_USER_EMAIL", "bot@example.com")
+    monkeypatch.delenv("JIRA_CLOUD_ID", raising=False)
+    monkeypatch.delenv("JIRA_BASE_URL", raising=False)
     settings = AppSettings()
 
     transport = httpx.MockTransport(lambda r: httpx.Response(200, json={}))
@@ -394,6 +543,91 @@ def test_fetch_issue_read_timeout_exhausted_sets_transport_timeout_and_kind(
     assert exc.value.transport_timeout is True
     assert exc.value.transport_error_kind == "timeout"
     assert exc.value.http_status is None
+
+
+@pytest.mark.unit
+def test_fetch_attachment_bytes_returns_binary_from_gateway_content_endpoint(
+    jira_app_settings: AppSettings,
+) -> None:
+    payload = b"\x89PNG\r\n\x1a\nfake-png-bytes"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert (
+            request.url.path
+            == "/ex/jira/cloud-id-test/rest/api/3/attachment/content/att-99"
+        )
+        assert request.url.params.get("redirect") == "false"
+        assert request.headers.get("Accept") == "*/*"
+        auth = request.headers.get("Authorization", "")
+        assert auth.startswith("Basic ")
+        return httpx.Response(200, content=payload)
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        fetcher = JiraIssueFetcher(jira_app_settings, client=client)
+        data = fetcher.fetch_attachment_bytes("att-99", run_id="run-test")
+
+    assert data == payload
+
+
+@pytest.mark.unit
+def test_fetch_attachment_bytes_retries_on_transient_503_then_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+    jira_app_settings: AppSettings,
+) -> None:
+    monkeypatch.setattr(
+        "triage_service.adapters.jira_http_retry.time.sleep",
+        lambda _s: None,
+    )
+    attempts: list[int] = []
+    payload = b"image-bytes"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(1)
+        if len(attempts) == 1:
+            return httpx.Response(503, text="unavailable")
+        return httpx.Response(200, content=payload)
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        fetcher = JiraIssueFetcher(jira_app_settings, client=client)
+        data = fetcher.fetch_attachment_bytes("att-1", run_id="run-test")
+
+    assert len(attempts) == 2
+    assert data == payload
+
+
+@pytest.mark.unit
+def test_fetch_attachment_bytes_raises_on_http_error(jira_app_settings: AppSettings) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, text="Attachment not found")
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        fetcher = JiraIssueFetcher(jira_app_settings, client=client)
+        with pytest.raises(JiraIssueFetchError) as exc:
+            fetcher.fetch_attachment_bytes("missing-att", run_id="run-test")
+    assert "404" in str(exc.value)
+    assert exc.value.http_status == 404
+
+
+@pytest.mark.unit
+def test_fetch_attachment_bytes_raises_when_jira_user_email_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
+    monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
+    monkeypatch.setenv("JIRA_CLOUD_ID", "cloud-id-test")
+    settings = AppSettings()
+
+    transport = httpx.MockTransport(lambda r: httpx.Response(200, content=b"x"))
+    with httpx.Client(transport=transport) as client:
+        fetcher = JiraIssueFetcher(settings, client=client)
+        with pytest.raises(JiraIssueFetchError) as exc:
+            fetcher.fetch_attachment_bytes("att-1", run_id="run-test")
+    assert "email" in str(exc.value).lower()
 
 
 @pytest.mark.unit

@@ -1,11 +1,7 @@
-"""Load bug and priority policy text bundled under ``policy/`` for triage prompts.
+"""Load bug and priority policy text for local prompt-template fallback.
 
-Replace the Markdown files with your organization's definitions:
-
-- ``policy/bug_definition.md`` — when an issue should be classified as Bug vs Story
-- ``policy/priority_definition.md`` — meaning of P0–P4 for this program
-
-Future Confluence retrieval can populate the same ``PolicyContext`` shape.
+When Langfuse user prompts are used, policies are embedded in ``classification-user`` /
+``priority-user``; these Markdown files apply only when composing from ``prompt_templates.json``.
 """
 
 from __future__ import annotations
@@ -26,27 +22,29 @@ class PolicyContext:
     priority_definition: str
 
 
+def _read_local_policy_text(path: Path, *, key: str) -> str:
+    if not path.is_file():
+        raise PolicyContextLoadError(
+            f"Missing policy file for {key}: {path} (expected UTF-8 Markdown)",
+        )
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise PolicyContextLoadError(f"Cannot read policy file {path}") from exc
+
+
 def load_policy_context(*, policy_dir: Path | None = None) -> PolicyContext:
-    """Read ``bug_definition.md`` and ``priority_definition.md`` from ``policy_dir``.
+    """Load bug and priority policy text from bundled Markdown (local template fallback).
 
     If ``policy_dir`` is omitted, uses the ``policy/`` directory next to this module.
     """
     base = policy_dir if policy_dir is not None else Path(__file__).resolve().parent / "policy"
-    paths = {
-        "bug_definition": base / "bug_definition.md",
-        "priority_definition": base / "priority_definition.md",
-    }
-    texts: dict[str, str] = {}
-    for key, path in paths.items():
-        if not path.is_file():
-            raise PolicyContextLoadError(
-                f"Missing policy file for {key}: {path} (expected UTF-8 Markdown)",
-            )
-        try:
-            texts[key] = path.read_text(encoding="utf-8").strip()
-        except OSError as exc:
-            raise PolicyContextLoadError(f"Cannot read policy file {path}") from exc
+    bug_definition = _read_local_policy_text(base / "bug_definition.md", key="bug_definition")
+    priority_definition = _read_local_policy_text(
+        base / "priority_definition.md",
+        key="priority_definition",
+    )
     return PolicyContext(
-        bug_definition=texts["bug_definition"],
-        priority_definition=texts["priority_definition"],
+        bug_definition=bug_definition,
+        priority_definition=priority_definition,
     )

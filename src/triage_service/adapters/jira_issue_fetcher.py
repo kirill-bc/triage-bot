@@ -7,7 +7,7 @@ import re
 from typing import Any
 
 import httpx
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from triage_service.adapters.jira_http_retry import (
     TransportRetriesExhausted,
@@ -17,6 +17,16 @@ from triage_service.adapters.jira_http_retry import (
 from triage_service.core.settings import AppSettings
 
 _ATLASSIAN_GATEWAY = "https://api.atlassian.com/ex/jira"
+
+
+class AttachmentRef(BaseModel):
+    """Normalized Jira attachment metadata for triage."""
+
+    id: str
+    filename: str
+    mime_type: str | None = None
+    size_bytes: int | None = None
+    inline: bool = False
 
 
 class FetchedIssue(BaseModel):
@@ -30,6 +40,7 @@ class FetchedIssue(BaseModel):
     priority: str | None = None
     reporter: str
     reporter_account_id: str | None = None
+    attachments: list[AttachmentRef] = Field(default_factory=list)
 
 
 class JiraIssueFetchError(RuntimeError):
@@ -49,6 +60,61 @@ class JiraIssueFetchError(RuntimeError):
         self.http_status = http_status
         self.transport_timeout = transport_timeout
         self.transport_error_kind = transport_error_kind
+
+
+def _adf_media_id_from_node(node: dict[str, Any]) -> str | None:
+    if node.get("type") != "media":
+        return None
+    attrs = node.get("attrs") or {}
+    media_id = attrs.get("id")
+    if isinstance(media_id, str) and media_id.strip():
+        return media_id.strip()
+    return None
+
+
+def _walk_adf_collect_media_ids(node: Any, found: list[str], seen: set[str]) -> None:
+    if node is None:
+        return
+    if isinstance(node, dict):
+        media_id = _adf_media_id_from_node(node)
+        if media_id is not None and media_id not in seen:
+            seen.add(media_id)
+            found.append(media_id)
+        for child in node.get("content") or []:
+            _walk_adf_collect_media_ids(child, found, seen)
+        return
+    if isinstance(node, list):
+        for item in node:
+            _walk_adf_collect_media_ids(item, found, seen)
+
+
+def collect_media_attachment_ids_from_adf(node: Any) -> list[str]:
+    """Return attachment ids referenced by ``media`` / ``mediaSingle`` ADF nodes."""
+    if node is None or isinstance(node, str):
+        return []
+    found: list[str] = []
+    seen: set[str] = set()
+    _walk_adf_collect_media_ids(node, found, seen)
+    return found
+
+
+_RENDERED_ATTACHMENT_ID_RE = re.compile(
+    r"/(?:secure/attachment|attachment/content)/([A-Za-z0-9-]+)",
+)
+
+
+def collect_attachment_ids_from_rendered_description(rendered_description: Any) -> list[str]:
+    """Extract attachment ids referenced in rendered description HTML URLs."""
+    if not isinstance(rendered_description, str) or not rendered_description.strip():
+        return []
+    found: list[str] = []
+    seen: set[str] = set()
+    for match in _RENDERED_ATTACHMENT_ID_RE.finditer(rendered_description):
+        attachment_id = match.group(1).strip()
+        if attachment_id and attachment_id not in seen:
+            seen.add(attachment_id)
+            found.append(attachment_id)
+    return found
 
 
 def _extract_text_from_adf(node: Any) -> str:
@@ -116,6 +182,57 @@ def _extract_reproduction_steps(description: str | None) -> str | None:
     return extracted if extracted else text
 
 
+def _parse_attachment_ref(raw: dict[str, Any], *, inline: bool) -> AttachmentRef | None:
+    raw_id = raw.get("id")
+    if raw_id is None:
+        return None
+    attachment_id = str(raw_id).strip()
+    if not attachment_id:
+        return None
+    filename = str(raw.get("filename") or "").strip() or attachment_id
+    mime_raw = raw.get("mimeType")
+    mime_type = str(mime_raw).strip() if isinstance(mime_raw, str) and mime_raw.strip() else None
+    size_raw = raw.get("size")
+    size_bytes: int | None = None
+    if isinstance(size_raw, int):
+        size_bytes = size_raw
+    elif isinstance(size_raw, str) and size_raw.strip().isdigit():
+        size_bytes = int(size_raw.strip())
+    return AttachmentRef(
+        id=attachment_id,
+        filename=filename,
+        mime_type=mime_type,
+        size_bytes=size_bytes,
+        inline=inline,
+    )
+
+
+def _parse_attachments(
+    fields: dict[str, Any],
+    *,
+    description_raw: Any,
+    rendered_description: Any,
+) -> list[AttachmentRef]:
+    inline_ids = set(collect_media_attachment_ids_from_adf(description_raw))
+    inline_ids.update(
+        collect_attachment_ids_from_rendered_description(rendered_description),
+    )
+    raw_attachments = fields.get("attachment")
+    if not isinstance(raw_attachments, list):
+        return []
+    parsed: list[AttachmentRef] = []
+    for item in raw_attachments:
+        if not isinstance(item, dict):
+            continue
+        ref = _parse_attachment_ref(item, inline=False)
+        if ref is None:
+            continue
+        parsed.append(
+            ref.model_copy(update={"inline": ref.id in inline_ids}),
+        )
+    return parsed
+
+
 def _parse_issue_payload(
     payload: dict[str, Any],
     *,
@@ -124,7 +241,19 @@ def _parse_issue_payload(
     key = str(payload["key"])
     fields = payload.get("fields") or {}
     summary = str(fields.get("summary") or "").strip()
-    description = _normalize_description(fields.get("description"))
+    description_raw = fields.get("description")
+    description = _normalize_description(description_raw)
+    rendered_fields = payload.get("renderedFields")
+    rendered_description = (
+        rendered_fields.get("description")
+        if isinstance(rendered_fields, dict)
+        else None
+    )
+    attachments = _parse_attachments(
+        fields,
+        description_raw=description_raw,
+        rendered_description=rendered_description,
+    )
     reproduction_steps: str | None = None
     repro_field_id = (reproduction_steps_field_id or "").strip()
     if repro_field_id and repro_field_id in fields:
@@ -150,6 +279,7 @@ def _parse_issue_payload(
         priority=priority_name,
         reporter=reporter,
         reporter_account_id=reporter_aid,
+        attachments=attachments,
     )
 
 
@@ -159,22 +289,40 @@ def _basic_auth_header(email: str, api_token: str) -> str:
     return f"Basic {encoded}"
 
 
-def _issue_get_url(settings: AppSettings, issue_key: str) -> str:
-    """REST v3 issue URL using Atlassian gateway ``JIRA_CLOUD_ID``."""
+def _gateway_prefix(settings: AppSettings) -> str:
     cloud_raw = settings.jira_cloud_id
     if cloud_raw is None or not str(cloud_raw).strip():
         raise JiraIssueFetchError(
-            "Jira issue URL requires JIRA_CLOUD_ID (Atlassian gateway).",
+            "Jira REST URL requires JIRA_CLOUD_ID (Atlassian gateway).",
         )
     cloud_id = str(cloud_raw).strip()
-    prefix = f"{_ATLASSIAN_GATEWAY}/{cloud_id}"
-    return f"{prefix}/rest/api/3/issue/{issue_key}"
+    return f"{_ATLASSIAN_GATEWAY}/{cloud_id}"
+
+
+def _issue_get_url(settings: AppSettings, issue_key: str) -> str:
+    """REST v3 issue URL using Atlassian gateway ``JIRA_CLOUD_ID``."""
+    return f"{_gateway_prefix(settings)}/rest/api/3/issue/{issue_key}"
+
+
+def _attachment_content_url(settings: AppSettings, attachment_id: str) -> str:
+    """REST v3 attachment binary URL using Atlassian gateway ``JIRA_CLOUD_ID``."""
+    att_id = str(attachment_id).strip()
+    if not att_id:
+        raise JiraIssueFetchError("Attachment id is required for content fetch.")
+    return f"{_gateway_prefix(settings)}/rest/api/3/attachment/content/{att_id}"
 
 
 class JiraIssueFetcher:
     """Loads issue fields via Jira Cloud REST v3 through Atlassian gateway."""
 
-    _BASE_FIELDS = ("summary", "description", "issuetype", "priority", "reporter")
+    _BASE_FIELDS = (
+        "summary",
+        "description",
+        "issuetype",
+        "priority",
+        "reporter",
+        "attachment",
+    )
 
     def __init__(self, settings: AppSettings, *, client: httpx.Client | None = None) -> None:
         self._settings = settings
@@ -183,23 +331,57 @@ class JiraIssueFetcher:
     def fetch(self, issue_key: str, *, run_id: str) -> FetchedIssue:
         _ = run_id
         url = _issue_get_url(self._settings, issue_key)
+        params = {"fields": self._fields_param(), "expand": "renderedFields"}
+        headers = {
+            **self._auth_headers(),
+            "Accept": "application/json",
+        }
+
+        if self._client is not None:
+            return self._request_issue(self._client, url, params, headers)
+
+        timeout = httpx.Timeout(self._settings.jira_http_timeout_seconds)
+        with httpx.Client(timeout=timeout) as client:
+            return self._request_issue(client, url, params, headers)
+
+    def fetch_attachment_bytes(self, attachment_id: str, *, run_id: str) -> bytes:
+        _ = run_id
+        url = _attachment_content_url(self._settings, attachment_id)
+        headers = {
+            **self._auth_headers(),
+            "Accept": "*/*",
+        }
+        # Jira defaults to 303 → media CDN; following without signed URLs often yields HTML.
+        params = {"redirect": "false"}
+
+        if self._client is not None:
+            response = self._get_with_retries(
+                self._client,
+                url,
+                headers=headers,
+                params=params,
+            )
+            return response.content
+
+        timeout = httpx.Timeout(self._settings.jira_http_timeout_seconds)
+        with httpx.Client(timeout=timeout) as client:
+            response = self._get_with_retries(
+                client,
+                url,
+                headers=headers,
+                params=params,
+            )
+            return response.content
+
+    def _auth_headers(self) -> dict[str, str]:
         email = self._settings.jira_user_email
         if email is None or not str(email).strip():
             raise JiraIssueFetchError(
                 "Jira user email is required for REST auth (set JIRA_USER_EMAIL).",
             )
-        params = {"fields": self._fields_param()}
-        headers = {
+        return {
             "Authorization": _basic_auth_header(email, self._settings.jira_api_key),
-            "Accept": "application/json",
         }
-
-        if self._client is not None:
-            return self._request(self._client, url, params, headers)
-
-        timeout = httpx.Timeout(self._settings.jira_http_timeout_seconds)
-        with httpx.Client(timeout=timeout) as client:
-            return self._request(client, url, params, headers)
 
     def _fields_param(self) -> str:
         fields = list(self._BASE_FIELDS)
@@ -208,13 +390,33 @@ class JiraIssueFetcher:
             fields.append(repro_field_id)
         return ",".join(fields)
 
-    def _request(
+    def _request_issue(
         self,
         client: httpx.Client,
         url: str,
         params: dict[str, str],
         headers: dict[str, str],
     ) -> FetchedIssue:
+        response = self._get_with_retries(
+            client,
+            url,
+            params=params,
+            headers=headers,
+        )
+        payload = response.json()
+        return _parse_issue_payload(
+            payload,
+            reproduction_steps_field_id=self._settings.jira_reproduction_steps_field_id,
+        )
+
+    def _get_with_retries(
+        self,
+        client: httpx.Client,
+        url: str,
+        *,
+        params: dict[str, str] | None = None,
+        headers: dict[str, str],
+    ) -> httpx.Response:
         try:
             response, attempts = request_with_retries(
                 client,
@@ -227,7 +429,7 @@ class JiraIssueFetcher:
         except TransportRetriesExhausted as tre:
             timeout, kind = classify_transport_request_error(tre.cause)
             raise JiraIssueFetchError(
-                f"Jira issue request failed after retries: {tre.cause}",
+                f"Jira request failed after retries: {tre.cause}",
                 attempts=tre.attempts,
                 transport_timeout=timeout,
                 transport_error_kind=kind,
@@ -235,7 +437,7 @@ class JiraIssueFetcher:
         except httpx.RequestError as exc:
             timeout, kind = classify_transport_request_error(exc)
             raise JiraIssueFetchError(
-                f"Jira issue request failed: {exc}",
+                f"Jira request failed: {exc}",
                 attempts=1,
                 transport_timeout=timeout,
                 transport_error_kind=kind,
@@ -243,12 +445,8 @@ class JiraIssueFetcher:
         if response.is_error:
             snippet = response.text[:200]
             raise JiraIssueFetchError(
-                f"Jira issue request failed with HTTP {response.status_code}: {snippet}",
+                f"Jira request failed with HTTP {response.status_code}: {snippet}",
                 attempts=attempts,
                 http_status=response.status_code,
             )
-        payload = response.json()
-        return _parse_issue_payload(
-            payload,
-            reproduction_steps_field_id=self._settings.jira_reproduction_steps_field_id,
-        )
+        return response

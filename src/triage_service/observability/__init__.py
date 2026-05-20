@@ -14,6 +14,7 @@ from triage_service.observability.audit_store import AuditStore, CompositeAuditS
 from triage_service.observability.langfuse_inference_tracing import (
     LangfuseInferenceTracer,
     build_langfuse_inference_tracer,
+    langfuse_session_id,
     stable_langfuse_trace_id,
 )
 from triage_service.observability.langfuse_audit_store import (
@@ -54,5 +55,6 @@ __all__ = [
     "parse_triage_audit_event",
     "sanitize_chat_messages",
     "sanitize_model_output_text",
+    "langfuse_session_id",
     "stable_langfuse_trace_id",
 ]

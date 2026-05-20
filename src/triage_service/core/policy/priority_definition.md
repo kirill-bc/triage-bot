@@ -2,15 +2,14 @@ Bug priority policy (P0-P4)
 
 P0 Outage
 Definition:
-Component or platform is non-functional and not working as expected.
+Client or production component/platform is non-functional and not working as expected. P0 is for client/production impact only — not internal development blockers (e.g. broken builds, CI failures, dev-environment issues).
 Examples:
 
-- API is unavailable. 
-- Major component is unavailable or non-functional (i.e. agent quoting, compliance issue, reporting issue) for multiple or all policies/claims.  Solution can include a new feature. 
-- 3rd party vendor integration(s) failing, thus blocking daily office operations. 
-- Build is broken halting all development. 
-- Agents cannot quote any business 
-- Renewals are not processing 
+- API is unavailable in production. 
+- Major component is unavailable or non-functional in production (i.e. agent quoting, compliance issue, reporting issue) for multiple or all policies/claims across affected clients. Solution can include a new feature. 
+- 3rd party vendor integration(s) failing in production, thus blocking daily office operations for clients. 
+- Agents cannot quote any business (production). 
+- Renewals are not processing (production). 
 - BriteAuth is non-functional and users cannot log-in.
 
 P1 Critical
@@ -19,6 +18,8 @@ Definition:
 OR
 - Bugs originally set to P2 that have been open for an extended period of time and the client has asked for updates and/or provided additional examples of the issue that indicate a more severe business impact than the original report. 
 - Bugs that would typically be considered P2s for VIP clients/at-risk clients.
+
+Policy scope: for a single client, all policies affected by the defect → P1. One policy (or some policies) while others on the same client work correctly → not P1; use P2 (see below).
 
 Examples:
 - Would be a P2 but customer is a VIP or at-risk. 
@@ -37,8 +38,11 @@ Definition:
 OR
 - Bugs originally set to P3 that have been open for an extended period of time and the client has asked for updates and/or provided additional examples of the issue that indicate a more severe business impact than the original report. 
 
+Policy scope: some policies on one client are affected while other policies for that same client work correctly → P2 (not P1).
+
 Examples:
 - Would be a P3 but customer is a VIP or at-risk. 
+- Some policies on one client are broken; other policies for that client work correctly. 
 - Bug that affects some use cases but doesn’t make a component nonfunctional, with a workaround for the impacted use cases. 
 - Automated process broken though manual process functions 
 - Unable to download some non-business operations reports 

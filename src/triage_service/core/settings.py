@@ -34,10 +34,11 @@ class AppSettings(BaseSettings):
         validation_alias="TRIAGE_WEBHOOK_TOKEN",
         description="Shared secret required in X-Triage-Token for POST /triage requests.",
     )
-    openrouter_model: str = Field(
+    triage_text_model: str = Field(
         default="openai/gpt-4o-mini",
         min_length=1,
-        description="OpenRouter model id, e.g. openai/gpt-4o-mini or anthropic/claude-3-haiku.",
+        validation_alias="TRIAGE_TEXT_MODEL",
+        description="OpenRouter model id for classification and priority (text).",
     )
 
     langfuse_public_key: str | None = Field(
@@ -66,9 +67,12 @@ class AppSettings(BaseSettings):
         description="Enable LangFuse audit sink when credentials are configured.",
     )
     audit_redact_model_input: bool = Field(
-        default=True,
+        default=False,
         validation_alias="TRIAGE_AUDIT_REDACT_MODEL_INPUT",
-        description="Redact model input payloads before audit persistence.",
+        description=(
+            "Redact model input (prompts) in Langfuse generation traces "
+            "(default false for prompt debugging visibility)."
+        ),
     )
     audit_redact_model_output: bool = Field(
         default=False,
@@ -125,6 +129,43 @@ class AppSettings(BaseSettings):
         le=10,
         validation_alias="TRIAGE_OPENROUTER_HTTP_MAX_RETRIES",
         description="Extra attempts after first transient failure (429/502/503/504 or transport).",
+    )
+
+    triage_image_context_enabled: bool = Field(
+        default=False,
+        validation_alias="TRIAGE_IMAGE_CONTEXT_ENABLED",
+        description="Extract image attachment text before classification and priority.",
+    )
+    triage_vision_model: str = Field(
+        default="google/gemini-2.0-flash-001",
+        min_length=1,
+        validation_alias="TRIAGE_VISION_MODEL",
+        description="OpenRouter vision model for screenshot transcription (not TRIAGE_TEXT_MODEL).",
+    )
+    triage_image_context_max_attachments: int = Field(
+        default=5,
+        ge=1,
+        le=20,
+        validation_alias="TRIAGE_IMAGE_CONTEXT_MAX_ATTACHMENTS",
+        description="Max image attachments to send to vision per issue.",
+    )
+    triage_image_context_max_bytes_per_image: int = Field(
+        default=5 * 1024 * 1024,
+        ge=1,
+        validation_alias="TRIAGE_IMAGE_CONTEXT_MAX_BYTES_PER_IMAGE",
+        description="Skip vision when attachment binary exceeds this size (bytes).",
+    )
+    triage_image_context_timeout_seconds: float = Field(
+        default=90.0,
+        ge=1.0,
+        le=300.0,
+        validation_alias="TRIAGE_IMAGE_CONTEXT_TIMEOUT_SECONDS",
+        description="Per-attempt HTTP timeout for OpenRouter vision calls.",
+    )
+    triage_audit_redact_image_transcript: bool = Field(
+        default=True,
+        validation_alias="TRIAGE_AUDIT_REDACT_IMAGE_TRANSCRIPT",
+        description="Redact vision transcripts in audit logs (screenshots may contain PII).",
     )
 
     log_level: str = Field(default="INFO", description="Standard library log level name.")

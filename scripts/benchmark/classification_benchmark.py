@@ -31,6 +31,7 @@ CSV_COLUMNS = (
 
 KNOWN_BUCKETS = frozenset({"stable_bug", "story_from_bug", "misprioritized_bug"})
 _BUG_PRIOS = frozenset({"P0", "P1", "P2", "P3", "P4"})
+IMAGE_STRATA = ("has_images", "text_only")
 
 
 @dataclass(frozen=True)
@@ -66,6 +67,21 @@ class BenchmarkBucketSummary:
     """Aggregate success rate for one ``benchmark_bucket`` value."""
 
     bucket: str
+    total: int
+    successes: int
+
+    @property
+    def accuracy(self) -> float:
+        if self.total <= 0:
+            return 0.0
+        return self.successes / self.total
+
+
+@dataclass(frozen=True)
+class BenchmarkImageStratumSummary:
+    """Aggregate success rate for issues with vs. without inline image attachments."""
+
+    stratum: str
     total: int
     successes: int
 
@@ -307,6 +323,40 @@ def aggregate_bucket_summaries(scores: Sequence[BenchmarkRowScore]) -> list[Benc
         ),
         key=lambda x: x.bucket,
     )
+
+
+def resolve_benchmark_image_context_enabled(
+    *,
+    cli_enable: bool | None,
+    settings_enabled: bool,
+) -> bool:
+    """Resolve benchmark vision preprocessing: CLI override wins, else app settings."""
+    if cli_enable is not None:
+        return cli_enable
+    return settings_enabled
+
+
+def aggregate_image_stratum_summaries(
+    scored_rows: Sequence[tuple[BenchmarkRowScore, bool]],
+) -> list[BenchmarkImageStratumSummary]:
+    """Per-stratum counts where ``bool`` is ``has_images`` for that row."""
+    grouped: dict[str, list[bool]] = {name: [] for name in IMAGE_STRATA}
+    for score, has_images in scored_rows:
+        key = "has_images" if has_images else "text_only"
+        grouped[key].append(score.success)
+    summaries: list[BenchmarkImageStratumSummary] = []
+    for name in IMAGE_STRATA:
+        successes = grouped[name]
+        if not successes:
+            continue
+        summaries.append(
+            BenchmarkImageStratumSummary(
+                stratum=name,
+                total=len(successes),
+                successes=sum(1 for ok in successes if ok),
+            ),
+        )
+    return summaries
 
 
 def aggregate_overall(scores: Sequence[BenchmarkRowScore]) -> BenchmarkOverallSummary:

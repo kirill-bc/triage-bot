@@ -3,9 +3,9 @@
 
 Walks the given folder (non-recursive by default) and, for every
 ``rows_<model>.jsonl`` produced by ``run_classification_benchmark.py``, prints
-per-bucket accuracy, overall accuracy, latency stats, the issue-type confusion
-matrix, and a failure breakdown. With ``--output-json``, also writes a
-folder-level aggregate JSON file.
+per-bucket accuracy, overall accuracy, image strata (`has_images` vs `text_only`),
+latency stats, the issue-type confusion matrix, and a failure breakdown.
+With ``--output-json``, also writes a folder-level aggregate JSON file.
 
 Example::
 

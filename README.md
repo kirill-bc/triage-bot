@@ -22,7 +22,7 @@ See `TODO.md` for the active implementation backlog.
 - `src/triage_service/core/triage_handler.py`: synchronous pipeline, `TriageRunner` / `TriageActionExecutor` protocols; `build_default_triage_handler()` uses `JiraTriageActionExecutor` when `JIRA_CLOUD_ID` and `JIRA_USER_EMAIL` are set, otherwise a no-op executor
 - `src/triage_service/adapters/jira_issue_fetcher.py`: Jira REST client and response normalization (includes `reporter_account_id` when Jira returns it, optional `reproduction_steps` from `TRIAGE_JIRA_REPRODUCTION_STEPS_FIELD_ID` when present, with fallback extraction from `description`)
 - `src/triage_service/adapters/jira_action_executor.py`: on success, applies `triagebot-reviewed` plus mismatch labels and a templated **TriageBot** ADF comment when needed; on `TriageFailure`, performs no Jira writes
-- `src/triage_service/adapters/openrouter_inference_client.py`: OpenRouter chat completions using `OPENROUTER_MODEL` (see `src/triage_service/core/settings.py`)
+- `src/triage_service/adapters/openrouter_inference_client.py`: OpenRouter chat completions using `TRIAGE_TEXT_MODEL` (see `src/triage_service/core/settings.py`)
 - `src/triage_service/core/settings.py`: environment-backed runtime settings, including `TRIAGE_ALLOWED_PROJECTS` allowlist parsing
 - `src/triage_service/core/policy_context.py`: loads bug and priority definition text from `src/triage_service/core/policy/` for prompts
 - `src/triage_service/core/prompt_composer.py`: builds classification-only and priority-only prompt strings from policy + issue
@@ -33,6 +33,7 @@ See `TODO.md` for the active implementation backlog.
 - `dev_tunnel.py`: load repo `.env`, start `uvicorn`, then run `ngrok` or `cloudflared` for Jira-facing HTTPS during local development (`scripts/run_dev_tunnel.py`)
 - `src/triage_service/core/policy/`: `bug_definition.md` and `priority_definition.md` (edit to match your org)
 - `scripts/fetch_jira_issue.py`: manual CLI smoke script for a single Jira issue
+- `scripts/fetch_jira_issue_image_context.py`: fetch issue image attachments and run vision preprocessing
 - `scripts/benchmark/build_benchmark_dataset.py`: optional Jira → CSV sampler for benchmark buckets (changelog-derived rows)
 - `scripts/benchmark/run_classification_benchmark.py`: run the same classify → optional priority pipeline over `data/issue_benchmark_dataset.csv` for one or more OpenRouter models; writes JSONL per model plus `summary.json` (NoOp Jira executor; no labels/comments)
 - `scripts/benchmark/summarize_benchmark_rows.py`: offline aggregator over any folder of `rows_*.jsonl` benchmark outputs — per-bucket and overall accuracy, latency stats, issue-type confusion matrix, and failure breakdown; optional folder-level JSON dump
@@ -52,7 +53,7 @@ See `TODO.md` for the active implementation backlog.
 - **OpenRouter adapter**: `OpenRouterInferenceClient` posts chat completions using the configured model id
 - **Recommendation parsing**: `parse_triage_recommendation_text()` enforces the merged triage JSON contract; step-specific helpers (`parse_classification_step_text`, `parse_priority_step_text`) support the sequential model calls before merging into `TriageRecommendation`
 - **Failure mapping**: `fallback_for_exception()` maps fetch, inference, parse, `ProjectNotAllowedError`, and unexpected errors into `TriageFailure` (Phase 1: executors should not post Jira comments or labels on failure)
-- **Policy context**: `load_policy_context()` reads UTF-8 definitions from `src/triage_service/core/policy/` (override `policy_dir` in tests)
+- **Policy context**: `load_policy_context()` reads bug/priority definitions from UTF-8 Markdown under `src/triage_service/core/policy/` for local prompt fallback (override `policy_dir` in tests); Langfuse user prompts embed policies directly
 - **Tooling**: `flake8`, `mypy`, and pytest marker-based gates wired in CI
 
 ## Local development
@@ -66,15 +67,17 @@ From repository root:
    - `JIRA_API_KEY`
    - `OPENROUTER_API_KEY`
    - `TRIAGE_WEBHOOK_TOKEN` (shared secret expected in inbound `X-Triage-Token` header on `POST /triage`)
-   - optional: `OPENROUTER_MODEL` (defaults to `openai/gpt-4o-mini` if unset)
-   - optional: `TRIAGE_PROMPT_TEMPLATES_PATH` (path to external JSON prompt templates; defaults to `src/triage_service/core/prompt_templates.json`)
+   - optional: `TRIAGE_TEXT_MODEL` (defaults to `openai/gpt-4o-mini` if unset)
+  - optional: `TRIAGE_PROMPT_TEMPLATES_PATH` (path to local JSON prompt templates fallback; defaults to `src/triage_service/core/prompt_templates.json`)
    - optional: `JIRA_CLOUD_ID`, `JIRA_USER_EMAIL`, logging values
    - optional: `TRIAGE_JIRA_REPRODUCTION_STEPS_FIELD_ID` (defaults to `customfield_10251`; set empty to disable custom-field lookup and rely on description marker extraction)
    - optional: `TRIAGE_JIRA_HTTP_TIMEOUT_SECONDS` (per-attempt timeout for Jira REST, default `30`) and `TRIAGE_JIRA_HTTP_MAX_RETRIES` (extra attempts after a transient HTTP 429/502/503/504 or transport failure, default `2`, max `10`)
    - optional: `TRIAGE_OPENROUTER_HTTP_TIMEOUT_SECONDS` (per-attempt timeout for OpenRouter chat completions, default `60`) and `TRIAGE_OPENROUTER_HTTP_MAX_RETRIES` (same transient policy as Jira, default `2`, max `10`)
-   - optional: `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, and `LANGFUSE_BASE_URL` (when the first two are set, OpenRouter steps are traced in Langfuse: root span `triage_issue_pipeline` with nested `inference_*` generations; token usage and any cost fields returned by OpenRouter are forwarded onto those generation observations when present. Lifecycle audit events attach under that span when emitted during triage. Use `run_id` from the API or CLI response and the span metadata to correlate with logs. `POST /triage` and the manual CLI call `flush_inference_telemetry()` after each run so buffers are not stuck in short-lived processes)
-   - optional audit routing and redaction (defaults: structured JSON logs **on**, Langfuse audit mirror **on** when Langfuse keys exist, model input redaction **on**, model output redaction **off**): `TRIAGE_AUDIT_STRUCTURED_LOG_ENABLED`, `TRIAGE_AUDIT_LANGFUSE_ENABLED`, `TRIAGE_AUDIT_REDACT_MODEL_INPUT`, `TRIAGE_AUDIT_REDACT_MODEL_OUTPUT`. Filter JSON log lines by `run_id` (API response field or CLI-generated UUID); in Langfuse, use `run_id` on the root span metadata (and nested observations) to align traces, generations, and audit events.
+  - optional: `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, and `LANGFUSE_BASE_URL` (when the first two are set, OpenRouter steps are traced in Langfuse: each triage `run_id` is the Langfuse **session** id (Sessions UI replay), with root span `triage_issue_pipeline` and nested `inference_*` generations; token usage and any cost fields returned by OpenRouter are forwarded onto those generation observations when present. Lifecycle audit events attach under that span when emitted during triage. Use `run_id` from the API or CLI response and the span metadata to correlate with logs. `POST /triage` and the manual CLI call `flush_inference_telemetry()` after each run so buffers are not stuck in short-lived processes)
+  - optional Langfuse prompt management (defaults shown; Langfuse project `triagebot`): `TRIAGE_LANGFUSE_PROMPTS_ENABLED=true`, user prompts `TRIAGE_LANGFUSE_CLASSIFICATION_PROMPT_NAME=triagebot/classification-user` and `TRIAGE_LANGFUSE_PRIORITY_PROMPT_NAME=triagebot/priority-user` (policies and reason guidance are embedded in Langfuse; only `{{issue_block}}` is compiled at runtime), system prompts `TRIAGE_LANGFUSE_CLASSIFICATION_SYSTEM_PROMPT_NAME=triagebot/classification-system` / `TRIAGE_LANGFUSE_PRIORITY_SYSTEM_PROMPT_NAME=triagebot/priority-system`, optional `TRIAGE_LANGFUSE_REASON_FOR_HUMANS_PROMPT_NAME=triagebot/reason-for-humans` (local fallback only), shared `TRIAGE_LANGFUSE_PROMPT_LABEL=production`, `TRIAGE_LANGFUSE_PROMPT_CACHE_TTL_SECONDS` (unset uses SDK default). When Langfuse is unavailable, `prompt_templates.json` and `src/triage_service/core/policy/*.md` (`load_policy_context`) are composed locally.
+   - optional audit routing and redaction (defaults: structured JSON logs **on**, Langfuse audit mirror **on** when Langfuse keys exist, model input redaction **off**, model output redaction **off**): `TRIAGE_AUDIT_STRUCTURED_LOG_ENABLED`, `TRIAGE_AUDIT_LANGFUSE_ENABLED`, `TRIAGE_AUDIT_REDACT_MODEL_INPUT`, `TRIAGE_AUDIT_REDACT_MODEL_OUTPUT`. Filter JSON log lines by `run_id` (API response field or CLI-generated UUID); in Langfuse, open **Sessions** and search by `run_id` (session id) or use `run_id` on the root span metadata to align traces, generations, and audit events.
    - optional local smoke mode: `TRIAGE_LOCAL_MOCK_MODE` (`1`, `true`, `yes`, or `on`) switches triage into a deterministic local runner that skips Jira/OpenRouter calls. Intended only for local container smoke checks.
+   - optional image attachment preprocessing (default **off**): `TRIAGE_IMAGE_CONTEXT_ENABLED` runs inline description images through a dedicated vision model before classification and priority. Uses `TRIAGE_VISION_MODEL` (independent from `TRIAGE_TEXT_MODEL`), `TRIAGE_IMAGE_CONTEXT_MAX_ATTACHMENTS` (default `5`), `TRIAGE_IMAGE_CONTEXT_MAX_BYTES_PER_IMAGE` (default 5 MiB), `TRIAGE_IMAGE_CONTEXT_TIMEOUT_SECONDS` (default `90`). Audit logs redact vision transcripts by default (`TRIAGE_AUDIT_REDACT_IMAGE_TRANSCRIPT=true`) because screenshots often contain PII. Each processed image is one billed OpenRouter vision call; failures degrade to placeholders and never abort triage.
 3. Run quality gates:
    - `.venv/bin/pytest -m lint`
    - `.venv/bin/mypy .`
@@ -98,6 +101,31 @@ Run:
 ```
 
 The script calls Jira REST and prints normalized JSON for the issue.
+
+### Image attachment preprocessing
+
+When `TRIAGE_IMAGE_CONTEXT_ENABLED=true`, triage downloads **inline** image attachments from the issue description (not comment attachments), transcribes them once via `TRIAGE_VISION_MODEL`, and injects the result into the shared `{{issue_block}}` used by both classification and priority. Per-image failures become placeholders in the issue block; triage continues.
+
+Example excerpt as models see it inside `issue_block`:
+
+```text
+Attached images:
+[Attachment 1: toast.png]
+Summary:
+Red toast on the login form.
+```
+
+Vision still produces a verbatim transcript internally (for debugging and optional audit redaction); only the short summary is injected into classification and priority prompts.
+
+Vision-only smoke (no classification):
+
+```bash
+# Requires TRIAGE_IMAGE_CONTEXT_ENABLED=true in .env (or --force)
+.venv/bin/python scripts/fetch_jira_issue_image_context.py YOUR-123
+.venv/bin/python scripts/fetch_jira_issue_image_context.py YOUR-123 --show-issue-block
+```
+
+**Cost / PII:** one OpenRouter vision request per inline image (capped by `TRIAGE_IMAGE_CONTEXT_MAX_ATTACHMENTS`). Prefer a fast/cheap vision model for preprocessing; keep `TRIAGE_TEXT_MODEL` on your main triage model. Transcripts can include names, emails, or tokens visible in screenshots — keep `TRIAGE_AUDIT_REDACT_IMAGE_TRANSCRIPT=true` in shared logs and Langfuse unless you have a controlled debugging window.
 
 ## Benchmark dataset (optional)
 
@@ -138,7 +166,7 @@ Run the same synchronous pipeline as `POST /triage` without Jira Automation (Ope
 .venv/bin/python scripts/run_triage_cli.py YOUR-123
 ```
 
-Optional `--project TJC` overrides the project key inferred from the issue key (`TJC` from `TJC-123`). The handler receives `source="manual_trigger"`; stdout is JSON with either `status: completed` and `recommendation` or `status: failed` and `failure`. Exit code `0` on completed triage, `1` on `TriageFailure`, `2` on settings validation errors.
+Optional `--project TJC` overrides the project key inferred from the issue key (`TJC` from `TJC-123`). The handler receives `source="manual_trigger"`; stdout is JSON with `status`, `recommendation` or `failure`, and `image_context` (compact attachment summary: `enabled`, counts, per-file `status`/`summary` or `failure` — no full transcripts). Honors `TRIAGE_IMAGE_CONTEXT_ENABLED` the same way as `POST /triage` (via `build_default_triage_handler`). Exit code `0` on completed triage, `1` on `TriageFailure`, `2` on settings validation errors.
 
 ## Jira Automation recipe (scheduled scan)
 

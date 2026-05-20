@@ -213,7 +213,7 @@ def test_handler_emits_stage_timing_for_fetch_model_and_executor(
             json={"choices": [{"message": {"role": "assistant", "content": responses[i]}}]},
         )
 
-    perf_values = iter([1.0, 1.01, 2.0, 2.02, 3.0, 3.04, 4.0, 4.03])
+    perf_values = iter([1.0, 1.01, 1.015, 1.02, 2.0, 2.02, 3.0, 3.04, 4.0, 4.03])
     monkeypatch.setattr(
         "triage_service.core.triage_handler.perf_counter",
         lambda: next(perf_values),
@@ -245,11 +245,12 @@ def test_handler_emits_stage_timing_for_fetch_model_and_executor(
     stage_names = [call.kwargs["extra"]["stage"] for call in logger.info.call_args_list]
     assert stage_names == [
         "jira_fetch",
+        "image_context_extraction",
         "classification_inference",
         "priority_inference",
         "jira_action",
     ]
-    assert logger.info.call_count == 4
+    assert logger.info.call_count == 5
 
 
 @pytest.mark.unit
@@ -468,6 +469,8 @@ def test_handler_bug_path_emits_classification_priority_and_triage_completed_aud
     assert e0.recommended_issue_type == "Bug"
     e2 = audit.events[2]
     assert e2.telemetry == {
+        "image_context_attachments_considered": 0,
+        "image_context_attachments_extracted": 0,
         "priority_signal": "prioritize",
         "jira_priority": "P2",
         "would_post_jira_comment": False,

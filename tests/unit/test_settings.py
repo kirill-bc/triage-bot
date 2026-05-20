@@ -7,37 +7,6 @@ from pydantic import ValidationError
 
 from triage_service.core.settings import AppSettings, load_settings
 
-_APP_ENV_KEYS = (
-    "JIRA_API_KEY",
-    "OPENROUTER_API_KEY",
-    "OPENROUTER_MODEL",
-    "LANGFUSE_PUBLIC_KEY",
-    "LANGFUSE_SECRET_KEY",
-    "LANGFUSE_BASE_URL",
-    "JIRA_CLOUD_ID",
-    "JIRA_USER_EMAIL",
-    "LOG_LEVEL",
-    "LOGGING_API_KEY",
-    "LOGGING_ENDPOINT",
-    "TRIAGE_ALLOWED_PROJECTS",
-    "TRIAGE_ANALYSIS_DELAY_SECONDS",
-    "TRIAGE_DEDUPE_DEFERRAL_ENABLED",
-    "TRIAGE_AUDIT_STRUCTURED_LOG_ENABLED",
-    "TRIAGE_AUDIT_LANGFUSE_ENABLED",
-    "TRIAGE_AUDIT_REDACT_MODEL_INPUT",
-    "TRIAGE_AUDIT_REDACT_MODEL_OUTPUT",
-    "TRIAGE_OPENROUTER_HTTP_TIMEOUT_SECONDS",
-    "TRIAGE_OPENROUTER_HTTP_MAX_RETRIES",
-    "TRIAGE_WEBHOOK_TOKEN",
-)
-
-
-@pytest.fixture(autouse=True)
-def _clear_app_env_keys(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Dotenv uses override=False; strip prior test / shell values before each case."""
-    for key in _APP_ENV_KEYS:
-        monkeypatch.delenv(key, raising=False)
-
 
 @pytest.mark.unit
 def test_load_settings_raises_when_jira_api_key_missing(
@@ -89,7 +58,7 @@ def test_load_settings_loads_required_keys_from_dotenv(
         "JIRA_API_KEY=jira-token\n"
         "OPENROUTER_API_KEY=or-token\n"
         "TRIAGE_WEBHOOK_TOKEN=triage-token\n"
-        "OPENROUTER_MODEL=openai/gpt-4o\n"
+        "TRIAGE_TEXT_MODEL=openai/gpt-4o\n"
         "JIRA_CLOUD_ID=abc-123-cloud\n"
         "JIRA_USER_EMAIL=triage@example.com\n"
         "LOG_LEVEL=DEBUG\n"
@@ -101,7 +70,7 @@ def test_load_settings_loads_required_keys_from_dotenv(
     assert settings.jira_api_key == "jira-token"
     assert settings.openrouter_api_key == "or-token"
     assert settings.triage_webhook_token == "triage-token"
-    assert settings.openrouter_model == "openai/gpt-4o"
+    assert settings.triage_text_model == "openai/gpt-4o"
     assert settings.jira_cloud_id == "abc-123-cloud"
     assert settings.jira_user_email == "triage@example.com"
     assert settings.log_level == "DEBUG"
@@ -119,7 +88,7 @@ def test_load_settings_optional_fields_default_when_omitted(
         encoding="utf-8",
     )
     settings = load_settings()
-    assert settings.openrouter_model == "openai/gpt-4o-mini"
+    assert settings.triage_text_model == "openai/gpt-4o-mini"
     assert settings.jira_cloud_id is None
     assert settings.jira_user_email is None
     assert settings.log_level == "INFO"
@@ -127,7 +96,7 @@ def test_load_settings_optional_fields_default_when_omitted(
     assert settings.logging_endpoint is None
     assert settings.audit_structured_log_enabled is True
     assert settings.audit_langfuse_enabled is True
-    assert settings.audit_redact_model_input is True
+    assert settings.audit_redact_model_input is False
     assert settings.audit_redact_model_output is False
     assert settings.openrouter_http_timeout_seconds == 60.0
     assert settings.openrouter_http_max_retries == 2

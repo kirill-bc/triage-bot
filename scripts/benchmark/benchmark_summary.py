@@ -19,9 +19,11 @@ from typing import Any, cast
 
 from scripts.benchmark.classification_benchmark import (
     BenchmarkBucketSummary,
+    BenchmarkImageStratumSummary,
     BenchmarkOverallSummary,
     BenchmarkRowScore,
     aggregate_bucket_summaries,
+    aggregate_image_stratum_summaries,
     aggregate_overall,
     confusion_matrix_issue_type,
 )
@@ -65,6 +67,7 @@ class ModelRunSummary:
     latency: LatencyStats
     priority_evaluated: int
     priority_matches: int
+    image_strata: tuple[BenchmarkImageStratumSummary, ...] = ()
 
     @property
     def priority_accuracy(self) -> float:
@@ -99,6 +102,14 @@ def _coerce_issue_type(value: Any) -> IssueTypeLiteral:
         msg = f"ground_truth_issue_type must be 'Bug' or 'Story'; got {value!r}"
         raise ValueError(msg)
     return cast(IssueTypeLiteral, text)
+
+
+def benchmark_row_has_images(record: Mapping[str, Any]) -> bool:
+    """Return whether a JSONL row is stratified as having inline images (default false)."""
+    value = record.get("has_images")
+    if value is None:
+        return False
+    return bool(value)
 
 
 def benchmark_row_score_from_record(record: Mapping[str, Any]) -> BenchmarkRowScore:
@@ -210,6 +221,14 @@ def summarize_model_run(
 
     priority_evaluated = sum(1 for s in scores if s.priority_match is not None)
     priority_matches = sum(1 for s in scores if s.priority_match is True)
+    image_strata = tuple(
+        aggregate_image_stratum_summaries(
+            [
+                (score, benchmark_row_has_images(rec))
+                for score, rec in zip(scores, records, strict=True)
+            ],
+        ),
+    )
 
     model = _first_model(records) or _model_from_filename(source_file)
 
@@ -224,6 +243,7 @@ def summarize_model_run(
         latency=latency,
         priority_evaluated=priority_evaluated,
         priority_matches=priority_matches,
+        image_strata=image_strata,
     )
 
 
@@ -260,6 +280,14 @@ def format_summary_text(summary: ModelRunSummary) -> str:
         f"{'OVERALL':<22} {summary.overall.total:5d} {summary.overall.successes:5d} "
         f"{summary.overall.accuracy:10.3f}"
     )
+    if summary.image_strata:
+        lines.append("")
+        lines.append(f"{'stratum':<22} {'n':>5} {'ok':>5} {'accuracy':>10}")
+        for stratum in summary.image_strata:
+            lines.append(
+                f"{stratum.stratum:<22} {stratum.total:5d} {stratum.successes:5d} "
+                f"{stratum.accuracy:10.3f}"
+            )
     lines.append("")
     lines.append(
         f"priority accuracy: {summary.priority_matches}/{summary.priority_evaluated} "
@@ -299,6 +327,15 @@ def summary_to_dict(summary: ModelRunSummary) -> dict[str, Any]:
             "successes": summary.overall.successes,
             "accuracy": summary.overall.accuracy,
         },
+        "image_strata": [
+            {
+                "stratum": s.stratum,
+                "total": s.total,
+                "successes": s.successes,
+                "accuracy": s.accuracy,
+            }
+            for s in summary.image_strata
+        ],
         "confusion_issue_type": {
             f"{gt}->{pred}": count
             for (gt, pred), count in sorted(summary.confusion_issue_type.items())

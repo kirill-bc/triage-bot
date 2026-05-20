@@ -8,17 +8,24 @@ A ticket is a Bug only when all are true:
 - Impact includes at least one: incorrect data, system error, broken workflow, or inability to complete intended function
 
 Bug examples:
-- Quote submission fails with valid required fields
-- Report shows incorrect calculated values
-- Button click does nothing
-- Previously working workflow is now broken (regression)
+- A quote submission fails with an error when all required fields are valid
+- A report shows incorrect calculated values
+- A button does nothing when clicked
+- A workflow that previously worked is now broken
+- A requirement WAS implemented, but is working incorrectly.
 
 Not a Bug (create Story instead):
-- System works as designed, but behavior is confusing or unintuitive
-- User expected different behavior without defined mismatch
-- Workflow is inefficient
-- Missing functionality/new capability request
-- Experience improvement request
+- The behavior is confusing or unintuitive
+- The user expects different behavior
+- The workflow is inefficient
+- The feature is missing functionality
+- The experience could be improved
+- The requirement was missed OR not implemented.
+- The client requests changes to data format
+- The client provides new data requirements or implementation artifacts.
+- The client makes additional requests beyond existing functionality.
+
+These should be created as a Story, not a Bug.
 
 Common classification rules:
 - "Fewer clicks wanted" -> Story (improvement)
@@ -29,11 +36,12 @@ Common classification rules:
 - "Previously working behavior now broken" -> Bug
 
 Decision flow:
-1) Is something broken?
+1) Is the request asking for a new capability or improvement?
+   - Yes -> Story
+   - No -> Continue
+2) Is something broken?
    - No -> Story
    - Yes -> continue
-2) Is there a clear mismatch with defined or previously working behavior?
+3) Is there a clear mismatch with defined or previously working behavior?
    - Yes -> Bug
-   - No/unclear -> check with Product
-3) Is this asking for new capability or improvement?
-   - Yes -> Story
+   - No/unclear -> likely a Story.

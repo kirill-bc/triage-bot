@@ -5,13 +5,14 @@ from __future__ import annotations
 import uuid
 from contextlib import contextmanager
 from typing import Any
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
 from triage_service.observability.langfuse_inference_tracing import (
     LangfuseInferenceTracer,
     build_langfuse_inference_tracer,
+    langfuse_session_id,
     stable_langfuse_trace_id,
 )
 
@@ -37,6 +38,46 @@ def test_stable_langfuse_trace_id_strips_hyphens_for_uuid_run_id() -> None:
     rid = "550e8400-e29b-41d4-a716-446655440000"
     assert stable_langfuse_trace_id(rid) == "550e8400e29b41d4a716446655440000"
     assert len(stable_langfuse_trace_id(rid)) == 32
+
+
+@pytest.mark.unit
+def test_langfuse_session_id_strips_whitespace() -> None:
+    assert langfuse_session_id("  run-abc  ") == "run-abc"
+
+
+@pytest.mark.unit
+def test_langfuse_session_id_truncates_to_langfuse_limit() -> None:
+    long_id = "x" * 250
+    assert len(langfuse_session_id(long_id)) == 199
+
+
+@pytest.mark.unit
+def test_tracer_triage_run_session_propagates_session_id() -> None:
+    client = MagicMock()
+    tracer = LangfuseInferenceTracer(client)
+
+    with patch(
+        "triage_service.observability.langfuse_inference_tracing.propagate_attributes"
+    ) as propagate:
+        propagate.return_value.__enter__ = MagicMock(return_value=None)
+        propagate.return_value.__exit__ = MagicMock(return_value=False)
+        with tracer.triage_run_session(run_id="run-42"):
+            pass
+
+    propagate.assert_called_once_with(session_id="run-42")
+
+
+@pytest.mark.unit
+def test_tracer_triage_run_session_noop_without_client() -> None:
+    tracer = LangfuseInferenceTracer(None)
+
+    with patch(
+        "triage_service.observability.langfuse_inference_tracing.propagate_attributes"
+    ) as propagate:
+        with tracer.triage_run_session(run_id="run-42"):
+            pass
+
+    propagate.assert_not_called()
 
 
 @pytest.mark.unit
@@ -353,11 +394,171 @@ def test_model_generation_uses_explicit_trace_context_when_available() -> None:
 
 
 @pytest.mark.unit
+def test_model_generation_omits_trace_context_when_unavailable() -> None:
+    gen_obs = MagicMock()
+
+    @contextmanager
+    def gen_ctx(**kwargs: Any) -> Any:
+        _ = kwargs
+        yield gen_obs
+
+    @contextmanager
+    def root_ctx(**kwargs: Any) -> Any:
+        _ = kwargs
+        yield MagicMock()
+
+    client = MagicMock()
+    client.get_current_trace_id.return_value = "a" * 32
+    client.get_current_observation_id.return_value = None
+    client.start_as_current_observation.side_effect = [root_ctx(), gen_ctx()]
+    tracer = LangfuseInferenceTracer(client)
+
+    with tracer.triage_issue_trace(run_id=str(uuid.uuid4()), issue_key="A-1", project="A"):
+        with tracer.model_generation(
+            step="priority",
+            model="m",
+            messages=[{"role": "user", "content": "x"}],
+            model_parameters={"temperature": 0.1},
+        ) as finish:
+            finish("raw", {"parsed": {"recommended_priority": "P1"}})
+
+    gen_call = client.start_as_current_observation.call_args_list[1]
+    assert "trace_context" not in gen_call.kwargs
+
+
+@pytest.mark.unit
 def test_build_langfuse_inference_tracer_noop_without_keys() -> None:
     tracer = build_langfuse_inference_tracer(public_key=None, secret_key=None)
     assert tracer._client is None
     tracer_partial = build_langfuse_inference_tracer(public_key="pk", secret_key="  ")
     assert tracer_partial._client is None
+
+
+@pytest.mark.unit
+def test_tracer_vision_generation_keeps_image_when_redact_input_false() -> None:
+    gen_obs = MagicMock()
+
+    @contextmanager
+    def gen_ctx(**kwargs: Any) -> Any:
+        _ = kwargs
+        yield gen_obs
+
+    client = MagicMock()
+    client.start_as_current_observation.side_effect = [gen_ctx()]
+    tracer = LangfuseInferenceTracer(client, redact_model_input=False, redact_model_output=False)
+    huge_b64 = "B" * 20_000
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": "vision system"},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "user instruction"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/png;base64,{huge_b64}"},
+                },
+            ],
+        },
+    ]
+
+    with tracer.vision_generation(
+        model="m",
+        messages=messages,
+        model_parameters={"temperature": 0.0},
+        attachment_id="att-1",
+        filename="screen.png",
+    ) as finish:
+        finish("ok", {})
+
+    gen_call = client.start_as_current_observation.call_args
+    traced = gen_call.kwargs["input"]
+    image_url = traced[1]["content"][1]["image_url"]["url"]
+    assert huge_b64 in image_url
+    assert "\u2026" not in image_url
+    assert gen_call.kwargs["metadata"].get("log_payload_truncated") is not True
+
+
+@pytest.mark.unit
+def test_tracer_records_vision_generation_with_redacted_image_payload() -> None:
+    root_cm = MagicMock()
+    img_cm = MagicMock()
+    gen_cm = MagicMock()
+    root_obs = MagicMock()
+    img_obs = MagicMock()
+    gen_obs = MagicMock()
+    root_cm.__enter__.return_value = root_obs
+    img_cm.__enter__.return_value = img_obs
+    gen_cm.__enter__.return_value = gen_obs
+
+    @contextmanager
+    def root_ctx(**kwargs: Any) -> Any:
+        _ = kwargs
+        yield root_obs
+
+    @contextmanager
+    def img_ctx(**kwargs: Any) -> Any:
+        _ = kwargs
+        yield img_obs
+
+    @contextmanager
+    def gen_ctx(**kwargs: Any) -> Any:
+        _ = kwargs
+        yield gen_obs
+
+    client = MagicMock()
+    client.start_as_current_observation.side_effect = [root_ctx(), img_ctx(), gen_ctx()]
+
+    tracer = LangfuseInferenceTracer(client, redact_model_input=True, redact_model_output=False)
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": "vision system"},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "describe screenshot"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,QUJDRA=="},
+                },
+            ],
+        },
+    ]
+
+    with tracer.triage_issue_trace(run_id="r1", issue_key="TJC-9", project="TJC"):
+        with tracer.image_context_extraction() as finish_img:
+            with tracer.vision_generation(
+                model="google/gemini-2.0-flash-001",
+                messages=messages,
+                model_parameters={"temperature": 0.0},
+                attachment_id="att-1",
+                filename="screen.png",
+            ) as finish_vision:
+                finish_vision(
+                    "TRANSCRIPT:\nError\n\nSUMMARY:\nRed toast.",
+                    {"attachment_id": "att-1", "filename": "screen.png"},
+                    usage_details={"prompt_tokens": 100, "completion_tokens": 20},
+                    cost_details={"cost": 0.002},
+                )
+            finish_img(
+                attachments_considered=1,
+                attachments_extracted=1,
+                total_bytes=1024,
+                total_vision_cost=0.002,
+            )
+
+    gen_call = client.start_as_current_observation.call_args_list[2]
+    assert gen_call.kwargs["name"] == "inference_vision"
+    assert gen_call.kwargs["as_type"] == "generation"
+    assert gen_call.kwargs["model"] == "google/gemini-2.0-flash-001"
+    traced = gen_call.kwargs["input"]
+    assert traced[0]["content"] == "vision system"
+    assert traced[1]["content"][0]["text"].startswith("[REDACTED] len=")
+    assert "base64_len=8" in traced[1]["content"][1]["image_url"]["url"]
+    assert gen_call.kwargs["metadata"]["attachment_id"] == "att-1"
+    gen_obs.update.assert_called_once()
+    ukwargs = gen_obs.update.call_args.kwargs
+    assert "TRANSCRIPT:" in ukwargs["output"]
+    assert ukwargs["usage_details"]["prompt_tokens"] == 100
+    img_obs.update.assert_called_once()
 
 
 @pytest.mark.unit

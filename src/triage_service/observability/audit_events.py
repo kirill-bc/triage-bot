@@ -6,6 +6,7 @@ at lifecycle boundaries:
 
 - ``classification_completed`` — after inference step (1) parses successfully.
 - ``priority_completed`` — after inference step (2) parses successfully (Bug path only).
+- ``image_context_extracted`` — after vision preprocessing (when enabled) completes.
 - ``triage_completed`` — final merged recommendation before/after executor success.
 - ``triage_failed`` — pipeline returned :class:`~triage_service.core.triage_fallback.TriageFailure`.
 
@@ -73,6 +74,36 @@ class ClassificationCompletedAuditEvent(_CorrelationMixin):
             msg = "reason must be a non-empty string"
             raise ValueError(msg)
         return value
+
+
+class ImageAttachmentExtractionDetail(BaseModel):
+    """Per-attachment vision preprocessing metrics."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    attachment_id: str = Field(min_length=1)
+    filename: str = Field(min_length=1)
+    latency_ms: float = Field(ge=0.0)
+    bytes_fetched: int = Field(ge=0, default=0)
+    extraction_failure: str | None = None
+
+
+class ImageContextExtractedAuditEvent(_CorrelationMixin):
+    """Vision preprocessing finished (success and soft failures)."""
+
+    event_type: Literal["image_context_extracted"]
+    attachments_considered: int = Field(ge=0)
+    attachments_extracted: int = Field(ge=0)
+    total_bytes: int = Field(ge=0)
+    total_vision_cost: float | None = Field(default=None, ge=0.0)
+    per_attachment: list[ImageAttachmentExtractionDetail] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _extracted_not_greater_than_considered(self) -> ImageContextExtractedAuditEvent:
+        if self.attachments_extracted > self.attachments_considered:
+            msg = "attachments_extracted cannot exceed attachments_considered"
+            raise ValueError(msg)
+        return self
 
 
 class PriorityCompletedAuditEvent(_CorrelationMixin):
@@ -168,6 +199,7 @@ class TriageFailedAuditEvent(_CorrelationMixin):
 TriageAuditEvent = Annotated[
     Union[
         ClassificationCompletedAuditEvent,
+        ImageContextExtractedAuditEvent,
         PriorityCompletedAuditEvent,
         TriageCompletedAuditEvent,
         TriageFailedAuditEvent,

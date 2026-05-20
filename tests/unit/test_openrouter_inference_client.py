@@ -20,7 +20,7 @@ def openrouter_app_settings(monkeypatch: pytest.MonkeyPatch) -> AppSettings:
     monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
     monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-secret")
     monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
-    monkeypatch.setenv("OPENROUTER_MODEL", "anthropic/claude-3-haiku")
+    monkeypatch.setenv("TRIAGE_TEXT_MODEL", "anthropic/claude-3-haiku")
     return AppSettings()
 
 
@@ -155,7 +155,7 @@ def test_chat_completion_uses_default_model_when_env_omitted(
     monkeypatch.setenv("JIRA_API_KEY", "jira")
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
     monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
-    monkeypatch.delenv("OPENROUTER_MODEL", raising=False)
+    monkeypatch.delenv("TRIAGE_TEXT_MODEL", raising=False)
     settings = AppSettings()
 
     captured: dict[str, object] = {}
@@ -176,7 +176,7 @@ def test_chat_completion_uses_default_model_when_env_omitted(
         ) == "ok"
 
     assert isinstance(captured["json"], dict)
-    assert captured["json"]["model"] == settings.openrouter_model
+    assert captured["json"]["model"] == settings.triage_text_model
 
 
 @pytest.mark.unit
@@ -488,7 +488,7 @@ def test_chat_completion_zero_retries_fails_immediately_on_429(
     monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
     monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-secret")
     monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
-    monkeypatch.setenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
+    monkeypatch.setenv("TRIAGE_TEXT_MODEL", "openai/gpt-4o-mini")
     monkeypatch.setenv("TRIAGE_OPENROUTER_HTTP_MAX_RETRIES", "0")
     settings = AppSettings()
     calls = {"n": 0}
