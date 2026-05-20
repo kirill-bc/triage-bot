@@ -254,6 +254,7 @@ def test_handler_emits_image_context_extracted_and_telemetry_on_success(
                 audit_store=audit,
                 image_context_extractor=mock_extractor,
                 inference_tracer=mock_tracer,
+                settings=settings,
             )
             _ = handler.run_sync(
                 issue_key="TJC-50",
@@ -330,8 +331,9 @@ def test_handler_triage_failed_includes_image_context_telemetry_when_extraction_
                 executor=_NoOpExecutor(),
                 audit_store=audit,
                 image_context_extractor=mock_extractor,
+                settings=settings,
             )
-            outcome = handler.run_sync(
+            sync_result = handler.run_sync(
                 issue_key="TJC-51",
                 project="TJC",
                 source="bug_created",
@@ -340,12 +342,92 @@ def test_handler_triage_failed_includes_image_context_telemetry_when_extraction_
 
     from triage_service.core.triage_fallback import TriageFailure
 
+    outcome = sync_result.outcome
     assert isinstance(outcome, TriageFailure)
     failed = [e for e in audit.events if isinstance(e, TriageFailedAuditEvent)]
     assert len(failed) == 1
     assert failed[0].telemetry is not None
     assert failed[0].telemetry["image_context_attachments_considered"] == 0
     assert failed[0].telemetry["image_context_attachments_extracted"] == 0
+
+
+@pytest.mark.unit
+def test_handler_image_context_extract_unexpected_error_soft_fails_and_continues_triage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from triage_service.adapters.jira_issue_fetcher import JiraIssueFetcher
+    from triage_service.adapters.openrouter_inference_client import OpenRouterInferenceClient
+    from triage_service.core.triage_handler import TriageHandler
+    from triage_service.core.triage_recommendation_parser import TriageRecommendation
+
+    settings = _app_settings(monkeypatch)
+    issue = FetchedIssue(
+        issue_key="TJC-52",
+        summary="docs",
+        description=None,
+        issue_type="Bug",
+        priority="P2",
+        reporter="r",
+    )
+    mock_extractor = MagicMock()
+    mock_extractor.extract.side_effect = RuntimeError("vision pipeline exploded")
+
+    story_json = '{"recommended_issue_type":"Story","confidence":0.75,"reason":"Docs."}'
+
+    def jira_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_jira_payload_for(issue))
+
+    def openrouter_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": story_json}}]},
+        )
+
+    audit = _RecordingAuditStore()
+    mock_tracer = MagicMock()
+    root_cm = MagicMock()
+    img_cm = MagicMock()
+    finish_img = MagicMock()
+    root_cm.__enter__ = MagicMock(return_value=None)
+    root_cm.__exit__ = MagicMock(return_value=False)
+    img_cm.__enter__ = MagicMock(return_value=finish_img)
+    img_cm.__exit__ = MagicMock(return_value=False)
+    mock_tracer.triage_issue_trace.return_value = root_cm
+    mock_tracer.image_context_extraction.return_value = img_cm
+
+    with httpx.Client(transport=httpx.MockTransport(jira_handler)) as j_client:
+        with httpx.Client(transport=httpx.MockTransport(openrouter_handler)) as o_client:
+            handler = TriageHandler(
+                allowed_projects=("TJC",),
+                fetcher=JiraIssueFetcher(settings, client=j_client),
+                inference=OpenRouterInferenceClient(settings, client=o_client),
+                policy=PolicyContext(
+                    bug_definition="bug",
+                    priority_definition="pri",
+                ),
+                executor=_NoOpExecutor(),
+                audit_store=audit,
+                image_context_extractor=mock_extractor,
+                inference_tracer=mock_tracer,
+                settings=settings,
+            )
+            sync_result = handler.run_sync(
+                issue_key="TJC-52",
+                project="TJC",
+                source="bug_created",
+                run_id="run-img-soft-fail",
+            )
+            outcome = sync_result.outcome
+
+    assert isinstance(outcome, TriageRecommendation)
+    assert outcome.recommended_issue_type == "Story"
+    img_events = [e for e in audit.events if isinstance(e, ImageContextExtractedAuditEvent)]
+    assert img_events == []
+    extraction = sync_result.image_extraction
+    assert extraction is not None
+    assert extraction.contexts == []
+    assert extraction.attachments_considered == 0
+    finish_img.assert_called_once_with()
 
 
 @pytest.mark.unit

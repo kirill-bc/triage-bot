@@ -48,6 +48,7 @@ def observability_status_summary(settings: AppSettings) -> dict[str, bool]:
         "langfuse_public_key_present": bool(pk),
         "langfuse_secret_key_present": bool(sk),
         "langfuse_base_url_configured": bool(bu),
+        "langfuse_prompt_management_enabled": settings.langfuse_prompt_management_enabled,
         "langfuse_inference_enabled": langfuse_inference_enabled,
         "langfuse_sdk_tracing_env_enabled": sdk_tracing_env,
         "otel_sdk_disabled": otel_disabled,
@@ -93,6 +94,7 @@ def build_triage_observability(settings: AppSettings) -> TriageObservability:
         langfuse_client,
         redact_model_input=settings.audit_redact_model_input,
         redact_model_output=settings.audit_redact_model_output,
+        redact_vision_transcript=settings.triage_audit_redact_image_transcript,
     )
 
     stores: list[AuditStore] = []

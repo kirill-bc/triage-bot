@@ -11,6 +11,7 @@ from triage_service.adapters.image_context_extractor import (
     ImageContextExtractor,
     NoOpImageContextExtractor,
     OpenRouterVisionImageContextExtractor,
+    _select_image_attachments,
 )
 from triage_service.adapters.jira_issue_fetcher import (
     AttachmentRef,
@@ -21,7 +22,45 @@ from triage_service.adapters.openrouter_inference_client import (
     OpenRouterCompletionResult,
     OpenRouterInferenceError,
 )
+from triage_service.core.settings import AppSettings
 from triage_service.observability.langfuse_inference_tracing import LangfuseInferenceTracer
+
+
+@pytest.fixture
+def settings(monkeypatch: pytest.MonkeyPatch) -> AppSettings:
+    monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
+    monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
+    return AppSettings()
+
+
+@pytest.mark.unit
+def test_select_image_attachments_keeps_unknown_size_before_known_large_when_capped() -> None:
+    attachments = [
+        AttachmentRef(
+            id="huge",
+            filename="huge.png",
+            mime_type="image/png",
+            size_bytes=9000,
+            inline=True,
+        ),
+        AttachmentRef(
+            id="unknown",
+            filename="shot.png",
+            mime_type="image/png",
+            size_bytes=None,
+            inline=True,
+        ),
+        AttachmentRef(
+            id="small",
+            filename="small.png",
+            mime_type="image/png",
+            size_bytes=50,
+            inline=True,
+        ),
+    ]
+    selected = _select_image_attachments(attachments, max_attachments=2)
+    assert [ref.id for ref in selected] == ["unknown", "huge"]
 
 
 @pytest.mark.unit
@@ -80,6 +119,7 @@ def vision_extractor_deps() -> tuple[MagicMock, MagicMock]:
 
 @pytest.mark.unit
 def test_vision_extractor_uses_attachment_mime_not_sniffed_bytes(
+    settings: AppSettings,
     vision_extractor_deps: tuple[MagicMock, MagicMock],
 ) -> None:
     jira_fetcher, inference = vision_extractor_deps
@@ -104,6 +144,7 @@ def test_vision_extractor_uses_attachment_mime_not_sniffed_bytes(
         ],
     )
     extractor = OpenRouterVisionImageContextExtractor(
+        settings=settings,
         jira_fetcher=jira_fetcher,
         inference_client=inference,
     )
@@ -115,6 +156,7 @@ def test_vision_extractor_uses_attachment_mime_not_sniffed_bytes(
 
 @pytest.mark.unit
 def test_vision_extractor_records_langfuse_generation_per_attachment(
+    settings: AppSettings,
     vision_extractor_deps: tuple[MagicMock, MagicMock],
 ) -> None:
     jira_fetcher, inference = vision_extractor_deps
@@ -148,6 +190,7 @@ def test_vision_extractor_records_langfuse_generation_per_attachment(
     mock_tracer.vision_generation.return_value = vision_cm
 
     extractor = OpenRouterVisionImageContextExtractor(
+        settings=settings,
         jira_fetcher=jira_fetcher,
         inference_client=inference,
         inference_tracer=mock_tracer,
@@ -169,6 +212,7 @@ def test_vision_extractor_records_langfuse_generation_per_attachment(
 
 @pytest.mark.unit
 def test_vision_extractor_returns_transcript_and_summary_on_success(
+    settings: AppSettings,
     vision_extractor_deps: tuple[MagicMock, MagicMock],
 ) -> None:
     jira_fetcher, inference = vision_extractor_deps
@@ -192,6 +236,7 @@ def test_vision_extractor_returns_transcript_and_summary_on_success(
         ],
     )
     extractor = OpenRouterVisionImageContextExtractor(
+        settings=settings,
         jira_fetcher=jira_fetcher,
         inference_client=inference,
         max_attachments=5,
@@ -213,6 +258,7 @@ def test_vision_extractor_returns_transcript_and_summary_on_success(
 
 @pytest.mark.unit
 def test_vision_extractor_uses_composed_prompts(
+    settings: AppSettings,
     vision_extractor_deps: tuple[MagicMock, MagicMock],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -223,11 +269,11 @@ def test_vision_extractor_uses_composed_prompts(
     )
     monkeypatch.setattr(
         "triage_service.adapters.image_context_extractor.compose_vision_system_prompt",
-        lambda: "CUSTOM SYSTEM",
+        lambda *, settings=None: "CUSTOM SYSTEM",
     )
     monkeypatch.setattr(
         "triage_service.adapters.image_context_extractor.compose_vision_user_instruction",
-        lambda issue: f"CUSTOM USER for {issue.issue_key}",
+        lambda issue, *, settings=None: f"CUSTOM USER for {issue.issue_key}",
     )
     issue = FetchedIssue(
         issue_key="TJC-10",
@@ -245,6 +291,7 @@ def test_vision_extractor_uses_composed_prompts(
         ],
     )
     extractor = OpenRouterVisionImageContextExtractor(
+        settings=settings,
         jira_fetcher=jira_fetcher,
         inference_client=inference,
         max_attachments=5,
@@ -258,6 +305,7 @@ def test_vision_extractor_uses_composed_prompts(
 
 @pytest.mark.unit
 def test_vision_extractor_user_message_includes_issue_context(
+    settings: AppSettings,
     vision_extractor_deps: tuple[MagicMock, MagicMock],
 ) -> None:
     jira_fetcher, inference = vision_extractor_deps
@@ -284,6 +332,7 @@ def test_vision_extractor_user_message_includes_issue_context(
         ],
     )
     extractor = OpenRouterVisionImageContextExtractor(
+        settings=settings,
         jira_fetcher=jira_fetcher,
         inference_client=inference,
         max_attachments=5,
@@ -299,6 +348,7 @@ def test_vision_extractor_user_message_includes_issue_context(
 
 @pytest.mark.unit
 def test_vision_extractor_sends_multimodal_message_with_data_url(
+    settings: AppSettings,
     vision_extractor_deps: tuple[MagicMock, MagicMock],
 ) -> None:
     jira_fetcher, inference = vision_extractor_deps
@@ -323,6 +373,7 @@ def test_vision_extractor_sends_multimodal_message_with_data_url(
         ],
     )
     extractor = OpenRouterVisionImageContextExtractor(
+        settings=settings,
         jira_fetcher=jira_fetcher,
         inference_client=inference,
         max_attachments=5,
@@ -343,6 +394,7 @@ def test_vision_extractor_sends_multimodal_message_with_data_url(
 
 @pytest.mark.unit
 def test_vision_extractor_processes_only_inline_images_from_description(
+    settings: AppSettings,
     vision_extractor_deps: tuple[MagicMock, MagicMock],
 ) -> None:
     jira_fetcher, inference = vision_extractor_deps
@@ -380,6 +432,7 @@ def test_vision_extractor_processes_only_inline_images_from_description(
         ],
     )
     extractor = OpenRouterVisionImageContextExtractor(
+        settings=settings,
         jira_fetcher=jira_fetcher,
         inference_client=inference,
         max_attachments=2,
@@ -393,6 +446,7 @@ def test_vision_extractor_processes_only_inline_images_from_description(
 
 @pytest.mark.unit
 def test_vision_extractor_skips_non_image_attachments(
+    settings: AppSettings,
     vision_extractor_deps: tuple[MagicMock, MagicMock],
 ) -> None:
     jira_fetcher, inference = vision_extractor_deps
@@ -423,6 +477,7 @@ def test_vision_extractor_skips_non_image_attachments(
         content=_vision_response("x", "y"),
     )
     extractor = OpenRouterVisionImageContextExtractor(
+        settings=settings,
         jira_fetcher=jira_fetcher,
         inference_client=inference,
         max_attachments=5,
@@ -436,6 +491,7 @@ def test_vision_extractor_skips_non_image_attachments(
 
 @pytest.mark.unit
 def test_vision_extractor_degrades_on_jira_fetch_failure(
+    settings: AppSettings,
     vision_extractor_deps: tuple[MagicMock, MagicMock],
 ) -> None:
     jira_fetcher, inference = vision_extractor_deps
@@ -459,6 +515,7 @@ def test_vision_extractor_degrades_on_jira_fetch_failure(
         ],
     )
     extractor = OpenRouterVisionImageContextExtractor(
+        settings=settings,
         jira_fetcher=jira_fetcher,
         inference_client=inference,
         max_attachments=5,
@@ -475,6 +532,7 @@ def test_vision_extractor_degrades_on_jira_fetch_failure(
 
 @pytest.mark.unit
 def test_vision_extractor_degrades_when_attachment_bytes_are_html(
+    settings: AppSettings,
     vision_extractor_deps: tuple[MagicMock, MagicMock],
 ) -> None:
     jira_fetcher, inference = vision_extractor_deps
@@ -495,6 +553,7 @@ def test_vision_extractor_degrades_when_attachment_bytes_are_html(
         ],
     )
     extractor = OpenRouterVisionImageContextExtractor(
+        settings=settings,
         jira_fetcher=jira_fetcher,
         inference_client=inference,
         max_attachments=5,
@@ -508,6 +567,7 @@ def test_vision_extractor_degrades_when_attachment_bytes_are_html(
 
 @pytest.mark.unit
 def test_vision_extractor_degrades_on_oversize_image(
+    settings: AppSettings,
     vision_extractor_deps: tuple[MagicMock, MagicMock],
 ) -> None:
     jira_fetcher, inference = vision_extractor_deps
@@ -528,6 +588,7 @@ def test_vision_extractor_degrades_on_oversize_image(
         ],
     )
     extractor = OpenRouterVisionImageContextExtractor(
+        settings=settings,
         jira_fetcher=jira_fetcher,
         inference_client=inference,
         max_attachments=5,
@@ -542,6 +603,7 @@ def test_vision_extractor_degrades_on_oversize_image(
 
 @pytest.mark.unit
 def test_vision_extractor_degrades_on_vision_api_failure(
+    settings: AppSettings,
     vision_extractor_deps: tuple[MagicMock, MagicMock],
 ) -> None:
     jira_fetcher, inference = vision_extractor_deps
@@ -566,6 +628,7 @@ def test_vision_extractor_degrades_on_vision_api_failure(
         ],
     )
     extractor = OpenRouterVisionImageContextExtractor(
+        settings=settings,
         jira_fetcher=jira_fetcher,
         inference_client=inference,
         max_attachments=5,
@@ -579,6 +642,7 @@ def test_vision_extractor_degrades_on_vision_api_failure(
 
 @pytest.mark.unit
 def test_vision_extractor_never_raises_when_one_of_two_images_fails(
+    settings: AppSettings,
     vision_extractor_deps: tuple[MagicMock, MagicMock],
 ) -> None:
     jira_fetcher, inference = vision_extractor_deps
@@ -616,6 +680,7 @@ def test_vision_extractor_never_raises_when_one_of_two_images_fails(
         ],
     )
     extractor = OpenRouterVisionImageContextExtractor(
+        settings=settings,
         jira_fetcher=jira_fetcher,
         inference_client=inference,
         max_attachments=5,

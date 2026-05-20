@@ -599,6 +599,27 @@ def test_fetch_attachment_bytes_retries_on_transient_503_then_succeeds(
 
 
 @pytest.mark.unit
+def test_fetch_attachment_bytes_raises_on_redirect_without_binary_body(
+    jira_app_settings: AppSettings,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        _ = request
+        return httpx.Response(
+            303,
+            headers={"Location": "https://media-cdn.example/att-1"},
+            text="",
+        )
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        fetcher = JiraIssueFetcher(jira_app_settings, client=client)
+        with pytest.raises(JiraIssueFetchError) as exc:
+            fetcher.fetch_attachment_bytes("att-1", run_id="run-test")
+    assert exc.value.http_status == 303
+    assert "redirect" in str(exc.value).lower()
+
+
+@pytest.mark.unit
 def test_fetch_attachment_bytes_raises_on_http_error(jira_app_settings: AppSettings) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(404, text="Attachment not found")

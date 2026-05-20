@@ -10,7 +10,7 @@ from triage_service.api.triage_api import (
     preview_request_body_for_log,
     triage_inbound_debug_enabled,
 )
-from triage_service.core.triage_fallback import TriageFailure
+from triage_service.core.triage_handler import TriageSyncResult
 from triage_service.core.triage_recommendation_parser import TriageRecommendation
 
 
@@ -55,13 +55,15 @@ class _StubRunner:
         source: str,
         *,
         run_id: str,
-    ) -> TriageRecommendation | TriageFailure:
+    ) -> TriageSyncResult:
         _ = run_id
-        return TriageRecommendation(
-            recommended_issue_type="Story",
-            recommended_priority=None,
-            confidence=0.5,
-            reason="stub",
+        return TriageSyncResult(
+            outcome=TriageRecommendation(
+                recommended_issue_type="Story",
+                recommended_priority=None,
+                confidence=0.5,
+                reason="stub",
+            ),
         )
 
 

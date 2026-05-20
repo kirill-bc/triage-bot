@@ -7,6 +7,8 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+
+from triage_service.core.settings import AppSettings
 from triage_service.adapters.image_context_extractor import ImageContext
 from triage_service.adapters.jira_issue_fetcher import FetchedIssue
 from triage_service.core.policy_context import PolicyContext
@@ -20,8 +22,18 @@ from triage_service.core.prompt_composer import (
 )
 
 
+@pytest.fixture
+def settings(monkeypatch: pytest.MonkeyPatch) -> AppSettings:
+    monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
+    monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
+    return AppSettings()
+
+
 @pytest.mark.unit
-def test_classification_prompt_includes_bug_policy_and_issue_excludes_priority_text() -> None:
+def test_classification_prompt_includes_bug_policy_and_issue_excludes_priority_text(
+    settings: AppSettings,
+) -> None:
     policy = PolicyContext(
         bug_definition="BUGPOLICY_UNIQUE_ALPHA",
         priority_definition="PRIORITYPOLICY_UNIQUE_BETA",
@@ -35,7 +47,7 @@ def test_classification_prompt_includes_bug_policy_and_issue_excludes_priority_t
         priority="P2",
         reporter="support@example.com",
     )
-    text = compose_classification_prompt(policy, issue)
+    text = compose_classification_prompt(policy, issue, settings=settings)
     assert "BUGPOLICY_UNIQUE_ALPHA" in text
     assert "TJC-1" in text and "Login fails" in text
     assert "PRIORITYPOLICY_UNIQUE_BETA" not in text
@@ -49,7 +61,9 @@ def test_classification_prompt_includes_bug_policy_and_issue_excludes_priority_t
 
 
 @pytest.mark.unit
-def test_priority_prompt_includes_priority_policy_and_issue_excludes_bug_text() -> None:
+def test_priority_prompt_includes_priority_policy_and_issue_excludes_bug_text(
+    settings: AppSettings,
+) -> None:
     policy = PolicyContext(
         bug_definition="BUGPOLICY_UNIQUE_GAMMA",
         priority_definition="PRIORITYPOLICY_UNIQUE_DELTA",
@@ -62,7 +76,7 @@ def test_priority_prompt_includes_priority_policy_and_issue_excludes_bug_text() 
         priority=None,
         reporter="Jane Doe",
     )
-    text = compose_priority_prompt(policy, issue)
+    text = compose_priority_prompt(policy, issue, settings=settings)
     assert "PRIORITYPOLICY_UNIQUE_DELTA" in text
     assert "BC-99" in text and "Crash on save" in text
     assert "BUGPOLICY_UNIQUE_GAMMA" not in text
@@ -74,7 +88,9 @@ def test_priority_prompt_includes_priority_policy_and_issue_excludes_bug_text() 
 
 
 @pytest.mark.unit
-def test_issue_block_omits_attached_images_when_no_contexts() -> None:
+def test_issue_block_omits_attached_images_when_no_contexts(
+    settings: AppSettings,
+) -> None:
     issue = FetchedIssue(
         issue_key="TJC-10",
         summary="Login error",
@@ -89,7 +105,9 @@ def test_issue_block_omits_attached_images_when_no_contexts() -> None:
 
 
 @pytest.mark.unit
-def test_issue_block_renders_attached_images_summary_without_transcript() -> None:
+def test_issue_block_renders_attached_images_summary_without_transcript(
+    settings: AppSettings,
+) -> None:
     issue = FetchedIssue(
         issue_key="TJC-11",
         summary="UI broken",
@@ -115,7 +133,9 @@ def test_issue_block_renders_attached_images_summary_without_transcript() -> Non
 
 
 @pytest.mark.unit
-def test_issue_block_renders_soft_failure_placeholder_for_extraction_errors() -> None:
+def test_issue_block_renders_soft_failure_placeholder_for_extraction_errors(
+    settings: AppSettings,
+) -> None:
     issue = FetchedIssue(
         issue_key="TJC-12",
         summary="Crash",
@@ -135,7 +155,9 @@ def test_issue_block_renders_soft_failure_placeholder_for_extraction_errors() ->
 
 
 @pytest.mark.unit
-def test_classification_prompt_includes_attached_images_from_image_contexts() -> None:
+def test_classification_prompt_includes_attached_images_from_image_contexts(
+    settings: AppSettings,
+) -> None:
     policy = PolicyContext(bug_definition="BUG", priority_definition="PRI")
     issue = FetchedIssue(
         issue_key="TJC-13",
@@ -151,14 +173,16 @@ def test_classification_prompt_includes_attached_images_from_image_contexts() ->
             summary="White page with 404 heading.",
         ),
     ]
-    text = compose_classification_prompt(policy, issue, image_contexts=contexts)
+    text = compose_classification_prompt(policy, issue, settings=settings, image_contexts=contexts)
     assert "Attached images:" in text
     assert "Summary:\nWhite page with 404 heading." in text
     assert "Transcript:" not in text
 
 
 @pytest.mark.unit
-def test_classification_prompt_shows_placeholder_when_description_and_priority_missing() -> None:
+def test_classification_prompt_shows_placeholder_when_description_and_priority_missing(
+    settings: AppSettings,
+) -> None:
     policy = PolicyContext(bug_definition="x", priority_definition="y")
     issue = FetchedIssue(
         issue_key="K-1",
@@ -169,7 +193,7 @@ def test_classification_prompt_shows_placeholder_when_description_and_priority_m
         priority=None,
         reporter="r",
     )
-    text = compose_classification_prompt(policy, issue)
+    text = compose_classification_prompt(policy, issue, settings=settings)
     assert "Current Jira priority: (none)" in text
     assert "Description:\n(none)" in text
     assert "Reproduction steps:\n(none)" in text
@@ -177,7 +201,8 @@ def test_classification_prompt_shows_placeholder_when_description_and_priority_m
 
 @pytest.mark.unit
 def test_prompt_composer_loads_templates_from_external_json_path(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, settings: AppSettings,
+    monkeypatch: pytest.MonkeyPatch
 ) -> None:
     template_path = tmp_path / "prompt_templates.json"
     template_path.write_text(
@@ -215,10 +240,10 @@ def test_prompt_composer_loads_templates_from_external_json_path(
         reporter="agent@example.com",
     )
 
-    classification_text = module.compose_classification_prompt(policy, issue)
-    priority_text = module.compose_priority_prompt(policy, issue)
-    classification_system = module.compose_classification_system_prompt()
-    priority_system = module.compose_priority_system_prompt()
+    classification_text = module.compose_classification_prompt(policy, issue, settings=settings)
+    priority_text = module.compose_priority_prompt(policy, issue, settings=settings)
+    classification_system = module.compose_classification_system_prompt(settings=settings)
+    priority_system = module.compose_priority_system_prompt(settings=settings)
 
     assert classification_text.startswith("CLASSIFY PREFIX")
     assert "CUSTOM_REASON_BLOCK" in classification_text
@@ -232,14 +257,15 @@ def test_prompt_composer_loads_templates_from_external_json_path(
 
 @pytest.mark.unit
 def test_system_prompts_fall_back_to_local_templates_when_langfuse_not_configured(
+    settings: AppSettings,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("LANGFUSE_PUBLIC_KEY", raising=False)
     monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
     monkeypatch.delenv("TRIAGE_PROMPT_TEMPLATES_PATH", raising=False)
     module = importlib.reload(sys.modules["triage_service.core.prompt_composer"])
-    classification_system = module.compose_classification_system_prompt()
-    priority_system = module.compose_priority_system_prompt()
+    classification_system = module.compose_classification_system_prompt(settings=settings)
+    priority_system = module.compose_priority_system_prompt(settings=settings)
     assert "single JSON object only" in classification_system
     assert "recommended_issue_type" in classification_system
     assert "TriageBot" in classification_system
@@ -250,6 +276,7 @@ def test_system_prompts_fall_back_to_local_templates_when_langfuse_not_configure
 
 @pytest.mark.unit
 def test_system_prompts_use_langfuse_when_configured(
+    settings: AppSettings,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
@@ -282,13 +309,15 @@ def test_system_prompts_use_langfuse_when_configured(
         "triage_service.core.langfuse_prompt_config.get_client",
         lambda: fake_client,
     )
+    settings = AppSettings()
 
-    assert compose_classification_system_prompt() == "LF CLASSIFICATION SYSTEM"
-    assert compose_priority_system_prompt() == "LF PRIORITY SYSTEM"
+    assert compose_classification_system_prompt(settings=settings) == "LF CLASSIFICATION SYSTEM"
+    assert compose_priority_system_prompt(settings=settings) == "LF PRIORITY SYSTEM"
 
 
 @pytest.mark.unit
 def test_reason_for_humans_uses_langfuse_when_configured(
+    settings: AppSettings,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
@@ -315,6 +344,7 @@ def test_reason_for_humans_uses_langfuse_when_configured(
         "triage_service.core.langfuse_prompt_config.get_client",
         lambda: fake_client,
     )
+    settings = AppSettings()
 
     policy = PolicyContext(bug_definition="BUG_RULE", priority_definition="P_RULE")
     issue = FetchedIssue(
@@ -326,7 +356,7 @@ def test_reason_for_humans_uses_langfuse_when_configured(
         reporter="agent@example.com",
     )
 
-    text = compose_classification_prompt(policy, issue)
+    text = compose_classification_prompt(policy, issue, settings=settings)
 
     assert "LANGFUSE REASON BLOCK" in text
     assert "BUG_RULE" in text
@@ -335,6 +365,7 @@ def test_reason_for_humans_uses_langfuse_when_configured(
 
 @pytest.mark.unit
 def test_classification_prompt_uses_langfuse_prompt_template_when_configured(
+    settings: AppSettings,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
@@ -361,6 +392,7 @@ def test_classification_prompt_uses_langfuse_prompt_template_when_configured(
         "triage_service.core.langfuse_prompt_config.get_client",
         lambda: fake_client,
     )
+    settings = AppSettings()
 
     policy = PolicyContext(bug_definition="unused", priority_definition="unused")
     issue = FetchedIssue(
@@ -373,7 +405,7 @@ def test_classification_prompt_uses_langfuse_prompt_template_when_configured(
         reporter="triage@example.com",
     )
 
-    prompt = compose_classification_prompt(policy, issue)
+    prompt = compose_classification_prompt(policy, issue, settings=settings)
 
     assert prompt == "compiled-from-langfuse"
     fake_client.get_prompt.assert_called_once()
@@ -385,6 +417,7 @@ def test_classification_prompt_uses_langfuse_prompt_template_when_configured(
 
 @pytest.mark.unit
 def test_priority_prompt_uses_langfuse_with_issue_block_only(
+    settings: AppSettings,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
@@ -398,6 +431,7 @@ def test_priority_prompt_uses_langfuse_with_issue_block_only(
         "triage_service.core.langfuse_prompt_config.get_client",
         lambda: fake_client,
     )
+    settings = AppSettings()
 
     policy = PolicyContext(bug_definition="unused", priority_definition="unused")
     issue = FetchedIssue(
@@ -409,7 +443,7 @@ def test_priority_prompt_uses_langfuse_with_issue_block_only(
         reporter="ops@example.com",
     )
 
-    prompt = compose_priority_prompt(policy, issue)
+    prompt = compose_priority_prompt(policy, issue, settings=settings)
 
     assert prompt == "priority-from-langfuse"
     compile_kwargs = fake_priority.compile.call_args.kwargs
@@ -419,6 +453,7 @@ def test_priority_prompt_uses_langfuse_with_issue_block_only(
 
 @pytest.mark.unit
 def test_priority_prompt_falls_back_to_local_templates_when_langfuse_fetch_fails(
+    settings: AppSettings,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
@@ -442,7 +477,7 @@ def test_priority_prompt_falls_back_to_local_templates_when_langfuse_fetch_fails
         reporter="triage@example.com",
     )
 
-    prompt = compose_priority_prompt(policy, issue)
+    prompt = compose_priority_prompt(policy, issue, settings=settings)
 
     assert "P_DEF_FALLBACK" in prompt
     assert "TJC-322" in prompt

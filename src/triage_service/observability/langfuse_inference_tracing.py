@@ -137,10 +137,12 @@ class LangfuseInferenceTracer:
         *,
         redact_model_input: bool = False,
         redact_model_output: bool = True,
+        redact_vision_transcript: bool = True,
     ) -> None:
         self._client = client
         self._redact_model_input = redact_model_input
         self._redact_model_output = redact_model_output
+        self._redact_vision_transcript = redact_vision_transcript
 
     def flush(self) -> None:
         """Best-effort flush for short-lived processes (CLI, tests, serverless)."""
@@ -272,25 +274,14 @@ class LangfuseInferenceTracer:
         if self._client is None:
             yield noop_finish
             return
-        traced_input = sanitize_vision_messages(
-            messages,
-            redact=self._redact_model_input,
-        )
-        # Do not truncate vision inputs when storing full traces: mid-string clipping
-        # corrupts data: base64 URLs and Langfuse's media parser then errors.
-        input_trunc = False
-        if self._redact_model_input:
-            traced_input, input_trunc = truncate_logging_value(
-                traced_input,
-                max_string_chars=DEFAULT_MAX_LOG_STRING_CHARS,
-            )
+        # Keep issue context (description, repro steps) verbatim in Langfuse; only
+        # screenshot bytes are summarized. Transcript redaction is on generation output.
+        traced_input = sanitize_vision_messages(messages, redact=False)
         gen_metadata: dict[str, Any] = {
             "operation": "inference_vision",
             "attachment_id": attachment_id,
             "filename": filename,
         }
-        if input_trunc:
-            gen_metadata["log_payload_truncated"] = True
         try:
             trace_context = _safe_current_trace_context(self._client)
             with _start_current_observation(
@@ -315,7 +306,7 @@ class LangfuseInferenceTracer:
                         gen,
                         raw,
                         meta,
-                        redact_model_output=self._redact_model_output,
+                        redact_model_output=self._redact_vision_transcript,
                         usage_details=usage_details,
                         cost_details=cost_details,
                     )

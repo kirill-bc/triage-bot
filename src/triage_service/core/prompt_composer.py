@@ -17,15 +17,9 @@ from typing import TypedDict
 from triage_service.adapters.image_context_extractor import ImageContext
 from triage_service.adapters.jira_issue_fetcher import FetchedIssue
 from triage_service.core.issue_text_block import format_issue_text_block
-from triage_service.core.langfuse_prompt_config import (
-    classification_system_prompt_name,
-    classification_user_prompt_name,
-    fetch_langfuse_text_prompt,
-    priority_system_prompt_name,
-    priority_user_prompt_name,
-    reason_for_humans_prompt_name,
-)
+from triage_service.core.langfuse_prompt_config import fetch_langfuse_text_prompt
 from triage_service.core.policy_context import PolicyContext
+from triage_service.core.settings import AppSettings
 
 
 class _PromptTemplates(TypedDict):
@@ -69,24 +63,33 @@ def _load_prompt_templates() -> _PromptTemplates:
 _PROMPT_TEMPLATES = _load_prompt_templates()
 
 
-def _reason_for_humans_text() -> str:
-    langfuse_text = fetch_langfuse_text_prompt(reason_for_humans_prompt_name())
+def _reason_for_humans_text(settings: AppSettings) -> str:
+    langfuse_text = fetch_langfuse_text_prompt(
+        settings,
+        settings.triage_langfuse_reason_for_humans_prompt_name,
+    )
     if langfuse_text is not None:
         return langfuse_text
     return _PROMPT_TEMPLATES["reason_for_humans"]
 
 
-def compose_classification_system_prompt() -> str:
+def compose_classification_system_prompt(*, settings: AppSettings) -> str:
     """System prompt for the classification inference step."""
-    langfuse_text = fetch_langfuse_text_prompt(classification_system_prompt_name())
+    langfuse_text = fetch_langfuse_text_prompt(
+        settings,
+        settings.triage_langfuse_classification_system_prompt_name,
+    )
     if langfuse_text is not None:
         return langfuse_text
     return _PROMPT_TEMPLATES["classification_system_prompt"]
 
 
-def compose_priority_system_prompt() -> str:
+def compose_priority_system_prompt(*, settings: AppSettings) -> str:
     """System prompt for the priority inference step."""
-    langfuse_text = fetch_langfuse_text_prompt(priority_system_prompt_name())
+    langfuse_text = fetch_langfuse_text_prompt(
+        settings,
+        settings.triage_langfuse_priority_system_prompt_name,
+    )
     if langfuse_text is not None:
         return langfuse_text
     return _PROMPT_TEMPLATES["priority_system_prompt"]
@@ -124,6 +127,7 @@ def compose_classification_prompt(
     policy: PolicyContext,
     issue: FetchedIssue,
     *,
+    settings: AppSettings,
     image_contexts: Sequence[ImageContext] | None = None,
 ) -> str:
     """User/model input for Story vs Bug classification.
@@ -133,13 +137,14 @@ def compose_classification_prompt(
     """
     issue_block = _issue_block(issue, image_contexts=image_contexts)
     langfuse_prompt = fetch_langfuse_text_prompt(
-        classification_user_prompt_name(),
+        settings,
+        settings.triage_langfuse_classification_prompt_name,
         issue_block=issue_block,
     )
     if langfuse_prompt is not None:
         return langfuse_prompt
     return _PROMPT_TEMPLATES["classification_template"].format(
-        reason_for_humans=_reason_for_humans_text(),
+        reason_for_humans=_reason_for_humans_text(settings),
         bug_definition=policy.bug_definition,
         issue_block=issue_block,
     )
@@ -149,6 +154,7 @@ def compose_priority_prompt(
     policy: PolicyContext,
     issue: FetchedIssue,
     *,
+    settings: AppSettings,
     image_contexts: Sequence[ImageContext] | None = None,
 ) -> str:
     """P0–P4 user input on the Bug path (after classification).
@@ -158,13 +164,14 @@ def compose_priority_prompt(
     """
     issue_block = _issue_block(issue, image_contexts=image_contexts)
     langfuse_prompt = fetch_langfuse_text_prompt(
-        priority_user_prompt_name(),
+        settings,
+        settings.triage_langfuse_priority_prompt_name,
         issue_block=issue_block,
     )
     if langfuse_prompt is not None:
         return langfuse_prompt
     return _PROMPT_TEMPLATES["priority_template"].format(
-        reason_for_humans=_reason_for_humans_text(),
+        reason_for_humans=_reason_for_humans_text(settings),
         priority_definition=policy.priority_definition,
         issue_block=issue_block,
     )

@@ -105,13 +105,15 @@ def test_handler_story_path_calls_inference_once_and_returns_recommendation(
                 inference=inference,
                 policy=_policy(),
                 executor=executor,
+                settings=settings,
             )
-            outcome = handler.run_sync(
+            sync_result = handler.run_sync(
                 issue_key="TJC-9",
                 project="TJC",
                 source="bug_created",
                 run_id="run-correlation-1",
             )
+            outcome = sync_result.outcome
 
     assert isinstance(outcome, TriageRecommendation)
     assert outcome.recommended_issue_type == "Story"
@@ -167,13 +169,15 @@ def test_handler_bug_path_calls_inference_twice_and_merges_priority(
                 inference=inference,
                 policy=_policy(),
                 executor=executor,
+                settings=settings,
             )
-            outcome = handler.run_sync(
+            sync_result = handler.run_sync(
                 issue_key="TJC-10",
                 project="TJC",
                 source="bug_created",
                 run_id="run-correlation-2",
             )
+            outcome = sync_result.outcome
 
     assert isinstance(outcome, TriageRecommendation)
     assert outcome.recommended_issue_type == "Bug"
@@ -234,6 +238,7 @@ def test_handler_emits_stage_timing_for_fetch_model_and_executor(
                 inference=inference,
                 policy=_policy(),
                 executor=executor,
+                settings=settings,
             )
             _ = handler.run_sync(
                 issue_key="TJC-12",
@@ -291,13 +296,15 @@ def test_run_sync_on_fetched_story_path_skips_jira_fetch(
                 inference=inference,
                 policy=_policy(),
                 executor=executor,
+                settings=settings,
             )
-            outcome = handler.run_sync_on_fetched(
+            sync_result = handler.run_sync_on_fetched(
                 issue=issue,
                 project="TJC",
                 source="manual_trigger",
                 run_id="run-correlation-3",
             )
+            outcome = sync_result.outcome
 
     assert isinstance(outcome, TriageRecommendation)
     assert outcome.recommended_issue_type == "Story"
@@ -330,13 +337,15 @@ def test_handler_rejects_project_not_in_allowlist_without_fetch(
                 inference=inference,
                 policy=_policy(),
                 executor=executor,
+                settings=settings,
             )
-            outcome = handler.run_sync(
+            sync_result = handler.run_sync(
                 issue_key="XX-1",
                 project="XX",
                 source="bug_created",
                 run_id="run-correlation-4",
             )
+            outcome = sync_result.outcome
 
     assert isinstance(outcome, TriageFailure)
     assert outcome.category == "project_not_allowed"
@@ -372,13 +381,15 @@ def test_handler_passes_triage_failure_to_executor_on_jira_error(
                 inference=inference,
                 policy=_policy(),
                 executor=executor,
+                settings=settings,
             )
-            outcome = handler.run_sync(
+            sync_result = handler.run_sync(
                 issue_key="TJC-1",
                 project="TJC",
                 source="bug_created",
                 run_id="run-correlation-5",
             )
+            outcome = sync_result.outcome
 
     assert isinstance(outcome, TriageFailure)
     assert outcome.category == "jira_fetch_failed"
@@ -451,6 +462,7 @@ def test_handler_bug_path_emits_classification_priority_and_triage_completed_aud
                 policy=_policy(),
                 executor=executor,
                 audit_store=audit,
+                settings=settings,
             )
             _ = handler.run_sync(
                 issue_key="TJC-10",
@@ -517,6 +529,7 @@ def test_handler_story_path_emits_classification_and_triage_completed_without_pr
                 policy=_policy(),
                 executor=executor,
                 audit_store=audit,
+                settings=settings,
             )
             _ = handler.run_sync(
                 issue_key="TJC-9",
@@ -560,13 +573,15 @@ def test_handler_jira_fetch_failure_emits_triage_failed_audit_with_http_telemetr
                 policy=_policy(),
                 executor=executor,
                 audit_store=audit,
+                settings=settings,
             )
-            outcome = handler.run_sync(
+            sync_result = handler.run_sync(
                 issue_key="TJC-1",
                 project="TJC",
                 source="bug_created",
                 run_id="run-audit-fail",
             )
+            outcome = sync_result.outcome
 
     assert isinstance(outcome, TriageFailure)
     assert len(audit.events) == 1
@@ -620,13 +635,15 @@ def test_handler_openrouter_failure_emits_audit_with_resilience_telemetry_and_lo
                 policy=_policy(),
                 executor=executor,
                 audit_store=audit,
+                settings=settings,
             )
-            outcome = handler.run_sync(
+            sync_result = handler.run_sync(
                 issue_key="TJC-1",
                 project="TJC",
                 source="bug_created",
                 run_id="run-or-fail",
             )
+            outcome = sync_result.outcome
 
     assert isinstance(outcome, TriageFailure)
     assert outcome.category == "inference_failed"
@@ -654,12 +671,13 @@ def test_build_default_triage_handler_local_mock_mode_skips_external_calls(
     monkeypatch.delenv("JIRA_USER_EMAIL", raising=False)
 
     runner = build_default_triage_handler()
-    outcome = runner.run_sync(
+    sync_result = runner.run_sync(
         issue_key="TJC-123",
         project="TJC",
         source="manual_trigger",
         run_id="local-mock-run",
     )
+    outcome = sync_result.outcome
 
     assert isinstance(outcome, TriageRecommendation)
     assert outcome.recommended_issue_type == "Story"

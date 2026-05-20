@@ -435,7 +435,7 @@ def test_build_langfuse_inference_tracer_noop_without_keys() -> None:
 
 
 @pytest.mark.unit
-def test_tracer_vision_generation_keeps_image_when_redact_input_false() -> None:
+def test_tracer_vision_generation_always_redacts_image_bytes_when_redact_input_false() -> None:
     gen_obs = MagicMock()
 
     @contextmanager
@@ -445,7 +445,12 @@ def test_tracer_vision_generation_keeps_image_when_redact_input_false() -> None:
 
     client = MagicMock()
     client.start_as_current_observation.side_effect = [gen_ctx()]
-    tracer = LangfuseInferenceTracer(client, redact_model_input=False, redact_model_output=False)
+    tracer = LangfuseInferenceTracer(
+        client,
+        redact_model_input=False,
+        redact_model_output=False,
+        redact_vision_transcript=False,
+    )
     huge_b64 = "B" * 20_000
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": "vision system"},
@@ -468,14 +473,106 @@ def test_tracer_vision_generation_keeps_image_when_redact_input_false() -> None:
         attachment_id="att-1",
         filename="screen.png",
     ) as finish:
-        finish("ok", {})
+        finish("TRANSCRIPT:\nsecret", {})
 
     gen_call = client.start_as_current_observation.call_args
     traced = gen_call.kwargs["input"]
+    assert traced[1]["content"][0]["text"] == "user instruction"
     image_url = traced[1]["content"][1]["image_url"]["url"]
-    assert huge_b64 in image_url
-    assert "\u2026" not in image_url
+    assert huge_b64 not in image_url
+    assert f"base64_len={len(huge_b64)}" in image_url
     assert gen_call.kwargs["metadata"].get("log_payload_truncated") is not True
+    assert "TRANSCRIPT:" in gen_obs.update.call_args.kwargs["output"]
+
+
+@pytest.mark.unit
+def test_tracer_vision_generation_redacts_transcript_when_redact_vision_transcript_true() -> (
+    None
+):
+    gen_obs = MagicMock()
+
+    @contextmanager
+    def gen_ctx(**kwargs: Any) -> Any:
+        _ = kwargs
+        yield gen_obs
+
+    client = MagicMock()
+    client.start_as_current_observation.side_effect = [gen_ctx()]
+    tracer = LangfuseInferenceTracer(
+        client,
+        redact_model_input=False,
+        redact_model_output=False,
+        redact_vision_transcript=True,
+    )
+    messages: list[dict[str, Any]] = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,QUJDRA=="},
+                },
+            ],
+        },
+    ]
+
+    with tracer.vision_generation(
+        model="m",
+        messages=messages,
+        model_parameters={},
+        attachment_id="att-1",
+        filename="screen.png",
+    ) as finish:
+        finish("TRANSCRIPT:\nsecret email@corp.com", {})
+
+    output = gen_obs.update.call_args.kwargs["output"]
+    assert output.startswith("[REDACTED] len=")
+    assert output != "TRANSCRIPT:\nsecret email@corp.com"
+    assert gen_obs.update.call_args.kwargs["metadata"]["redacted_output"] is True
+
+
+@pytest.mark.unit
+def test_tracer_vision_preserves_issue_description_when_redact_model_input_true() -> None:
+    gen_obs = MagicMock()
+
+    @contextmanager
+    def gen_ctx(**kwargs: Any) -> Any:
+        _ = kwargs
+        yield gen_obs
+
+    client = MagicMock()
+    client.start_as_current_observation.side_effect = [gen_ctx()]
+    tracer = LangfuseInferenceTracer(
+        client,
+        redact_model_input=True,
+        redact_vision_transcript=True,
+    )
+    description = "Description:\nCannot export CSV from dashboard"
+    messages: list[dict[str, Any]] = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": f"## Issue context\n{description}"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,QUJDRA=="},
+                },
+            ],
+        },
+    ]
+
+    with tracer.vision_generation(
+        model="m",
+        messages=messages,
+        model_parameters={},
+        attachment_id="att-1",
+        filename="screen.png",
+    ) as finish:
+        finish("TRANSCRIPT:\nExport failed", {})
+
+    traced = client.start_as_current_observation.call_args.kwargs["input"]
+    assert description in traced[0]["content"][0]["text"]
+    assert "base64_len=8" in traced[0]["content"][1]["image_url"]["url"]
 
 
 @pytest.mark.unit
@@ -551,7 +648,7 @@ def test_tracer_records_vision_generation_with_redacted_image_payload() -> None:
     assert gen_call.kwargs["model"] == "google/gemini-2.0-flash-001"
     traced = gen_call.kwargs["input"]
     assert traced[0]["content"] == "vision system"
-    assert traced[1]["content"][0]["text"].startswith("[REDACTED] len=")
+    assert traced[1]["content"][0]["text"] == "describe screenshot"
     assert "base64_len=8" in traced[1]["content"][1]["image_url"]["url"]
     assert gen_call.kwargs["metadata"]["attachment_id"] == "att-1"
     gen_obs.update.assert_called_once()

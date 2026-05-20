@@ -119,6 +119,7 @@ def _build_handler(
         policy=policy,
         executor=NoOpTriageActionExecutor(),
         image_context_extractor=image_extractor,
+        settings=settings,
     )
 
 
@@ -291,7 +292,7 @@ def _run_for_model(
                     image_extraction.contexts if image_extraction is not None else None
                 ),
                 image_extraction=image_extraction,
-            )
+            ).outcome
             elapsed_ms = (time.perf_counter() - t0) * 1000.0
             total_latency += elapsed_ms
             sc = score_triage_outcome(row, issue, outcome)

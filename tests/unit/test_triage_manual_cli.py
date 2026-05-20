@@ -13,6 +13,7 @@ from triage_service.adapters.image_context_extractor import (
     ImageContextExtractionResult,
 )
 from triage_service.core.triage_fallback import TriageFailure, fallback_for_exception
+from triage_service.core.triage_handler import TriageSyncResult
 from triage_service.core.triage_recommendation_parser import TriageRecommendation
 
 
@@ -63,17 +64,19 @@ def test_run_cli_triage_passes_manual_cli_source_to_runner() -> None:
             source: str,
             *,
             run_id: str,
-        ) -> TriageRecommendation | TriageFailure:
+        ) -> TriageSyncResult:
             calls.append((issue_key, project, source, run_id))
-            return TriageRecommendation(
-                recommended_issue_type="Story",
-                recommended_priority=None,
-                confidence=0.9,
-                reason="stub",
+            return TriageSyncResult(
+                outcome=TriageRecommendation(
+                    recommended_issue_type="Story",
+                    recommended_priority=None,
+                    confidence=0.9,
+                    reason="stub",
+                ),
             )
 
-    outcome = run_cli_triage("TJC-7", runner=_RecordingRunner())
-    assert isinstance(outcome, TriageRecommendation)
+    result = run_cli_triage("TJC-7", runner=_RecordingRunner())
+    assert isinstance(result.outcome, TriageRecommendation)
     assert calls[0][:3] == ("TJC-7", "TJC", "manual_trigger")
     uuid.UUID(calls[0][3])
 
@@ -92,13 +95,15 @@ def test_run_cli_triage_calls_flush_inference_telemetry_when_runner_exposes_it()
             source: str,
             *,
             run_id: str,
-        ) -> TriageRecommendation | TriageFailure:
+        ) -> TriageSyncResult:
             _ = (issue_key, project, source, run_id)
-            return TriageRecommendation(
-                recommended_issue_type="Story",
-                recommended_priority=None,
-                confidence=0.5,
-                reason="flush stub",
+            return TriageSyncResult(
+                outcome=TriageRecommendation(
+                    recommended_issue_type="Story",
+                    recommended_priority=None,
+                    confidence=0.5,
+                    reason="flush stub",
+                ),
             )
 
         def flush_inference_telemetry(self) -> None:
@@ -125,12 +130,12 @@ def test_run_cli_triage_uses_explicit_project_when_given() -> None:
             source: str,
             *,
             run_id: str,
-        ) -> TriageRecommendation | TriageFailure:
+        ) -> TriageSyncResult:
             calls.append((issue_key, project, source, run_id))
-            return fallback_for_exception(RuntimeError("x"))
+            return TriageSyncResult(outcome=fallback_for_exception(RuntimeError("x")))
 
-    outcome = run_cli_triage("TJC-7", project="BC", runner=_RecordingRunner())
-    assert isinstance(outcome, TriageFailure)
+    result = run_cli_triage("TJC-7", project="BC", runner=_RecordingRunner())
+    assert isinstance(result.outcome, TriageFailure)
     assert calls[0][:3] == ("TJC-7", "BC", "manual_trigger")
     uuid.UUID(calls[0][3])
 
@@ -224,8 +229,6 @@ def test_main_json_includes_image_context_summary_from_handler(
     )
 
     class _RunnerWithImageExtraction:
-        last_image_extraction = extraction
-
         def run_sync(
             self,
             issue_key: str,
@@ -233,13 +236,16 @@ def test_main_json_includes_image_context_summary_from_handler(
             source: str,
             *,
             run_id: str,
-        ) -> TriageRecommendation:
+        ) -> TriageSyncResult:
             _ = (issue_key, project, source, run_id)
-            return TriageRecommendation(
-                recommended_issue_type="Bug",
-                recommended_priority="P2",
-                confidence=0.8,
-                reason="vision-assisted",
+            return TriageSyncResult(
+                outcome=TriageRecommendation(
+                    recommended_issue_type="Bug",
+                    recommended_priority="P2",
+                    confidence=0.8,
+                    reason="vision-assisted",
+                ),
+                image_extraction=extraction,
             )
 
         def flush_inference_telemetry(self) -> None:
@@ -279,13 +285,15 @@ def test_main_json_reports_image_context_disabled(
             source: str,
             *,
             run_id: str,
-        ) -> TriageRecommendation:
+        ) -> TriageSyncResult:
             _ = (issue_key, project, source, run_id)
-            return TriageRecommendation(
-                recommended_issue_type="Story",
-                recommended_priority=None,
-                confidence=0.5,
-                reason="text only",
+            return TriageSyncResult(
+                outcome=TriageRecommendation(
+                    recommended_issue_type="Story",
+                    recommended_priority=None,
+                    confidence=0.5,
+                    reason="text only",
+                ),
             )
 
         def flush_inference_telemetry(self) -> None:

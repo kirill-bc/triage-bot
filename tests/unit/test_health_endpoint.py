@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from triage_service.api.triage_api import create_app
+from triage_service.core.triage_handler import TriageSyncResult
 from triage_service.core.triage_recommendation_parser import TriageRecommendation
 
 
@@ -19,13 +20,15 @@ class _StubRunner:
         source: str,
         *,
         run_id: str,
-    ) -> TriageRecommendation:
+    ) -> TriageSyncResult:
         _ = (issue_key, project, source, run_id)
-        return TriageRecommendation(
-            recommended_issue_type="Story",
-            recommended_priority=None,
-            confidence=0.5,
-            reason="health test stub",
+        return TriageSyncResult(
+            outcome=TriageRecommendation(
+                recommended_issue_type="Story",
+                recommended_priority=None,
+                confidence=0.5,
+                reason="health test stub",
+            ),
         )
 
 

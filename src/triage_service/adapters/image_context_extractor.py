@@ -133,6 +133,7 @@ def build_image_context_extractor(
         http_timeout_seconds=settings.triage_image_context_timeout_seconds,
     )
     return OpenRouterVisionImageContextExtractor(
+        settings=settings,
         jira_fetcher=jira_fetcher,
         inference_client=inference,
         inference_tracer=inference_tracer or LangfuseInferenceTracer(None),
@@ -154,9 +155,11 @@ def _is_image_attachment(ref: AttachmentRef) -> bool:
     return any(name.endswith(ext) for ext in _FILENAME_IMAGE_EXTENSIONS)
 
 
-def _attachment_size_desc_sort_key(ref: AttachmentRef) -> int:
-    size = ref.size_bytes if ref.size_bytes is not None else 0
-    return -size
+def _attachment_size_desc_sort_key(ref: AttachmentRef) -> float:
+    if ref.size_bytes is None:
+        # Unknown size from Jira: keep ahead of known-large files when max_attachments caps.
+        return float("-inf")
+    return float(-ref.size_bytes)
 
 
 def _select_image_attachments(
@@ -227,9 +230,7 @@ def _vision_cost_from_details(cost_details: dict[str, float] | None) -> float | 
     cost = cost_details.get("cost")
     if isinstance(cost, (int, float)) and not isinstance(cost, bool):
         return float(cost)
-    if cost_details:
-        return float(sum(cost_details.values()))
-    return None
+    return float(sum(cost_details.values()))
 
 
 def _parse_vision_response(content: str) -> tuple[str | None, str | None, str | None]:
@@ -312,15 +313,17 @@ def _build_vision_messages(
     issue: FetchedIssue,
     image_bytes: bytes,
     mime_type: str,
+    *,
+    settings: AppSettings,
 ) -> list[dict[str, Any]]:
     encoded = base64.standard_b64encode(image_bytes).decode("ascii")
     data_url = f"data:{mime_type};base64,{encoded}"
     return [
-        {"role": "system", "content": compose_vision_system_prompt()},
+        {"role": "system", "content": compose_vision_system_prompt(settings=settings)},
         {
             "role": "user",
             "content": [
-                {"type": "text", "text": compose_vision_user_instruction(issue)},
+                {"type": "text", "text": compose_vision_user_instruction(issue, settings=settings)},
                 {"type": "image_url", "image_url": {"url": data_url}},
             ],
         },
@@ -333,12 +336,14 @@ class OpenRouterVisionImageContextExtractor:
     def __init__(
         self,
         *,
+        settings: AppSettings,
         jira_fetcher: JiraIssueFetcher,
         inference_client: OpenRouterInferenceClient,
         inference_tracer: LangfuseInferenceTracer | None = None,
         max_attachments: int = 5,
         max_bytes_per_image: int = _DEFAULT_MAX_BYTES_PER_IMAGE,
     ) -> None:
+        self._settings = settings
         self._jira_fetcher = jira_fetcher
         self._inference = inference_client
         self._inference_tracer = inference_tracer or LangfuseInferenceTracer(None)
@@ -384,7 +389,8 @@ class OpenRouterVisionImageContextExtractor:
             attachment_id=ref.id,
             filename=ref.filename,
         )
-        if _resolve_image_mime_type(ref) is None:
+        resolved_mime = _resolve_image_mime_type(ref)
+        if resolved_mime is None:
             failed = base.model_copy(update={"extraction_failure": "unsupported MIME type"})
             return _attachment_extraction_metric(ref, started=started, context=failed)
         try:
@@ -407,8 +413,6 @@ class OpenRouterVisionImageContextExtractor:
                 context=validation_failure,
                 bytes_fetched=bytes_fetched,
             )
-        resolved_mime = _resolve_image_mime_type(ref)
-        assert resolved_mime is not None
         return self._vision_extract_one(
             issue,
             ref,
@@ -432,7 +436,12 @@ class OpenRouterVisionImageContextExtractor:
         started: float,
         bytes_fetched: int,
     ) -> tuple[ImageContext, ImageAttachmentMetric]:
-        messages = _build_vision_messages(issue, image_bytes, mime_type)
+        messages = _build_vision_messages(
+            issue,
+            image_bytes,
+            mime_type,
+            settings=self._settings,
+        )
         model_id = self._inference.effective_model_id
         with self._inference_tracer.vision_generation(
             model=model_id,

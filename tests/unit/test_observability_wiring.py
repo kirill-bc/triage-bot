@@ -72,6 +72,21 @@ def test_build_triage_observability_structured_only_when_langfuse_keys_missing(
 
 
 @pytest.mark.unit
+def test_build_triage_observability_wires_vision_transcript_redaction_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
+    monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
+    monkeypatch.setenv("TRIAGE_AUDIT_REDACT_IMAGE_TRANSCRIPT", "false")
+    settings = AppSettings()
+    obs = build_triage_observability(settings)
+    assert obs.inference_tracer._redact_vision_transcript is False
+
+
+@pytest.mark.unit
 def test_build_triage_observability_composite_when_langfuse_keys_present(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

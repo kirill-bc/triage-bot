@@ -56,6 +56,57 @@ class AppSettings(BaseSettings):
         validation_alias="LANGFUSE_BASE_URL",
         description="LangFuse API base URL (e.g. https://cloud.langfuse.com); optional.",
     )
+    triage_langfuse_prompts_enabled: bool = Field(
+        default=True,
+        validation_alias="TRIAGE_LANGFUSE_PROMPTS_ENABLED",
+        description="Fetch triage prompts from Langfuse when keys are configured.",
+    )
+    triage_langfuse_prompt_label: str | None = Field(
+        default=None,
+        validation_alias="TRIAGE_LANGFUSE_PROMPT_LABEL",
+        description="Langfuse prompt version label (e.g. production); empty uses SDK default.",
+    )
+    triage_langfuse_prompt_cache_ttl_seconds: int | None = Field(
+        default=None,
+        ge=0,
+        validation_alias="TRIAGE_LANGFUSE_PROMPT_CACHE_TTL_SECONDS",
+        description="Langfuse prompt client cache TTL in seconds; unset uses SDK default.",
+    )
+    triage_langfuse_reason_for_humans_prompt_name: str = Field(
+        default="triagebot/reason-for-humans",
+        min_length=1,
+        validation_alias="TRIAGE_LANGFUSE_REASON_FOR_HUMANS_PROMPT_NAME",
+    )
+    triage_langfuse_classification_system_prompt_name: str = Field(
+        default="triagebot/classification-system",
+        min_length=1,
+        validation_alias="TRIAGE_LANGFUSE_CLASSIFICATION_SYSTEM_PROMPT_NAME",
+    )
+    triage_langfuse_priority_system_prompt_name: str = Field(
+        default="triagebot/priority-system",
+        min_length=1,
+        validation_alias="TRIAGE_LANGFUSE_PRIORITY_SYSTEM_PROMPT_NAME",
+    )
+    triage_langfuse_classification_prompt_name: str = Field(
+        default="triagebot/classification-user",
+        min_length=1,
+        validation_alias="TRIAGE_LANGFUSE_CLASSIFICATION_PROMPT_NAME",
+    )
+    triage_langfuse_priority_prompt_name: str = Field(
+        default="triagebot/priority-user",
+        min_length=1,
+        validation_alias="TRIAGE_LANGFUSE_PRIORITY_PROMPT_NAME",
+    )
+    triage_langfuse_vision_system_prompt_name: str = Field(
+        default="triagebot/vision-system",
+        min_length=1,
+        validation_alias="TRIAGE_LANGFUSE_VISION_SYSTEM_PROMPT_NAME",
+    )
+    triage_langfuse_vision_user_prompt_name: str = Field(
+        default="triagebot/vision-user",
+        min_length=1,
+        validation_alias="TRIAGE_LANGFUSE_VISION_USER_PROMPT_NAME",
+    )
     audit_structured_log_enabled: bool = Field(
         default=True,
         validation_alias="TRIAGE_AUDIT_STRUCTURED_LOG_ENABLED",
@@ -152,6 +203,7 @@ class AppSettings(BaseSettings):
     triage_image_context_max_bytes_per_image: int = Field(
         default=5 * 1024 * 1024,
         ge=1,
+        le=20 * 1024 * 1024,
         validation_alias="TRIAGE_IMAGE_CONTEXT_MAX_BYTES_PER_IMAGE",
         description="Skip vision when attachment binary exceeds this size (bytes).",
     )
@@ -165,7 +217,10 @@ class AppSettings(BaseSettings):
     triage_audit_redact_image_transcript: bool = Field(
         default=True,
         validation_alias="TRIAGE_AUDIT_REDACT_IMAGE_TRANSCRIPT",
-        description="Redact vision transcripts in audit logs (screenshots may contain PII).",
+        description=(
+            "Redact vision model output (TRANSCRIPT/SUMMARY) in Langfuse inference_vision "
+            "generations. Jira description and repro in vision inputs are always kept."
+        ),
     )
 
     log_level: str = Field(default="INFO", description="Standard library log level name.")
@@ -188,6 +243,32 @@ class AppSettings(BaseSettings):
     @property
     def allowed_projects(self) -> list[str]:
         return [p.strip() for p in self.allowed_projects_csv.split(",") if p.strip()]
+
+    @property
+    def langfuse_prompt_management_enabled(self) -> bool:
+        """True when Langfuse prompt fetch is on and both API keys are configured."""
+        if not self.triage_langfuse_prompts_enabled:
+            return False
+        return bool(str(self.langfuse_public_key or "").strip()) and bool(
+            str(self.langfuse_secret_key or "").strip(),
+        )
+
+    @field_validator("triage_langfuse_prompt_label", mode="before")
+    @classmethod
+    def _empty_langfuse_prompt_label_to_none(cls, value: object) -> object:
+        if value is None:
+            return None
+        token = str(value).strip()
+        return token or None
+
+    @field_validator("triage_langfuse_prompt_cache_ttl_seconds", mode="before")
+    @classmethod
+    def _empty_langfuse_prompt_cache_ttl_to_none(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @field_validator("log_level")
     @classmethod

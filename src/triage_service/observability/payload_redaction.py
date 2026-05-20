@@ -80,8 +80,6 @@ def _redact_vision_content_part(part: dict[str, Any], *, redact: bool) -> dict[s
         url = ""
         if isinstance(image_url, dict):
             url = str(image_url.get("url", ""))
-        if not redact:
-            return dict(part)
         return _redact_vision_image_url(url)
     return dict(part)
 
@@ -91,9 +89,13 @@ def sanitize_vision_messages(
     *,
     redact: bool,
 ) -> list[dict[str, Any]]:
-    """Return multimodal chat messages with text and image payloads redacted when enabled."""
-    if not redact:
-        return [dict(msg) for msg in messages]
+    """Return multimodal messages safe for Langfuse and audit sinks.
+
+    ``image_url`` parts are always summarized (never ship base64 blobs).
+    Text parts follow ``redact``: when False, non-system text is kept verbatim
+    (use this for vision traces so Jira description/repro stay visible).
+    When True, non-system text uses the same summary envelope as chat redaction.
+    """
     out: list[dict[str, Any]] = []
     for msg in messages:
         role = str(msg.get("role", ""))
@@ -110,7 +112,10 @@ def sanitize_vision_messages(
             out.append({"role": role, "content": parts})
             continue
         if isinstance(content, str):
-            out.append({"role": role, "content": _redacted_summary(content)})
+            if redact:
+                out.append({"role": role, "content": _redacted_summary(content)})
+            else:
+                out.append({"role": role, "content": content})
             continue
         out.append(dict(msg))
     return out

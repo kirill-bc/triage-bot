@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
 from triage_service.adapters.image_context_extractor import (
     ImageContext,
@@ -52,6 +53,18 @@ def test_settings_image_context_defaults(monkeypatch: pytest.MonkeyPatch) -> Non
     assert settings.triage_image_context_max_bytes_per_image == 5 * 1024 * 1024
     assert settings.triage_image_context_timeout_seconds == 90.0
     assert settings.triage_audit_redact_image_transcript is True
+    assert settings.langfuse_prompt_management_enabled is False
+
+
+@pytest.mark.unit
+def test_settings_rejects_image_context_max_bytes_per_image_above_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(ValidationError):
+        _app_settings(
+            monkeypatch,
+            TRIAGE_IMAGE_CONTEXT_MAX_BYTES_PER_IMAGE=str(21 * 1024 * 1024),
+        )
 
 
 @pytest.mark.unit
@@ -173,8 +186,9 @@ def test_run_sync_invokes_image_extractor_and_enriches_classification_prompt(
                 ),
                 executor=_NoOpExecutor(),
                 image_context_extractor=mock_extractor,
+                settings=settings,
             )
-            outcome = handler.run_sync(
+            sync_result = handler.run_sync(
                 issue_key="TJC-100",
                 project="TJC",
                 source="bug_created",
@@ -183,6 +197,7 @@ def test_run_sync_invokes_image_extractor_and_enriches_classification_prompt(
 
     from triage_service.core.triage_recommendation_parser import TriageRecommendation
 
+    outcome = sync_result.outcome
     assert isinstance(outcome, TriageRecommendation)
     assert outcome.recommended_issue_type == "Story"
     mock_extractor.extract.assert_called_once()
@@ -224,6 +239,7 @@ def test_run_sync_on_fetched_skips_image_extractor(
             policy=PolicyContext(bug_definition="b", priority_definition="p"),
             executor=_NoOpExecutor(),
             image_context_extractor=mock_extractor,
+            settings=settings,
         )
         handler.run_sync_on_fetched(
             issue=issue,
@@ -289,6 +305,7 @@ def test_run_sync_on_fetched_uses_pre_extracted_image_contexts(
             policy=PolicyContext(bug_definition="b", priority_definition="p"),
             executor=_NoOpExecutor(),
             image_context_extractor=mock_extractor,
+            settings=settings,
         )
         handler.run_sync_on_fetched(
             issue=issue,
@@ -414,8 +431,9 @@ def test_run_sync_preprocesses_attachments_when_vision_extractor_enabled(
                 policy=PolicyContext(bug_definition="b", priority_definition="p"),
                 executor=_NoOpExecutor(),
                 image_context_extractor=extractor,
+                settings=settings,
             )
-            handler.run_sync(
+            sync_result = handler.run_sync(
                 issue_key="TJC-200",
                 project="TJC",
                 source="bug_created",
@@ -428,7 +446,7 @@ def test_run_sync_preprocesses_attachments_when_vision_extractor_enabled(
         c for c in openrouter_calls if c == settings.triage_text_model
     ]
     assert len(classification_calls) == 1
-    last = handler.last_image_extraction
+    last = sync_result.image_extraction
     assert last is not None
     assert last.attachments_considered == 1
     assert last.attachments_extracted == 1

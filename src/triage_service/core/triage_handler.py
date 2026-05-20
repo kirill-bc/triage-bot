@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 import logging
 import os
 from time import perf_counter
@@ -24,6 +25,7 @@ from triage_service.adapters.openrouter_inference_client import (
     OpenRouterInferenceError,
 )
 from triage_service.core.policy_context import PolicyContext
+from triage_service.core.settings import AppSettings
 from triage_service.core.prompt_composer import (
     compose_classification_prompt,
     compose_classification_system_prompt,
@@ -182,6 +184,14 @@ def _triage_completed_telemetry(
     return _merge_telemetry(image_telemetry, priority_telemetry)
 
 
+@dataclass(frozen=True, slots=True)
+class TriageSyncResult:
+    """Synchronous triage outcome plus optional vision preprocessing from the same run."""
+
+    outcome: TriageRecommendation | TriageFailure
+    image_extraction: ImageContextExtractionResult | None = None
+
+
 class TriageRunner(Protocol):
     """Callable surface used by :mod:`triage_api` (implemented by :class:`TriageHandler`)."""
 
@@ -192,8 +202,8 @@ class TriageRunner(Protocol):
         source: str,
         *,
         run_id: str,
-    ) -> TriageRecommendation | TriageFailure:
-        """Return a recommendation or failure after executor side effects."""
+    ) -> TriageSyncResult:
+        """Return recommendation or failure plus optional vision preprocessing metadata."""
 
 
 class TriageActionExecutor(Protocol):
@@ -247,16 +257,18 @@ class LocalMockTriageRunner:
         source: str,
         *,
         run_id: str,
-    ) -> TriageRecommendation | TriageFailure:
+    ) -> TriageSyncResult:
         _ = (issue_key, source, run_id)
         if project not in self._allowed:
             msg = f"Project {project} is not allowed for triage."
-            return fallback_for_exception(ProjectNotAllowedError(msg))
-        return TriageRecommendation(
-            recommended_issue_type="Story",
-            recommended_priority=None,
-            confidence=1.0,
-            reason="Local mock mode recommendation (external Jira/OpenRouter calls disabled).",
+            return TriageSyncResult(outcome=fallback_for_exception(ProjectNotAllowedError(msg)))
+        return TriageSyncResult(
+            outcome=TriageRecommendation(
+                recommended_issue_type="Story",
+                recommended_priority=None,
+                confidence=1.0,
+                reason="Local mock mode recommendation (external Jira/OpenRouter calls disabled).",
+            ),
         )
 
     def flush_inference_telemetry(self) -> None:
@@ -277,8 +289,10 @@ class TriageHandler:
         inference_tracer: LangfuseInferenceTracer | None = None,
         audit_store: AuditStore | None = None,
         image_context_extractor: ImageContextExtractor | None = None,
+        settings: AppSettings,
     ) -> None:
         self._allowed = frozenset(allowed_projects)
+        self._settings = settings
         self._fetcher = fetcher
         self._inference = inference
         self._policy = policy
@@ -290,12 +304,6 @@ class TriageHandler:
             if image_context_extractor is not None
             else NoOpImageContextExtractor()
         )
-        self._last_image_extraction: ImageContextExtractionResult | None = None
-
-    @property
-    def last_image_extraction(self) -> ImageContextExtractionResult | None:
-        """Vision preprocessing from the latest ``run_sync`` or ``run_sync_on_fetched``."""
-        return self._last_image_extraction
 
     def flush_inference_telemetry(self) -> None:
         """Flush Langfuse buffers for inference traces and Langfuse-backed audit sinks."""
@@ -308,11 +316,10 @@ class TriageHandler:
         source: str,
         *,
         run_id: str,
-    ) -> TriageRecommendation | TriageFailure:
+    ) -> TriageSyncResult:
         """Run the full pipeline for one issue; always notifies ``executor`` before returning."""
         issue: FetchedIssue | None = None
         image_extraction: ImageContextExtractionResult | None = None
-        self._last_image_extraction = None
         tracer = self._inference_tracer
         with tracer.triage_run_session(run_id=run_id):
             try:
@@ -340,7 +347,6 @@ class TriageHandler:
                         project=project,
                         source=source,
                     )
-                    self._last_image_extraction = image_extraction
                     outcome = self._triage_fetched_issue(
                         issue,
                         run_id=run_id,
@@ -379,7 +385,10 @@ class TriageHandler:
                         source=source,
                         started_at=action_start,
                     )
-                return failure
+                return TriageSyncResult(
+                    outcome=failure,
+                    image_extraction=image_extraction,
+                )
             action_start = perf_counter()
             try:
                 self._executor.apply_triage_outcome(
@@ -399,7 +408,10 @@ class TriageHandler:
                     source=source,
                     started_at=action_start,
                 )
-            return outcome
+            return TriageSyncResult(
+                outcome=outcome,
+                image_extraction=image_extraction,
+            )
 
     def run_sync_on_fetched(
         self,
@@ -410,13 +422,12 @@ class TriageHandler:
         run_id: str,
         image_contexts: list[ImageContext] | None = None,
         image_extraction: ImageContextExtractionResult | None = None,
-    ) -> TriageRecommendation | TriageFailure:
+    ) -> TriageSyncResult:
         """Run classify then optional priority on a fetched issue.
 
         Same executor notifications as ``run_sync`` (e.g. NoOp for offline runs).
         Optional ``image_contexts`` supports benchmark replay with pre-extracted vision text.
         """
-        self._last_image_extraction = image_extraction
         tracer = self._inference_tracer
         with tracer.triage_run_session(run_id=run_id):
             try:
@@ -464,7 +475,10 @@ class TriageHandler:
                         source=source,
                         started_at=action_start,
                     )
-                return failure
+                return TriageSyncResult(
+                    outcome=failure,
+                    image_extraction=image_extraction,
+                )
             action_start = perf_counter()
             try:
                 self._executor.apply_triage_outcome(
@@ -484,7 +498,10 @@ class TriageHandler:
                     source=source,
                     started_at=action_start,
                 )
-            return outcome
+            return TriageSyncResult(
+                outcome=outcome,
+                image_extraction=image_extraction,
+            )
 
     def _record_triage_failed_audit(
         self,
@@ -544,15 +561,23 @@ class TriageHandler:
     ) -> ImageContextExtractionResult:
         extract_start = perf_counter()
         audit_source = cast(TriageSourceLiteral, source)
+        result = ImageContextExtractionResult()
         try:
             with self._inference_tracer.image_context_extraction() as finish_img:
-                result = self._image_context_extractor.extract(issue, run_id=run_id)
-                finish_img(
-                    attachments_considered=result.attachments_considered,
-                    attachments_extracted=result.attachments_extracted,
-                    total_bytes=result.total_bytes,
-                    total_vision_cost=result.total_vision_cost,
-                )
+                try:
+                    result = self._image_context_extractor.extract(issue, run_id=run_id)
+                    finish_img(
+                        attachments_considered=result.attachments_considered,
+                        attachments_extracted=result.attachments_extracted,
+                        total_bytes=result.total_bytes,
+                        total_vision_cost=result.total_vision_cost,
+                    )
+                except Exception:
+                    LOGGER.exception(
+                        "Image context extraction failed unexpectedly",
+                        extra={"issue_key": issue.issue_key, "run_id": run_id},
+                    )
+                    finish_img()
         finally:
             self._log_stage_timing(
                 stage="image_context_extraction",
@@ -605,6 +630,7 @@ class TriageHandler:
         cls_messages = _classification_messages(
             issue,
             self._policy,
+            settings=self._settings,
             image_contexts=image_contexts,
         )
         with tracer.model_generation(
@@ -672,6 +698,7 @@ class TriageHandler:
         pri_messages = _priority_messages(
             issue,
             self._policy,
+            settings=self._settings,
             image_contexts=image_contexts,
         )
         with tracer.model_generation(
@@ -799,6 +826,7 @@ def build_default_triage_handler() -> TriageRunner:
         inference_tracer=obs.inference_tracer,
         audit_store=obs.audit_store,
         image_context_extractor=image_extractor,
+        settings=settings,
     )
 
 
@@ -806,15 +834,17 @@ def _classification_messages(
     issue: FetchedIssue,
     policy: PolicyContext,
     *,
+    settings: AppSettings,
     image_contexts: list[ImageContext] | None = None,
 ) -> list[dict[str, str]]:
     return [
-        {"role": "system", "content": compose_classification_system_prompt()},
+        {"role": "system", "content": compose_classification_system_prompt(settings=settings)},
         {
             "role": "user",
             "content": compose_classification_prompt(
                 policy,
                 issue,
+                settings=settings,
                 image_contexts=image_contexts,
             ),
         },
@@ -825,15 +855,17 @@ def _priority_messages(
     issue: FetchedIssue,
     policy: PolicyContext,
     *,
+    settings: AppSettings,
     image_contexts: list[ImageContext] | None = None,
 ) -> list[dict[str, str]]:
     return [
-        {"role": "system", "content": compose_priority_system_prompt()},
+        {"role": "system", "content": compose_priority_system_prompt(settings=settings)},
         {
             "role": "user",
             "content": compose_priority_prompt(
                 policy,
                 issue,
+                settings=settings,
                 image_contexts=image_contexts,
             ),
         },

@@ -62,6 +62,7 @@ def _build_extractor(
         http_timeout_seconds=settings.triage_image_context_timeout_seconds,
     )
     return OpenRouterVisionImageContextExtractor(
+        settings=settings,
         jira_fetcher=fetcher,
         inference_client=vision_client,
         max_attachments=settings.triage_image_context_max_attachments,

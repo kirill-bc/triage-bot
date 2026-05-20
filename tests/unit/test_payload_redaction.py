@@ -43,7 +43,7 @@ def test_sanitize_model_output_text_redacts_when_requested() -> None:
 
 
 @pytest.mark.unit
-def test_sanitize_vision_messages_noop_when_redact_false() -> None:
+def test_sanitize_vision_messages_keeps_text_redacts_images_when_redact_false() -> None:
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": "vision system"},
         {
@@ -58,7 +58,10 @@ def test_sanitize_vision_messages_noop_when_redact_false() -> None:
         },
     ]
     out = sanitize_vision_messages(messages, redact=False)
-    assert out[1]["content"][1]["image_url"]["url"] == "data:image/png;base64,QUJDRA=="
+    assert out[0]["content"] == "vision system"
+    assert out[1]["content"][0]["text"] == "describe screenshot"
+    assert "base64_len=8" in out[1]["content"][1]["image_url"]["url"]
+    assert "QUJDRA==" not in out[1]["content"][1]["image_url"]["url"]
 
 
 @pytest.mark.unit

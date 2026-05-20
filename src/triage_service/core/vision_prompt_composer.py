@@ -8,12 +8,9 @@ from pathlib import Path
 from typing import TypedDict
 
 from triage_service.adapters.jira_issue_fetcher import FetchedIssue
-from triage_service.core.langfuse_prompt_config import (
-    fetch_langfuse_text_prompt,
-    vision_system_prompt_name,
-    vision_user_prompt_name,
-)
 from triage_service.core.issue_text_block import format_issue_text_block
+from triage_service.core.langfuse_prompt_config import fetch_langfuse_text_prompt
+from triage_service.core.settings import AppSettings
 
 
 class _VisionPromptTemplates(TypedDict):
@@ -50,19 +47,23 @@ def format_vision_issue_context(issue: FetchedIssue) -> str:
     return format_issue_text_block(issue)
 
 
-def compose_vision_system_prompt() -> str:
+def compose_vision_system_prompt(*, settings: AppSettings) -> str:
     """System prompt for OpenRouter vision attachment transcription."""
-    langfuse_text = fetch_langfuse_text_prompt(vision_system_prompt_name())
+    langfuse_text = fetch_langfuse_text_prompt(
+        settings,
+        settings.triage_langfuse_vision_system_prompt_name,
+    )
     if langfuse_text is not None:
         return langfuse_text
     return _VISION_PROMPT_TEMPLATES["vision_system_prompt"]
 
 
-def compose_vision_user_instruction(issue: FetchedIssue) -> str:
+def compose_vision_user_instruction(issue: FetchedIssue, *, settings: AppSettings) -> str:
     """User text with ticket context plus TRANSCRIPT / SUMMARY format (image sent separately)."""
     issue_block = format_vision_issue_context(issue)
     langfuse_text = fetch_langfuse_text_prompt(
-        vision_user_prompt_name(),
+        settings,
+        settings.triage_langfuse_vision_user_prompt_name,
         issue_block=issue_block,
     )
     if langfuse_text is not None:

@@ -13,8 +13,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from triage_service.api.triage_api import create_app
-from triage_service.core.triage_fallback import TriageFailure, fallback_for_exception
-from triage_service.core.triage_handler import TriageRunner
+from triage_service.core.triage_fallback import fallback_for_exception
+from triage_service.core.triage_handler import TriageRunner, TriageSyncResult
 from triage_service.core.triage_recommendation_parser import TriageRecommendation
 
 _TRIAGE_TOKEN = "test-triage-token"
@@ -30,13 +30,15 @@ class _StubRunner:
         source: str,
         *,
         run_id: str,
-    ) -> TriageRecommendation | TriageFailure:
+    ) -> TriageSyncResult:
         _ = run_id
-        return TriageRecommendation(
-            recommended_issue_type="Story",
-            recommended_priority=None,
-            confidence=0.5,
-            reason="acceptance stub",
+        return TriageSyncResult(
+            outcome=TriageRecommendation(
+                recommended_issue_type="Story",
+                recommended_priority=None,
+                confidence=0.5,
+                reason="acceptance stub",
+            ),
         )
 
 
@@ -97,14 +99,16 @@ def test_post_triage_run_id_propagated_to_runner_matches_response(client: TestCl
             source: str,
             *,
             run_id: str,
-        ) -> TriageRecommendation | TriageFailure:
+        ) -> TriageSyncResult:
             _ = (issue_key, project, source)
             seen.append(run_id)
-            return TriageRecommendation(
-                recommended_issue_type="Story",
-                recommended_priority=None,
-                confidence=0.5,
-                reason="capture stub",
+            return TriageSyncResult(
+                outcome=TriageRecommendation(
+                    recommended_issue_type="Story",
+                    recommended_priority=None,
+                    confidence=0.5,
+                    reason="capture stub",
+                ),
             )
 
     app_client = TestClient(create_app(triage_handler_factory=lambda: _CapturingRunner()))
@@ -128,13 +132,15 @@ def test_post_triage_calls_flush_inference_telemetry_when_runner_exposes_it() ->
             source: str,
             *,
             run_id: str,
-        ) -> TriageRecommendation | TriageFailure:
+        ) -> TriageSyncResult:
             _ = (issue_key, project, source, run_id)
-            return TriageRecommendation(
-                recommended_issue_type="Story",
-                recommended_priority=None,
-                confidence=0.5,
-                reason="flush stub",
+            return TriageSyncResult(
+                outcome=TriageRecommendation(
+                    recommended_issue_type="Story",
+                    recommended_priority=None,
+                    confidence=0.5,
+                    reason="flush stub",
+                ),
             )
 
         def flush_inference_telemetry(self) -> None:
@@ -274,9 +280,9 @@ def test_post_triage_returns_failed_status_when_runner_returns_triage_failure() 
             source: str,
             *,
             run_id: str,
-        ) -> TriageRecommendation | TriageFailure:
+        ) -> TriageSyncResult:
             _ = (issue_key, project, source, run_id)
-            return fallback_for_exception(RuntimeError("boom"))
+            return TriageSyncResult(outcome=fallback_for_exception(RuntimeError("boom")))
 
     app_client = TestClient(create_app(triage_handler_factory=lambda: _FailingRunner()))
     response = app_client.post(
@@ -296,7 +302,6 @@ def test_post_triage_returns_failed_status_when_runner_returns_triage_failure() 
 @pytest.mark.unit
 def test_stub_runner_satisfies_triage_runner_protocol() -> None:
     runner: TriageRunner = _StubRunner()
-    assert isinstance(
-        runner.run_sync("k", "p", "bug_created", run_id=str(uuid.uuid4())),
-        TriageRecommendation,
-    )
+    result = runner.run_sync("k", "p", "bug_created", run_id=str(uuid.uuid4()))
+    assert isinstance(result, TriageSyncResult)
+    assert isinstance(result.outcome, TriageRecommendation)

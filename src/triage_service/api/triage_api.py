@@ -95,6 +95,7 @@ class ObservabilityHealth(BaseModel):
     langfuse_sdk_tracing_env_enabled: bool
     otel_sdk_disabled: bool
     langfuse_export_env_ready: bool
+    langfuse_prompt_management_enabled: bool
     audit_langfuse_enabled: bool
     langfuse_audit_sink_enabled: bool
     audit_structured_log_enabled: bool
@@ -194,7 +195,12 @@ def create_app(*, triage_handler_factory: Callable[[], TriageRunner] | None = No
         _: None = Depends(require_triage_token),
     ) -> TriagePostResponse:
         run_id = str(uuid.uuid4())
-        outcome = runner.run_sync(body.issue_key, body.project, body.source, run_id=run_id)
+        outcome = runner.run_sync(
+            body.issue_key,
+            body.project,
+            body.source,
+            run_id=run_id,
+        ).outcome
         _flush_inference_telemetry_if_supported(runner)
         if isinstance(outcome, TriageFailure):
             return TriagePostResponse(

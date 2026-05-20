@@ -13,8 +13,11 @@ from pydantic import ValidationError
 from triage_service.adapters.image_context_extractor import build_cli_image_context_summary
 from triage_service.core.settings import AppSettings
 from triage_service.core.triage_fallback import TriageFailure
-from triage_service.core.triage_handler import TriageRunner, build_default_triage_handler
-from triage_service.core.triage_recommendation_parser import TriageRecommendation
+from triage_service.core.triage_handler import (
+    TriageRunner,
+    TriageSyncResult,
+    build_default_triage_handler,
+)
 
 _ROOT = Path(__file__).resolve().parent
 
@@ -40,16 +43,16 @@ def run_cli_triage(
     *,
     project: str | None = None,
     runner: TriageRunner | None = None,
-) -> TriageRecommendation | TriageFailure:
+) -> TriageSyncResult:
     """Run synchronous triage with ``source="manual_trigger"`` (same pipeline as the webhook)."""
     key = issue_key.strip()
     proj = project.strip() if project is not None else infer_project_from_issue_key(key)
     resolved = runner if runner is not None else build_default_triage_handler()
-    outcome = resolved.run_sync(key, proj, "manual_trigger", run_id=str(uuid.uuid4()))
+    result = resolved.run_sync(key, proj, "manual_trigger", run_id=str(uuid.uuid4()))
     flush = getattr(resolved, "flush_inference_telemetry", None)
     if callable(flush):
         flush()
-    return outcome
+    return result
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -83,13 +86,12 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     project_arg = ns.project.strip() if ns.project else None
-    runner = build_default_triage_handler()
-    outcome = run_cli_triage(ns.issue_key, project=project_arg, runner=runner)
-    extraction = getattr(runner, "last_image_extraction", None)
+    result = run_cli_triage(ns.issue_key, project=project_arg)
     image_context = build_cli_image_context_summary(
         enabled=settings.triage_image_context_enabled,
-        extraction=extraction,
+        extraction=result.image_extraction,
     )
+    outcome = result.outcome
     if isinstance(outcome, TriageFailure):
         print(
             json.dumps(

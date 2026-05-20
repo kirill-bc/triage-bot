@@ -361,7 +361,7 @@ class JiraIssueFetcher:
                 headers=headers,
                 params=params,
             )
-            return response.content
+            return self._attachment_bytes_from_response(response)
 
         timeout = httpx.Timeout(self._settings.jira_http_timeout_seconds)
         with httpx.Client(timeout=timeout) as client:
@@ -371,7 +371,17 @@ class JiraIssueFetcher:
                 headers=headers,
                 params=params,
             )
-            return response.content
+            return self._attachment_bytes_from_response(response)
+
+    def _attachment_bytes_from_response(self, response: httpx.Response) -> bytes:
+        if response.is_redirect:
+            raise JiraIssueFetchError(
+                "Jira attachment content returned HTTP "
+                f"{response.status_code} redirect; expected 200 with binary "
+                "(use redirect=false on the content URL).",
+                http_status=response.status_code,
+            )
+        return response.content
 
     def _auth_headers(self) -> dict[str, str]:
         email = self._settings.jira_user_email
