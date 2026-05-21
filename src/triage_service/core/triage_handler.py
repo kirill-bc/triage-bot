@@ -38,7 +38,9 @@ from triage_service.core.triage_fallback import (
     fallback_for_exception,
 )
 from triage_service.core.triage_recommendation_parser import (
+    ClassificationStepOutput,
     InvalidTriageRecommendationError,
+    PriorityStepOutput,
     TriageRecommendation,
     classification_story_to_final,
     merge_bug_classification_with_priority,
@@ -185,11 +187,20 @@ def _triage_completed_telemetry(
 
 
 @dataclass(frozen=True, slots=True)
+class _TriageInferenceSteps:
+    classification: ClassificationStepOutput
+    priority: PriorityStepOutput | None
+    recommendation: TriageRecommendation
+
+
+@dataclass(frozen=True, slots=True)
 class TriageSyncResult:
     """Synchronous triage outcome plus optional vision preprocessing from the same run."""
 
     outcome: TriageRecommendation | TriageFailure
     image_extraction: ImageContextExtractionResult | None = None
+    classification: ClassificationStepOutput | None = None
+    priority: PriorityStepOutput | None = None
 
 
 class TriageRunner(Protocol):
@@ -347,7 +358,7 @@ class TriageHandler:
                         project=project,
                         source=source,
                     )
-                    outcome = self._triage_fetched_issue(
+                    steps = self._triage_fetched_issue(
                         issue,
                         run_id=run_id,
                         project=project,
@@ -396,7 +407,7 @@ class TriageHandler:
                     issue_key=issue_key,
                     project=project,
                     source=source,
-                    outcome=outcome,
+                    outcome=steps.recommendation,
                     run_id=run_id,
                 )
             finally:
@@ -409,8 +420,10 @@ class TriageHandler:
                     started_at=action_start,
                 )
             return TriageSyncResult(
-                outcome=outcome,
+                outcome=steps.recommendation,
                 image_extraction=image_extraction,
+                classification=steps.classification,
+                priority=steps.priority,
             )
 
     def run_sync_on_fetched(
@@ -437,7 +450,7 @@ class TriageHandler:
                     issue_key=issue.issue_key,
                     project=project,
                 ):
-                    outcome = self._triage_fetched_issue(
+                    steps = self._triage_fetched_issue(
                         issue,
                         run_id=run_id,
                         project=project,
@@ -486,7 +499,7 @@ class TriageHandler:
                     issue_key=issue.issue_key,
                     project=project,
                     source=source,
-                    outcome=outcome,
+                    outcome=steps.recommendation,
                     run_id=run_id,
                 )
             finally:
@@ -499,8 +512,10 @@ class TriageHandler:
                     started_at=action_start,
                 )
             return TriageSyncResult(
-                outcome=outcome,
+                outcome=steps.recommendation,
                 image_extraction=image_extraction,
+                classification=steps.classification,
+                priority=steps.priority,
             )
 
     def _record_triage_failed_audit(
@@ -623,7 +638,7 @@ class TriageHandler:
         source: str,
         image_contexts: list[ImageContext] | None = None,
         image_extraction: ImageContextExtractionResult | None = None,
-    ) -> TriageRecommendation:
+    ) -> _TriageInferenceSteps:
         audit_source = cast(TriageSourceLiteral, source)
         tracer = self._inference_tracer
         model_id = self._inference.effective_model_id
@@ -694,7 +709,11 @@ class TriageHandler:
                     ),
                 ),
             )
-            return final_rec
+            return _TriageInferenceSteps(
+                classification=classification,
+                priority=None,
+                recommendation=final_rec,
+            )
         pri_messages = _priority_messages(
             issue,
             self._policy,
@@ -761,7 +780,11 @@ class TriageHandler:
                 ),
             ),
         )
-        return merged
+        return _TriageInferenceSteps(
+            classification=classification,
+            priority=priority,
+            recommendation=merged,
+        )
 
     def _log_stage_timing(
         self,
@@ -788,7 +811,11 @@ class TriageHandler:
         )
 
 
-def build_default_triage_handler() -> TriageRunner:
+def build_default_triage_handler(
+    *,
+    post_mismatch_comments: bool = True,
+    apply_to_jira: bool = True,
+) -> TriageRunner:
     """Build handler from settings, policy, and Jira executor if Jira env is set."""
     from triage_service.adapters.image_context_extractor import build_image_context_extractor
     from triage_service.adapters.jira_action_executor import JiraTriageActionExecutor
@@ -810,11 +837,15 @@ def build_default_triage_handler() -> TriageRunner:
     inference = OpenRouterInferenceClient(settings)
     cloud_id_configured = settings.jira_cloud_id and str(settings.jira_cloud_id).strip()
     if (
-        cloud_id_configured
+        apply_to_jira
+        and cloud_id_configured
         and settings.jira_user_email
         and str(settings.jira_user_email).strip()
     ):
-        executor: TriageActionExecutor = JiraTriageActionExecutor(settings)
+        executor: TriageActionExecutor = JiraTriageActionExecutor(
+            settings,
+            post_mismatch_comments=post_mismatch_comments,
+        )
     else:
         executor = NoOpTriageActionExecutor()
     return TriageHandler(

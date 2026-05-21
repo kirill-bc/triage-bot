@@ -118,6 +118,9 @@ def test_handler_story_path_calls_inference_once_and_returns_recommendation(
     assert isinstance(outcome, TriageRecommendation)
     assert outcome.recommended_issue_type == "Story"
     assert outcome.recommended_priority is None
+    assert sync_result.classification is not None
+    assert sync_result.classification.recommended_issue_type == "Story"
+    assert sync_result.priority is None
     assert len(executor.calls) == 1
     applied_issue, applied_outcome, applied_run_id = executor.calls[0]
     assert applied_issue == issue
@@ -184,6 +187,12 @@ def test_handler_bug_path_calls_inference_twice_and_merges_priority(
     assert outcome.recommended_priority == "P1"
     assert outcome.confidence == 0.88
     assert outcome.reason == "Data loss risk."
+    assert sync_result.classification is not None
+    assert sync_result.classification.recommended_issue_type == "Bug"
+    assert sync_result.classification.confidence == 0.55
+    assert sync_result.priority is not None
+    assert sync_result.priority.recommended_priority == "P1"
+    assert sync_result.priority.confidence == 0.88
     assert idx["i"] == 2
 
 

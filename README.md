@@ -21,6 +21,7 @@ See `TODO.md` for the active implementation backlog.
 - `src/triage_service/api/triage_api.py`: FastAPI app, `GET /health` (liveness + readiness when `load_settings()` succeeds, plus safe `observability` flags including Langfuse export env readiness), `POST /triage` request/response contract, and dependency-injectable triage runner
 - `src/triage_service/core/triage_handler.py`: synchronous pipeline, `TriageRunner` / `TriageActionExecutor` protocols; `build_default_triage_handler()` uses `JiraTriageActionExecutor` when `JIRA_CLOUD_ID` and `JIRA_USER_EMAIL` are set, otherwise a no-op executor
 - `src/triage_service/adapters/jira_issue_fetcher.py`: Jira REST client and response normalization (includes `reporter_account_id` when Jira returns it, optional `reproduction_steps` from `TRIAGE_JIRA_REPRODUCTION_STEPS_FIELD_ID` when present, with fallback extraction from `description`)
+- `src/triage_service/adapters/jira_jql_search.py`: paginated Jira Cloud `GET /rest/api/3/search/jql` helper (`search_issues_by_jql`) returning issue keys with current type/priority for bulk runs
 - `src/triage_service/adapters/jira_action_executor.py`: on success, applies `triagebot-reviewed` plus mismatch labels and a templated **TriageBot** ADF comment when needed; on `TriageFailure`, performs no Jira writes
 - `src/triage_service/adapters/openrouter_inference_client.py`: OpenRouter chat completions using `TRIAGE_TEXT_MODEL` (see `src/triage_service/core/settings.py`)
 - `src/triage_service/core/settings.py`: environment-backed runtime settings, including `TRIAGE_ALLOWED_PROJECTS` allowlist parsing
@@ -29,7 +30,8 @@ See `TODO.md` for the active implementation backlog.
 - `src/triage_service/core/triage_recommendation_parser.py`: validates merged LLM JSON into `TriageRecommendation` (throws `InvalidTriageRecommendationError` when invalid)
 - `src/triage_service/core/triage_mismatch.py`: `compute_mismatch_flags(issue, recommendation)` for deterministic type/priority mismatch (Jira executor / comments)
 - `src/triage_service/core/triage_fallback.py`: `TriageFailure` plus `fallback_for_exception()` to map fetch/inference/parse errors to a stable category + message for orchestration
-- `triage_manual_cli.py`: infer project from `PROJ-123` keys, run `TriageHandler.run_sync(..., source="manual_trigger", run_id=...)`, and `main()` for the CLI
+- `triage_manual_cli.py`: infer project from `PROJ-123` keys, run `TriageHandler.run_sync(..., source="manual_trigger", run_id=...)`, and `main()` for the CLI (`--no-comment` applies labels without mismatch comments)
+- `triage_bulk_cli.py`: JQL-driven batch triage with JSON report output; default read-only (no Jira writes); `--apply` / `--comment` opt in to executor behavior (`scripts/run_bulk_triage_cli.py`)
 - `dev_tunnel.py`: load repo `.env`, start `uvicorn`, then run `ngrok` or `cloudflared` for Jira-facing HTTPS during local development (`scripts/run_dev_tunnel.py`)
 - `src/triage_service/core/policy/`: `bug_definition.md` and `priority_definition.md` (edit to match your org)
 - `scripts/fetch_jira_issue.py`: manual CLI smoke script for a single Jira issue
@@ -166,7 +168,25 @@ Run the same synchronous pipeline as `POST /triage` without Jira Automation (Ope
 .venv/bin/python scripts/run_triage_cli.py YOUR-123
 ```
 
-Optional `--project TJC` overrides the project key inferred from the issue key (`TJC` from `TJC-123`). The handler receives `source="manual_trigger"`; stdout is JSON with `status`, `recommendation` or `failure`, and `image_context` (compact attachment summary: `enabled`, counts, per-file `status`/`summary` or `failure` — no full transcripts). Honors `TRIAGE_IMAGE_CONTEXT_ENABLED` the same way as `POST /triage` (via `build_default_triage_handler`). Exit code `0` on completed triage, `1` on `TriageFailure`, `2` on settings validation errors.
+Optional `--project TJC` overrides the project key inferred from the issue key (`TJC` from `TJC-123`). Use `--no-comment` to apply labels without posting mismatch comments (dry-run debugging). The handler receives `source="manual_trigger"`; stdout is JSON with `status`, `recommendation` or `failure`, per-step `classification` and `priority` when inference succeeded (Bug path includes both steps; Story path includes `classification` only), and `image_context` (compact attachment summary: `enabled`, counts, per-file `status`/`summary` or `failure` — no full transcripts). Honors `TRIAGE_IMAGE_CONTEXT_ENABLED` the same way as `POST /triage` (via `build_default_triage_handler`). Exit code `0` on completed triage, `1` on `TriageFailure`, `2` on settings validation errors.
+
+## Bulk triage (CLI)
+
+Run the same inference pipeline for every issue returned by a JQL query and write a JSON report (no Jira changes by default):
+
+```bash
+.venv/bin/python scripts/run_bulk_triage_cli.py \
+  --jql 'project = TJC AND issuetype = Bug AND created >= -7d' \
+  -o /tmp/bulk_triage.json
+```
+
+- `--max-results N` / `--limit N` — cap how many issues to fetch from JQL and triage (default `50`; sent to Jira as `maxResults` per search request, up to 100 per page).
+- `--jql-page-size N` — optional Jira API page size when paginating (default `min(50, --max-results)`; max `100`).
+- `-o` / `--output` — path to the JSON report (includes `current_issue_type`, `current_priority`, per-issue `recommendation` with `reason`, and step-level `classification` / `priority` when present).
+- By default **does not** apply labels or post comments in Jira (read-only triage). Pass `--apply` to apply `triagebot-reviewed` and mismatch labels; add `--comment` with `--apply` to post mismatch comments too.
+- Shows a **tqdm** progress bar on stderr when attached to a terminal (`--no-progress` to disable).
+
+Exit code `0` when every issue completed, `1` when any issue failed or the JQL matched nothing, `2` on settings/JQL errors.
 
 ## Jira Automation recipe (scheduled scan)
 

@@ -228,9 +228,16 @@ class JiraTriageActionExecutor:
     reporter (Jira REST v3).
     """
 
-    def __init__(self, settings: AppSettings, *, client: httpx.Client | None = None) -> None:
+    def __init__(
+        self,
+        settings: AppSettings,
+        *,
+        client: httpx.Client | None = None,
+        post_mismatch_comments: bool = True,
+    ) -> None:
         self._settings = settings
         self._client = client
+        self._post_mismatch_comments = post_mismatch_comments
 
     def _request(
         self,
@@ -275,7 +282,10 @@ class JiraTriageActionExecutor:
         labels = _labels_for_outcome(outcome, issue)
         base_url, headers = _jira_base_and_headers(self._settings)
         self._apply_labels(base_url, issue_key, labels, headers)
-        if _should_post_mismatch_comment(issue=issue, recommendation=outcome):
+        if self._post_mismatch_comments and _should_post_mismatch_comment(
+            issue=issue,
+            recommendation=outcome,
+        ):
             self._post_comment(base_url, issue_key, issue, outcome, headers)
 
     def _apply_labels(

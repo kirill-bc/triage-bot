@@ -14,3 +14,4 @@ htmlcov/
 
 # Local benchmark run outputs (JSONL caches, summaries)
 benchmark_runs/
+tmp/

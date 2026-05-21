@@ -210,6 +210,150 @@ def test_build_cli_image_context_summary_compact_attachment_rows() -> None:
 
 
 @pytest.mark.unit
+def test_main_json_includes_classification_and_priority_steps(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from triage_service.core.triage_recommendation_parser import (
+        ClassificationStepOutput,
+        PriorityStepOutput,
+    )
+    from triage_manual_cli import main
+
+    classification = ClassificationStepOutput(
+        recommended_issue_type="Bug",
+        confidence=0.55,
+        reason="Defect.",
+    )
+    priority = PriorityStepOutput(
+        recommended_priority="P1",
+        confidence=0.88,
+        reason="Data loss risk.",
+    )
+
+    class _RunnerWithSteps:
+        def run_sync(
+            self,
+            issue_key: str,
+            project: str,
+            source: str,
+            *,
+            run_id: str,
+        ) -> TriageSyncResult:
+            _ = (issue_key, project, source, run_id)
+            return TriageSyncResult(
+                outcome=TriageRecommendation(
+                    recommended_issue_type="Bug",
+                    recommended_priority="P1",
+                    confidence=0.88,
+                    reason="Data loss risk.",
+                ),
+                classification=classification,
+                priority=priority,
+            )
+
+        def flush_inference_telemetry(self) -> None:
+            return None
+
+    class _Settings:
+        triage_image_context_enabled = False
+
+    with (
+        patch("triage_service.core.settings.load_settings", return_value=_Settings()),
+        patch("triage_manual_cli.build_default_triage_handler", return_value=_RunnerWithSteps()),
+    ):
+        rc = main(["TJC-10"])
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["classification"] == classification.model_dump()
+    assert payload["priority"] == priority.model_dump()
+    assert payload["recommendation"]["recommended_priority"] == "P1"
+
+
+@pytest.mark.unit
+def test_run_cli_triage_passes_apply_to_jira_to_handler_builder() -> None:
+    from triage_manual_cli import run_cli_triage
+
+    build_calls: list[bool] = []
+
+    def _fake_build(*, post_mismatch_comments: bool = True, apply_to_jira: bool = True) -> object:
+        build_calls.append(apply_to_jira)
+
+        class _Runner:
+            def run_sync(
+                self,
+                issue_key: str,
+                project: str,
+                source: str,
+                *,
+                run_id: str,
+            ) -> TriageSyncResult:
+                _ = (issue_key, project, source, run_id)
+                return TriageSyncResult(
+                    outcome=TriageRecommendation(
+                        recommended_issue_type="Story",
+                        recommended_priority=None,
+                        confidence=0.5,
+                        reason="ok",
+                    ),
+                )
+
+            def flush_inference_telemetry(self) -> None:
+                return None
+
+        return _Runner()
+
+    with patch("triage_manual_cli.build_default_triage_handler", side_effect=_fake_build):
+        run_cli_triage("TJC-7", apply_to_jira=False)
+
+    assert build_calls == [False]
+
+
+@pytest.mark.unit
+def test_run_cli_triage_passes_post_mismatch_comments_to_handler_builder() -> None:
+    from triage_manual_cli import run_cli_triage
+
+    build_calls: list[bool] = []
+
+    def _fake_build(
+        *,
+        post_mismatch_comments: bool = True,
+        apply_to_jira: bool = True,
+    ) -> object:
+        _ = apply_to_jira
+        build_calls.append(post_mismatch_comments)
+
+        class _Runner:
+            def run_sync(
+                self,
+                issue_key: str,
+                project: str,
+                source: str,
+                *,
+                run_id: str,
+            ) -> TriageSyncResult:
+                _ = (issue_key, project, source, run_id)
+                return TriageSyncResult(
+                    outcome=TriageRecommendation(
+                        recommended_issue_type="Story",
+                        recommended_priority=None,
+                        confidence=0.5,
+                        reason="ok",
+                    ),
+                )
+
+            def flush_inference_telemetry(self) -> None:
+                return None
+
+        return _Runner()
+
+    with patch("triage_manual_cli.build_default_triage_handler", side_effect=_fake_build):
+        run_cli_triage("TJC-7", post_mismatch_comments=False)
+
+    assert build_calls == [False]
+
+
+@pytest.mark.unit
 def test_main_json_includes_image_context_summary_from_handler(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

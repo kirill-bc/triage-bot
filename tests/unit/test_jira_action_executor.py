@@ -123,6 +123,44 @@ def test_executor_applies_only_ai_reviewed_when_no_mismatch(
 
 
 @pytest.mark.unit
+def test_executor_skips_mismatch_comment_when_post_mismatch_comments_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(monkeypatch)
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(201, json={"id": "c1"})
+
+    transport = httpx.MockTransport(handler)
+    issue = _issue(
+        issue_type="Bug",
+        priority="P1",
+        reporter="Juan Estrada",
+        reporter_account_id="61d4a5c6e67ea2006bce3aaa",
+    )
+    with httpx.Client(transport=transport) as client:
+        ex = JiraTriageActionExecutor(
+            settings,
+            client=client,
+            post_mismatch_comments=False,
+        )
+        ex.apply_triage_outcome(
+            issue=issue,
+            issue_key="TJC-2",
+            project="TJC",
+            source="manual_trigger",
+            outcome=_rec(recommended_priority="P2", reason="severity"),
+            run_id="run-test",
+        )
+
+    assert len(requests) == 1
+    assert requests[0].method == "PUT"
+    assert "/comment" not in str(requests[0].url)
+
+
+@pytest.mark.unit
 def test_executor_posts_mismatch_comment_with_reporter_mention(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

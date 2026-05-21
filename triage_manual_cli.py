@@ -7,6 +7,7 @@ import json
 import sys
 import uuid
 from pathlib import Path
+from typing import Any
 
 from pydantic import ValidationError
 
@@ -43,16 +44,43 @@ def run_cli_triage(
     *,
     project: str | None = None,
     runner: TriageRunner | None = None,
+    post_mismatch_comments: bool = True,
+    apply_to_jira: bool = True,
 ) -> TriageSyncResult:
     """Run synchronous triage with ``source="manual_trigger"`` (same pipeline as the webhook)."""
     key = issue_key.strip()
     proj = project.strip() if project is not None else infer_project_from_issue_key(key)
-    resolved = runner if runner is not None else build_default_triage_handler()
+    if runner is not None:
+        resolved = runner
+    else:
+        resolved = build_default_triage_handler(
+            post_mismatch_comments=post_mismatch_comments,
+            apply_to_jira=apply_to_jira,
+        )
     result = resolved.run_sync(key, proj, "manual_trigger", run_id=str(uuid.uuid4()))
     flush = getattr(resolved, "flush_inference_telemetry", None)
     if callable(flush):
         flush()
     return result
+
+
+def build_triage_cli_result_payload(
+    result: TriageSyncResult,
+    *,
+    image_context: dict[str, Any],
+) -> dict[str, Any]:
+    outcome = result.outcome
+    assert not isinstance(outcome, TriageFailure)
+    payload: dict[str, Any] = {
+        "status": "completed",
+        "recommendation": outcome.model_dump(),
+        "image_context": image_context,
+    }
+    if result.classification is not None:
+        payload["classification"] = result.classification.model_dump()
+    if result.priority is not None:
+        payload["priority"] = result.priority.model_dump()
+    return payload
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -72,6 +100,14 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Jira project key (default: inferred from issue key, e.g. TJC from TJC-123).",
     )
+    parser.add_argument(
+        "--no-comment",
+        action="store_true",
+        help=(
+            "Apply triagebot labels but do not post mismatch comments to Jira "
+            "(useful for dry-run debugging)."
+        ),
+    )
     ns = parser.parse_args(argv)
 
     dotenv_path = _ROOT / ".env"
@@ -86,7 +122,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     project_arg = ns.project.strip() if ns.project else None
-    result = run_cli_triage(ns.issue_key, project=project_arg)
+    result = run_cli_triage(
+        ns.issue_key,
+        project=project_arg,
+        post_mismatch_comments=not ns.no_comment,
+    )
     image_context = build_cli_image_context_summary(
         enabled=settings.triage_image_context_enabled,
         extraction=result.image_extraction,
@@ -106,11 +146,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     print(
         json.dumps(
-            {
-                "status": "completed",
-                "recommendation": outcome.model_dump(),
-                "image_context": image_context,
-            },
+            build_triage_cli_result_payload(result, image_context=image_context),
             indent=2,
             ensure_ascii=False,
         ),
