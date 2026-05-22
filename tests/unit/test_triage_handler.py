@@ -9,8 +9,13 @@ import httpx
 import pytest
 from unittest.mock import MagicMock
 
-from triage_service.adapters.jira_issue_fetcher import FetchedIssue, JiraIssueFetcher
+from triage_service.adapters.jira_issue_fetcher import (
+    FetchedIssue,
+    JiraIssueFetcher,
+    LinkedZendeskTicket,
+)
 from triage_service.adapters.openrouter_inference_client import OpenRouterInferenceClient
+from triage_service.adapters.zendesk_ticket_fetcher import ZendeskTicketFetcher
 from triage_service.core.settings import AppSettings
 from triage_service.core.triage_fallback import TriageFailure
 from triage_service.core.triage_handler import (
@@ -126,6 +131,81 @@ def test_handler_story_path_calls_inference_once_and_returns_recommendation(
     assert applied_issue == issue
     assert applied_outcome == outcome
     assert applied_run_id == "run-correlation-1"
+
+
+@pytest.mark.unit
+def test_handler_enriches_issue_with_linked_zendesk_tickets_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _app_settings(monkeypatch)
+    issue = FetchedIssue(
+        issue_key="TJC-90",
+        summary="login issue references ZD-99",
+        issue_type="Bug",
+        priority="P2",
+        reporter="support",
+    )
+
+    def jira_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_jira_payload_for(issue))
+
+    story_json = '{"recommended_issue_type":"Story","confidence":0.7,"reason":"Narrative work."}'
+
+    def openrouter_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": story_json}}]},
+        )
+
+    class _StubZendeskFetcher(ZendeskTicketFetcher):
+        @property
+        def enabled(self) -> bool:  # pragma: no cover - trivial override
+            return True
+
+        def fetch_linked_tickets(
+            self,
+            issue: FetchedIssue,
+            *,
+            run_id: str,
+        ) -> list[LinkedZendeskTicket]:
+            _ = (issue, run_id)
+            return [
+                LinkedZendeskTicket(
+                    ticket_id="99",
+                    subject="Portal sign-in broken",
+                    status="open",
+                    priority="urgent",
+                    description="Customer blocked",
+                    url="https://acme.zendesk.com/agent/tickets/99",
+                ),
+            ]
+
+    transport_j = httpx.MockTransport(jira_handler)
+    transport_o = httpx.MockTransport(openrouter_handler)
+    with httpx.Client(transport=transport_j) as j_client:
+        with httpx.Client(transport=transport_o) as o_client:
+            fetcher = JiraIssueFetcher(settings, client=j_client)
+            inference = OpenRouterInferenceClient(settings, client=o_client)
+            executor = _RecordingExecutor()
+            handler = TriageHandler(
+                allowed_projects=("TJC",),
+                fetcher=fetcher,
+                inference=inference,
+                policy=_policy(),
+                executor=executor,
+                zendesk_fetcher=_StubZendeskFetcher(settings),
+                settings=settings,
+            )
+            _ = handler.run_sync(
+                issue_key="TJC-90",
+                project="TJC",
+                source="bug_created",
+                run_id="run-correlation-zd",
+            )
+    applied_issue, _, _ = executor.calls[0]
+    assert applied_issue is not None
+    assert len(applied_issue.zendesk_tickets) == 1
+    assert applied_issue.zendesk_tickets[0].ticket_id == "99"
 
 
 @pytest.mark.unit

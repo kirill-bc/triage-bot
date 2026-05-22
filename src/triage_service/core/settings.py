@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from dotenv import find_dotenv, load_dotenv
-from pydantic import Field, computed_field, field_validator, model_validator
+from pydantic import AliasChoices, Field, computed_field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing_extensions import Self
 
@@ -153,6 +153,21 @@ class AppSettings(BaseSettings):
             "When set, issue fetch requests this field and prefers it over description parsing."
         ),
     )
+    jira_zendesk_ticket_ids_field_id: str | None = Field(
+        default="customfield_10158",
+        validation_alias="TRIAGE_JIRA_ZENDESK_TICKET_IDS_FIELD_ID",
+        description="Jira custom field for Zendesk Ticket IDs (multi-line text).",
+    )
+    jira_imported_zendesk_ticket_ids_field_id: str | None = Field(
+        default="customfield_10162",
+        validation_alias="TRIAGE_JIRA_IMPORTED_ZENDESK_TICKET_IDS_FIELD_ID",
+        description="Jira custom field for imported Zendesk Ticket IDs (multi-line text).",
+    )
+    jira_zendesk_ticket_count_field_id: str | None = Field(
+        default="customfield_10157",
+        validation_alias="TRIAGE_JIRA_ZENDESK_TICKET_COUNT_FIELD_ID",
+        description="Optional Jira number field for Zendesk ticket count (informational).",
+    )
     jira_http_timeout_seconds: float = Field(
         default=30.0,
         ge=1.0,
@@ -213,6 +228,43 @@ class AppSettings(BaseSettings):
         le=300.0,
         validation_alias="TRIAGE_IMAGE_CONTEXT_TIMEOUT_SECONDS",
         description="Per-attempt HTTP timeout for OpenRouter vision calls.",
+    )
+    triage_zendesk_context_enabled: bool = Field(
+        default=False,
+        validation_alias="TRIAGE_ZENDESK_CONTEXT_ENABLED",
+        description="Fetch linked Zendesk ticket summaries into triage issue context.",
+    )
+    zendesk_base_url: str | None = Field(
+        default=None,
+        validation_alias="ZENDESK_BASE_URL",
+        description="Zendesk subdomain base URL (e.g. https://acme.zendesk.com).",
+    )
+    zendesk_user_email: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("ZENDESK_USER_EMAIL", "ZENDESK_AGENT_EMAIL"),
+        description=(
+            "Zendesk user email for API token auth "
+            "(ZENDESK_USER_EMAIL or ZENDESK_AGENT_EMAIL)."
+        ),
+    )
+    zendesk_api_token: str | None = Field(
+        default=None,
+        validation_alias="ZENDESK_API_TOKEN",
+        description="Zendesk API token for ticket enrichment.",
+    )
+    zendesk_http_timeout_seconds: float = Field(
+        default=20.0,
+        ge=1.0,
+        le=120.0,
+        validation_alias="TRIAGE_ZENDESK_HTTP_TIMEOUT_SECONDS",
+        description="Per-attempt timeout for Zendesk ticket fetch requests.",
+    )
+    triage_zendesk_max_tickets: int = Field(
+        default=3,
+        ge=1,
+        le=20,
+        validation_alias="TRIAGE_ZENDESK_MAX_TICKETS",
+        description="Maximum linked Zendesk tickets to fetch per Jira issue.",
     )
     triage_audit_redact_image_transcript: bool = Field(
         default=True,

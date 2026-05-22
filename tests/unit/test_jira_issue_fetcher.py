@@ -170,11 +170,74 @@ def test_fetch_issue_marks_inline_from_rendered_description_attachment_urls(
 
 
 @pytest.mark.unit
+def test_fetch_issue_parses_zendesk_ticket_ids_from_custom_fields(
+    jira_app_settings: AppSettings,
+) -> None:
+    body = {
+        "key": "BC-77",
+        "id": "10099",
+        "fields": {
+            "summary": "Escalation",
+            "description": None,
+            "issuetype": {"name": "Bug"},
+            "priority": {"name": "P1"},
+            "reporter": {"displayName": "Reporter"},
+            "customfield_10158": "5001\n5002",
+            "customfield_10162": "6001",
+            "customfield_10157": 3,
+        },
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        assert "customfield_10158" in url
+        assert "customfield_10162" in url
+        assert "customfield_10157" in url
+        return httpx.Response(200, json=body)
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        fetcher = JiraIssueFetcher(jira_app_settings, client=client)
+        issue = fetcher.fetch("BC-77", run_id="run-test")
+
+    assert issue.zendesk_ticket_ids == ["5001", "5002", "6001"]
+    assert issue.zendesk_ticket_count == 3
+
+
+@pytest.mark.unit
+def test_fetch_issue_parses_numeric_issue_id_from_payload(
+    jira_app_settings: AppSettings,
+) -> None:
+    body = {
+        "key": "BC-55",
+        "id": "10099",
+        "fields": {
+            "summary": "s",
+            "description": None,
+            "issuetype": {"name": "Bug"},
+            "priority": None,
+            "reporter": {"displayName": "Reporter"},
+        },
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=body)
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        fetcher = JiraIssueFetcher(jira_app_settings, client=client)
+        issue = fetcher.fetch("BC-55", run_id="run-test")
+
+    assert issue.issue_id == "10099"
+
+
+@pytest.mark.unit
 def test_fetch_issue_returns_summary_description_type_priority_reporter(
     jira_app_settings: AppSettings,
 ) -> None:
     body = {
         "key": "TJC-42",
+        "id": "4242",
         "fields": {
             "summary": "Cannot log in",
             "description": {
@@ -213,6 +276,7 @@ def test_fetch_issue_returns_summary_description_type_priority_reporter(
 
     assert issue == FetchedIssue(
         issue_key="TJC-42",
+        issue_id="4242",
         summary="Cannot log in",
         description="Steps to reproduce",
         reproduction_steps="Steps to reproduce",

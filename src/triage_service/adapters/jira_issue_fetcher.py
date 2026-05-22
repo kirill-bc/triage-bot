@@ -29,10 +29,100 @@ class AttachmentRef(BaseModel):
     inline: bool = False
 
 
+class LinkedZendeskTicket(BaseModel):
+    """Normalized Zendesk ticket context linked from a Jira issue."""
+
+    ticket_id: str
+    subject: str
+    description: str | None = None
+    status: str | None = None
+    priority: str | None = None
+    url: str | None = None
+
+
+_ZENDESK_FIELD_URL_RE = re.compile(
+    r"https?://[A-Za-z0-9.-]*zendesk\.com/(?:agent/)?tickets/(\d+)",
+    re.IGNORECASE,
+)
+_ZENDESK_FIELD_SHORT_RE = re.compile(r"\bZD[-\s#:]*(\d+)\b", re.IGNORECASE)
+
+
+def _text_from_jira_custom_field(raw: Any) -> str:
+    if isinstance(raw, dict):
+        return _extract_text_from_adf(raw).strip()
+    if isinstance(raw, str):
+        return raw.strip()
+    return ""
+
+
+def _append_digit_tokens(text: str, found: list[str], seen: set[str]) -> None:
+    for token in re.split(r"[\s,;]+", text):
+        cleaned = token.strip().strip("[]\"'")
+        if cleaned.isdigit() and cleaned not in seen:
+            seen.add(cleaned)
+            found.append(cleaned)
+
+
+def _append_pattern_ticket_ids(text: str, found: list[str], seen: set[str]) -> None:
+    for pattern in (_ZENDESK_FIELD_URL_RE, _ZENDESK_FIELD_SHORT_RE):
+        for match in pattern.finditer(text):
+            ticket_id = str(match.group(1)).strip()
+            if ticket_id and ticket_id not in seen:
+                seen.add(ticket_id)
+                found.append(ticket_id)
+
+
+def parse_zendesk_ticket_ids_from_field_value(raw: Any) -> list[str]:
+    """Parse Zendesk numeric ticket ids from a Jira custom field (text or ADF)."""
+    if raw is None:
+        return []
+    if isinstance(raw, (int, float)):
+        value = int(raw)
+        return [str(value)] if value > 0 else []
+    text = _text_from_jira_custom_field(raw)
+    if not text:
+        return []
+    found: list[str] = []
+    seen: set[str] = set()
+    _append_digit_tokens(text, found, seen)
+    _append_pattern_ticket_ids(text, found, seen)
+    return found
+
+
+def _merge_zendesk_ticket_ids(
+    fields: dict[str, Any],
+    *,
+    field_ids: list[str],
+) -> list[str]:
+    found: list[str] = []
+    seen: set[str] = set()
+    for field_id in field_ids:
+        if field_id not in fields:
+            continue
+        for ticket_id in parse_zendesk_ticket_ids_from_field_value(fields.get(field_id)):
+            if ticket_id not in seen:
+                seen.add(ticket_id)
+                found.append(ticket_id)
+    return found
+
+
+def _parse_zendesk_ticket_count(fields: dict[str, Any], *, field_id: str | None) -> int | None:
+    fid = (field_id or "").strip()
+    if not fid or fid not in fields:
+        return None
+    raw = fields.get(fid)
+    if isinstance(raw, (int, float)):
+        return int(raw)
+    if isinstance(raw, str) and raw.strip().isdigit():
+        return int(raw.strip())
+    return None
+
+
 class FetchedIssue(BaseModel):
     """Normalized issue fields used by triage composition."""
 
     issue_key: str
+    issue_id: str | None = None
     summary: str
     description: str | None = None
     reproduction_steps: str | None = None
@@ -41,6 +131,9 @@ class FetchedIssue(BaseModel):
     reporter: str
     reporter_account_id: str | None = None
     attachments: list[AttachmentRef] = Field(default_factory=list)
+    zendesk_ticket_ids: list[str] = Field(default_factory=list)
+    zendesk_ticket_count: int | None = None
+    zendesk_tickets: list[LinkedZendeskTicket] = Field(default_factory=list)
 
 
 class JiraIssueFetchError(RuntimeError):
@@ -237,8 +330,15 @@ def _parse_issue_payload(
     payload: dict[str, Any],
     *,
     reproduction_steps_field_id: str | None = None,
+    zendesk_ticket_ids_field_ids: list[str] | None = None,
+    zendesk_ticket_count_field_id: str | None = None,
 ) -> FetchedIssue:
     key = str(payload["key"])
+    raw_issue_id = payload.get("id")
+    issue_id: str | None = None
+    if raw_issue_id is not None:
+        stripped = str(raw_issue_id).strip()
+        issue_id = stripped if stripped else None
     fields = payload.get("fields") or {}
     summary = str(fields.get("summary") or "").strip()
     description_raw = fields.get("description")
@@ -270,8 +370,17 @@ def _parse_issue_payload(
     reporter_obj = fields.get("reporter") or {}
     reporter = _reporter_label(reporter_obj)
     reporter_aid = _reporter_account_id(reporter_obj)
+    zendesk_ids = _merge_zendesk_ticket_ids(
+        fields,
+        field_ids=zendesk_ticket_ids_field_ids or [],
+    )
+    zendesk_count = _parse_zendesk_ticket_count(
+        fields,
+        field_id=zendesk_ticket_count_field_id,
+    )
     return FetchedIssue(
         issue_key=key,
+        issue_id=issue_id,
         summary=summary,
         description=description,
         reproduction_steps=reproduction_steps,
@@ -280,6 +389,8 @@ def _parse_issue_payload(
         reporter=reporter,
         reporter_account_id=reporter_aid,
         attachments=attachments,
+        zendesk_ticket_ids=zendesk_ids,
+        zendesk_ticket_count=zendesk_count,
     )
 
 
@@ -398,7 +509,22 @@ class JiraIssueFetcher:
         repro_field_id = (self._settings.jira_reproduction_steps_field_id or "").strip()
         if repro_field_id:
             fields.append(repro_field_id)
+        for field_id in self._zendesk_custom_field_ids():
+            if field_id not in fields:
+                fields.append(field_id)
         return ",".join(fields)
+
+    def _zendesk_custom_field_ids(self) -> list[str]:
+        out: list[str] = []
+        for raw in (
+            self._settings.jira_zendesk_ticket_ids_field_id,
+            self._settings.jira_imported_zendesk_ticket_ids_field_id,
+            self._settings.jira_zendesk_ticket_count_field_id,
+        ):
+            field_id = (raw or "").strip()
+            if field_id:
+                out.append(field_id)
+        return out
 
     def _request_issue(
         self,
@@ -417,6 +543,15 @@ class JiraIssueFetcher:
         return _parse_issue_payload(
             payload,
             reproduction_steps_field_id=self._settings.jira_reproduction_steps_field_id,
+            zendesk_ticket_ids_field_ids=[
+                stripped
+                for raw in (
+                    self._settings.jira_zendesk_ticket_ids_field_id,
+                    self._settings.jira_imported_zendesk_ticket_ids_field_id,
+                )
+                if (stripped := (raw or "").strip())
+            ],
+            zendesk_ticket_count_field_id=self._settings.jira_zendesk_ticket_count_field_id,
         )
 
     def _get_with_retries(

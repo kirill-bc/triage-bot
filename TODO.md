@@ -108,7 +108,46 @@ Out of scope (do not pull in):
 
 Done when: issues with sparse text and load-bearing screenshots produce measurably better classification / priority on the benchmark dataset; extraction is feature-flagged and disabled by default; `pytest -m "unit or integration"`, `mypy .`, and `pytest -m lint` all pass; per-image failures degrade gracefully without aborting triage; benchmark runs can be stratified by image presence.
 
-## 8. Integration tests (deferred until post-deploy stabilization)
+## 8. Zendesk context augmentation
+Linked Zendesk tickets often carry the original customer report, follow-up comments, and screenshots that were later copied into the Jira issue. Baseline enrichment fetches ticket summaries into the shared `_issue_block`; follow-on work hardens deduplication and extends the §7 vision preprocessor to Zendesk-sourced images without double-counting Jira attachments.
+
+**Baseline (done):**
+- [x] Parse Zendesk ticket ids from Jira custom fields (`customfield_10158`, `customfield_10162`) with id-level dedupe across both fields (`_merge_zendesk_ticket_ids`).
+- [x] Fetch ticket summaries from Zendesk API (`GET /api/v2/tickets/{id}.json`) when credentials are configured (`ZENDESK_BASE_URL`, `ZENDESK_API_TOKEN`, `ZENDESK_USER_EMAIL` or `ZENDESK_AGENT_EMAIL`).
+- [x] Append linked ticket subject / description / status / priority to `_issue_block` (`issue_text_block.format_issue_text_block`).
+- [x] Wire enrichment into `TriageHandler.run_sync` behind `TRIAGE_ZENDESK_CONTEXT_ENABLED` (soft-fail on fetch errors; triage continues).
+- [x] Smoke script parity: `scripts/fetch_jira_issue.py` fetches all ids from Jira custom fields and prints `zendesk_tickets` JSON.
+
+**Remaining — ticket deduplication:**
+- [ ] **Id union dedupe:** when custom fields are empty and ids are parsed from issue body text, union with any ids discovered in summary/description/reproduction steps without duplicates (today custom-field path and body-text path are mutually exclusive in `collect_linked_ticket_ids`).
+- [ ] **Cross-ticket content dedupe:** when multiple linked Zendesk tickets repeat the same narrative (merged/related tickets, re-opened escalations), collapse redundant subject/description blocks in `_issue_block` rather than appending N near-identical sections. Heuristics: normalized text hash, shared subject prefix, or explicit Zendesk `via`/`problem_id` linkage when available from API.
+- [ ] **Jira ↔ Zendesk text dedupe:** strip Zendesk description paragraphs that are already present verbatim (or near-verbatim) in the Jira description/reproduction steps so the model is not fed duplicate prose.
+
+**Remaining — Zendesk images (extends §7 vision preprocessor):**
+- [ ] **Discover Zendesk inline images:** parse `![](…)` / HTML `<img>` URLs from fetched ticket descriptions and list ticket-level attachments via Zendesk Attachments API (`GET /api/v2/tickets/{id}/comments.json` with `include_inline_images` or attachment endpoints as appropriate).
+- [ ] **Fetch Zendesk attachment bytes** with the same Zendesk Basic auth used for ticket fetch; follow redirects for signed/token URLs.
+- [ ] **Cross-source image dedupe (required before vision):** do not run vision on a Zendesk image that is already represented on the Jira issue. Match candidates against Jira `AttachmentRef` entries using a tiered key: (1) exact filename match (e.g. `blobid0.png`, `image-20260219-160437.png`), (2) same MIME + size within tolerance, (3) optional content hash when bytes are cheap to fetch. Skip duplicates; record skip reason in audit metadata.
+- [ ] **Budget sharing with Jira images:** Zendesk-only images consume the same `TRIAGE_IMAGE_CONTEXT_MAX_ATTACHMENTS` / byte budget as inline Jira attachments (Jira inline images first, then deduped Zendesk-only images up to the cap).
+- [ ] **Render in `_issue_block`:** label Zendesk-sourced transcripts distinctly (e.g. `[Zendesk ticket #47322 attachment: …]`) so prompts attribute screenshot context correctly.
+- [ ] **TDD first:** failing unit tests for URL parsing, dedupe keys, budget enforcement, and soft-failure placeholders before implementation.
+
+**Remaining — observability & ops:**
+- [ ] Add Langfuse span `zendesk_context_fetch` (ticket count, latency, per-ticket failures) nested under `triage_issue_pipeline`.
+- [ ] Emit `zendesk_context_fetched` audit event (ids requested vs returned, dedupe counts, fetch error breakdown).
+- [ ] Extend `triage_completed` telemetry with `zendesk_tickets_considered` / `zendesk_tickets_fetched`.
+- [x] Document Zendesk enrichment flags in `README.md` and `.env.example`; update §10 “no Zendesk intake” limitation to reflect linked-ticket enrichment scope (dedupe behavior still open).
+
+**Remaining — evaluation:**
+- [ ] Benchmark / bulk-triage stratification: accuracy breakdown for issues with vs without linked Zendesk context (and with vs without Zendesk-only images once vision path lands).
+
+Out of scope (do not pull in):
+- Full Zendesk intake / ticket creation from triage.
+- Zendesk comment thread replay beyond what is already in ticket description at fetch time.
+- True multimodal classification — Zendesk images flow through the same text-only vision preprocessor as §7.
+
+Done when: linked Zendesk tickets enrich triage without duplicate ticket prose or duplicate screenshot vision calls; Zendesk-only images improve classification on benchmark cases where Jira text is sparse; dedupe and fetch metrics are visible in audit/Langfuse; all gates pass.
+
+## 9. Integration tests (deferred until post-deploy stabilization)
 - [ ] Add API contract tests for `POST /triage` request/response shape and validation errors.
 - [ ] Add integration tests for Jira webhook adapter invoking synchronous triage pipeline.
 - [ ] Add integration tests for Jira action executor against mocked Jira API.
@@ -117,17 +156,17 @@ Done when: issues with sparse text and load-bearing screenshots produce measurab
 - [ ] Add integration coverage for audit emission on success/failure paths (including model-output capture and confidence persistence).
 - Done when: `pytest -m integration` passes deterministically and covers service boundaries + observability surfaces.
 
-## 9. Polish & Docs
+## 10. Polish & Docs
 - [x] Document architecture and module responsibilities after refactor (`api`, `core`, `adapters`, `observability`).
 - [x] Add runbook for local development, env setup, and test execution commands.
 - [x] Add Jira Automation setup recipe: scheduled rule cadence (every 5 min <= JQL window), reference JQL (`project = ... AND issuetype = Bug AND labels not in (triagebot-reviewed) AND created >= -30m AND created <= -5m`), and body template (`issue_key`, `project`, `source: bug_created|priority_changed`).
 - [x] Document `triagebot-reviewed` lifecycle: always applied on success, remove to force re-triage, absent on >30m-old issues indicates manual-QA fallback case.
 - [x] Document observability usage: where to inspect raw model output/confidence, and how to trace a run by `run_id`.
-- [x] Document known MVP limitations and out-of-scope items (no auto mutation, no Zendesk intake, no full RAG).
+- [x] Document known MVP limitations and out-of-scope items (no auto mutation, no full Zendesk intake / ticket creation, no full RAG). Linked-ticket enrichment is tracked in **§8**.
 - [ ] Record default model-selection rationale and confidence calibration strategy for next phase tuning.
 - Done when: a new engineer can run, operate, observe, and troubleshoot the service using repo docs only.
 
-## 10. Post-MVP
+## 11. Post-MVP
 - [x] **Classification benchmark harness (in-repo):** `scripts/benchmark/classification_benchmark.py` / `scripts/benchmark/benchmark_summary.py`, `scripts/benchmark/run_classification_benchmark.py` (multi-model JSONL + `summary.json`), `scripts/benchmark/summarize_benchmark_rows.py` (offline re-aggregation), unit tests under `tests/unit/test_classification_benchmark.py` and `tests/unit/test_benchmark_summary.py`. Curated rows live under `data/` (combined `issue_benchmark_dataset.csv` plus bucket CSVs). **Jira sampler:** `scripts/benchmark/build_benchmark_dataset.py` (changelog-derived keys; uses `GET /rest/api/3/search/jql` with `nextPageToken` because Cloud removed legacy search). **Composition:** keep the CSV Bug-centric; no requirement to rebalance toward equal Story buckets while Story outcomes stay out of scope—add rows when they help Bug-path / priority signal, and keep human ground truth vs Jira fields explicit where rows encode corrections.
 - [x] Move prompt management to Langfuse for easier prompting and prompt version control.
 - [ ] **Langfuse root trace cost in trace list:** OpenRouter token usage and cost fields (when returned) are forwarded to nested `inference_*` Langfuse generations; nested views and cost dashboards can reflect that. The top-level trace row / trace menu may still show `$0.00` for `triage_issue_pipeline`. Revisit later (SDK trace vs span model, trace-level aggregates vs UI, or Langfuse product behavior). Good enough for MVP observability.

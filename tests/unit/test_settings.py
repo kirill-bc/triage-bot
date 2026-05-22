@@ -78,10 +78,27 @@ def test_load_settings_loads_required_keys_from_dotenv(
     assert settings.logging_endpoint == "https://logs.example/ingest"
 
 
+def _clear_zendesk_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in (
+        "TRIAGE_ZENDESK_CONTEXT_ENABLED",
+        "ZENDESK_BASE_URL",
+        "ZENDESK_USER_EMAIL",
+        "ZENDESK_AGENT_EMAIL",
+        "ZENDESK_API_TOKEN",
+        "TRIAGE_JIRA_ZENDESK_TICKET_IDS_FIELD_ID",
+        "TRIAGE_JIRA_IMPORTED_ZENDESK_TICKET_IDS_FIELD_ID",
+        "TRIAGE_JIRA_ZENDESK_TICKET_COUNT_FIELD_ID",
+        "TRIAGE_ZENDESK_HTTP_TIMEOUT_SECONDS",
+        "TRIAGE_ZENDESK_MAX_TICKETS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
 @pytest.mark.unit
 def test_load_settings_optional_fields_default_when_omitted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _clear_zendesk_env(monkeypatch)
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".env").write_text(
         "JIRA_API_KEY=jira-token\nOPENROUTER_API_KEY=or-token\nTRIAGE_WEBHOOK_TOKEN=triage-token\n",
@@ -100,6 +117,15 @@ def test_load_settings_optional_fields_default_when_omitted(
     assert settings.audit_redact_model_output is False
     assert settings.openrouter_http_timeout_seconds == 60.0
     assert settings.openrouter_http_max_retries == 2
+    assert settings.triage_zendesk_context_enabled is False
+    assert settings.zendesk_base_url is None
+    assert settings.zendesk_user_email is None
+    assert settings.zendesk_api_token is None
+    assert settings.zendesk_http_timeout_seconds == 20.0
+    assert settings.triage_zendesk_max_tickets == 3
+    assert settings.jira_zendesk_ticket_ids_field_id == "customfield_10158"
+    assert settings.jira_imported_zendesk_ticket_ids_field_id == "customfield_10162"
+    assert settings.jira_zendesk_ticket_count_field_id == "customfield_10157"
 
 
 @pytest.mark.unit
@@ -158,6 +184,55 @@ def test_load_settings_reads_openrouter_http_timeout_and_max_retries(
     settings = load_settings()
     assert settings.openrouter_http_timeout_seconds == 90.0
     assert settings.openrouter_http_max_retries == 1
+
+
+@pytest.mark.unit
+def test_load_settings_reads_optional_zendesk_enrichment_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_zendesk_env(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "JIRA_API_KEY=jira-token\n"
+        "OPENROUTER_API_KEY=or-token\n"
+        "TRIAGE_WEBHOOK_TOKEN=triage-token\n"
+        "TRIAGE_ZENDESK_CONTEXT_ENABLED=true\n"
+        "ZENDESK_BASE_URL=https://acme.zendesk.com\n"
+        "ZENDESK_USER_EMAIL=agent@example.com\n"
+        "ZENDESK_API_TOKEN=token-1\n"
+        "TRIAGE_JIRA_ZENDESK_TICKET_IDS_FIELD_ID=customfield_10158\n"
+        "TRIAGE_ZENDESK_HTTP_TIMEOUT_SECONDS=25\n"
+        "TRIAGE_ZENDESK_MAX_TICKETS=5\n",
+        encoding="utf-8",
+    )
+    settings = load_settings(env_file=env_path)
+    assert settings.triage_zendesk_context_enabled is True
+    assert settings.zendesk_base_url == "https://acme.zendesk.com"
+    assert settings.zendesk_user_email == "agent@example.com"
+    assert settings.zendesk_api_token == "token-1"
+    assert settings.zendesk_http_timeout_seconds == 25.0
+    assert settings.triage_zendesk_max_tickets == 5
+    assert settings.jira_zendesk_ticket_ids_field_id == "customfield_10158"
+
+
+@pytest.mark.unit
+def test_app_settings_accepts_zendesk_agent_email_alias(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_zendesk_env(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "JIRA_API_KEY=jira-token\n"
+        "OPENROUTER_API_KEY=or-token\n"
+        "TRIAGE_WEBHOOK_TOKEN=triage-token\n"
+        "ZENDESK_AGENT_EMAIL=agent@example.com\n"
+        "ZENDESK_API_TOKEN=token-1\n",
+        encoding="utf-8",
+    )
+    settings = load_settings(env_file=env_path)
+    assert settings.zendesk_user_email == "agent@example.com"
 
 
 @pytest.mark.unit

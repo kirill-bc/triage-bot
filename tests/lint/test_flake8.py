@@ -18,6 +18,7 @@ def test_flake8_passes_on_src_and_tests() -> None:
             str(root / "src" / "triage_service" / "core" / "settings.py"),
             str(root / "src" / "triage_service" / "adapters" / "jira_action_executor.py"),
             str(root / "src" / "triage_service" / "adapters" / "jira_issue_fetcher.py"),
+            str(root / "src" / "triage_service" / "adapters" / "zendesk_ticket_fetcher.py"),
             str(root / "src" / "triage_service" / "adapters" / "jira_jql_search.py"),
             str(root / "src" / "triage_service" / "adapters" / "image_context_extractor.py"),
             str(root / "src" / "triage_service" / "adapters" / "jira_http_retry.py"),

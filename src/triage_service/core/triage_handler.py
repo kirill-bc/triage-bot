@@ -20,6 +20,10 @@ from triage_service.adapters.jira_issue_fetcher import (
     JiraIssueFetcher,
     JiraIssueFetchError,
 )
+from triage_service.adapters.zendesk_ticket_fetcher import (
+    ZendeskTicketFetchError,
+    ZendeskTicketFetcher,
+)
 from triage_service.adapters.openrouter_inference_client import (
     OpenRouterInferenceClient,
     OpenRouterInferenceError,
@@ -300,6 +304,7 @@ class TriageHandler:
         inference_tracer: LangfuseInferenceTracer | None = None,
         audit_store: AuditStore | None = None,
         image_context_extractor: ImageContextExtractor | None = None,
+        zendesk_fetcher: ZendeskTicketFetcher | None = None,
         settings: AppSettings,
     ) -> None:
         self._allowed = frozenset(allowed_projects)
@@ -315,6 +320,7 @@ class TriageHandler:
             if image_context_extractor is not None
             else NoOpImageContextExtractor()
         )
+        self._zendesk_fetcher = zendesk_fetcher
 
     def flush_inference_telemetry(self) -> None:
         """Flush Langfuse buffers for inference traces and Langfuse-backed audit sinks."""
@@ -338,6 +344,7 @@ class TriageHandler:
                 fetch_start = perf_counter()
                 try:
                     issue = self._fetcher.fetch(issue_key, run_id=run_id)
+                    issue = self._enrich_with_zendesk(issue, run_id=run_id)
                 finally:
                     self._log_stage_timing(
                         stage="jira_fetch",
@@ -425,6 +432,22 @@ class TriageHandler:
                 classification=steps.classification,
                 priority=steps.priority,
             )
+
+    def _enrich_with_zendesk(self, issue: FetchedIssue, *, run_id: str) -> FetchedIssue:
+        fetcher = self._zendesk_fetcher
+        if fetcher is None or not fetcher.enabled:
+            return issue
+        try:
+            tickets = fetcher.fetch_linked_tickets(issue, run_id=run_id)
+        except ZendeskTicketFetchError:
+            LOGGER.exception(
+                "Zendesk enrichment failed",
+                extra={"issue_key": issue.issue_key, "run_id": run_id},
+            )
+            return issue
+        if not tickets:
+            return issue
+        return issue.model_copy(update={"zendesk_tickets": tickets})
 
     def run_sync_on_fetched(
         self,
@@ -834,6 +857,7 @@ def build_default_triage_handler(
         fetcher,
         inference_tracer=obs.inference_tracer,
     )
+    zendesk_fetcher = ZendeskTicketFetcher(settings)
     inference = OpenRouterInferenceClient(settings)
     cloud_id_configured = settings.jira_cloud_id and str(settings.jira_cloud_id).strip()
     if (
@@ -857,6 +881,7 @@ def build_default_triage_handler(
         inference_tracer=obs.inference_tracer,
         audit_store=obs.audit_store,
         image_context_extractor=image_extractor,
+        zendesk_fetcher=zendesk_fetcher,
         settings=settings,
     )
 

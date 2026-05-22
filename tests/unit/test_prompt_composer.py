@@ -11,6 +11,7 @@ import pytest
 from triage_service.core.settings import AppSettings
 from triage_service.adapters.image_context_extractor import ImageContext
 from triage_service.adapters.jira_issue_fetcher import FetchedIssue
+from triage_service.adapters.jira_issue_fetcher import LinkedZendeskTicket
 from triage_service.core.policy_context import PolicyContext
 
 from triage_service.core.prompt_composer import (
@@ -152,6 +153,31 @@ def test_issue_block_renders_soft_failure_placeholder_for_extraction_errors(
     block = _issue_block(issue, image_contexts=contexts)
     assert "[Attachment 1: extraction unavailable — exceeds size limit]" in block
     assert "Transcript:" not in block
+
+
+@pytest.mark.unit
+def test_issue_block_includes_linked_zendesk_tickets(settings: AppSettings) -> None:
+    issue = FetchedIssue(
+        issue_key="TJC-14",
+        summary="Escalated issue",
+        issue_type="Bug",
+        reporter="erin",
+        zendesk_tickets=[
+            LinkedZendeskTicket(
+                ticket_id="91234",
+                subject="Portal login broken",
+                description="Customer cannot sign in after MFA prompt.",
+                status="open",
+                priority="urgent",
+                url="https://acme.zendesk.com/agent/tickets/91234",
+            ),
+        ],
+    )
+    block = _issue_block(issue)
+    assert "Linked Zendesk tickets:" in block
+    assert "[Zendesk 1: #91234 | status=open | priority=urgent]" in block
+    assert "Subject: Portal login broken" in block
+    assert "Description:\nCustomer cannot sign in after MFA prompt." in block
 
 
 @pytest.mark.unit
