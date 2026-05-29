@@ -7,11 +7,13 @@ was invoked: ``bug_created`` (Jira automation on new bugs), ``priority_changed``
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 import uuid
+from contextlib import asynccontextmanager
 from hmac import compare_digest
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, status
@@ -27,8 +29,13 @@ from triage_service.core.triage_handler import TriageRunner, build_default_triag
 from triage_service.core.triage_recommendation_parser import TriageRecommendation
 from triage_service.observability.log_payload_guard import preview_bytes_for_log
 from triage_service.observability.observability_wiring import observability_status_summary
+from triage_service.observability.runtime_logging import (
+    HttpAccessLogMiddleware,
+    configure_runtime_logging,
+)
 
 TriageSource = Literal["bug_created", "priority_changed", "manual_trigger"]
+LOGGER = logging.getLogger(__name__)
 
 
 def triage_inbound_debug_enabled() -> bool:
@@ -152,9 +159,21 @@ def _flush_inference_telemetry_if_supported(runner: TriageRunner) -> None:
         flush()
 
 
+def _resolve_log_level() -> str:
+    token = os.environ.get("LOG_LEVEL", "INFO").strip().upper()
+    allowed = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+    return token if token in allowed else "INFO"
+
+
 def create_app(*, triage_handler_factory: Callable[[], TriageRunner] | None = None) -> FastAPI:
     """Build the FastAPI app. Override ``triage_handler_factory`` in tests."""
     factory: Callable[[], TriageRunner] = triage_handler_factory or build_default_triage_handler
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        configure_runtime_logging(log_level=_resolve_log_level())
+        LOGGER.info("triage_api_started")
+        yield
 
     def get_triage_runner() -> TriageRunner:
         return factory()
@@ -173,7 +192,7 @@ def create_app(*, triage_handler_factory: Callable[[], TriageRunner] | None = No
                 detail="Unauthorized",
             )
 
-    app = FastAPI(title="Jira Triage", version="0.1.0")
+    app = FastAPI(title="Jira Triage", version="0.1.0", lifespan=lifespan)
 
     @app.get("/health", response_model=None)
     def health() -> HealthResponse | JSONResponse:
@@ -203,6 +222,16 @@ def create_app(*, triage_handler_factory: Callable[[], TriageRunner] | None = No
         ).outcome
         _flush_inference_telemetry_if_supported(runner)
         if isinstance(outcome, TriageFailure):
+            LOGGER.warning(
+                "triage_api_failed run_id=%s issue_key=%s project=%s source=%s "
+                "category=%s message=%s",
+                run_id,
+                body.issue_key,
+                body.project,
+                body.source,
+                outcome.category,
+                outcome.message,
+            )
             return TriagePostResponse(
                 run_id=run_id,
                 issue_key=body.issue_key,
@@ -220,6 +249,7 @@ def create_app(*, triage_handler_factory: Callable[[], TriageRunner] | None = No
             recommendation=outcome,
         )
 
+    app.add_middleware(HttpAccessLogMiddleware)
     app.add_middleware(_DebugInboundTriageBodyMiddleware)
     return app
 

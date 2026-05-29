@@ -42,9 +42,16 @@ def _load_vision_prompt_templates() -> _VisionPromptTemplates:
 _VISION_PROMPT_TEMPLATES = _load_vision_prompt_templates()
 
 
-def format_vision_issue_context(issue: FetchedIssue) -> str:
+def format_vision_issue_context(
+    issue: FetchedIssue,
+    *,
+    settings: AppSettings | None = None,
+) -> str:
     """Ticket text passed to vision preprocessing (same fields as classification issue block)."""
-    return format_issue_text_block(issue)
+    comments_char_budget = (
+        settings.triage_comments_char_budget if settings is not None else None
+    )
+    return format_issue_text_block(issue, comments_char_budget=comments_char_budget)
 
 
 def compose_vision_system_prompt(*, settings: AppSettings) -> str:
@@ -60,7 +67,7 @@ def compose_vision_system_prompt(*, settings: AppSettings) -> str:
 
 def compose_vision_user_instruction(issue: FetchedIssue, *, settings: AppSettings) -> str:
     """User text with ticket context plus TRANSCRIPT / SUMMARY format (image sent separately)."""
-    issue_block = format_vision_issue_context(issue)
+    issue_block = format_vision_issue_context(issue, settings=settings)
     langfuse_text = fetch_langfuse_text_prompt(
         settings,
         settings.triage_langfuse_vision_user_prompt_name,

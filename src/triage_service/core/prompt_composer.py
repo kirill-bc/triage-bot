@@ -114,9 +114,13 @@ def _format_attached_images_section(contexts: Sequence[ImageContext]) -> str:
 def _issue_block(
     issue: FetchedIssue,
     *,
+    settings: AppSettings | None = None,
     image_contexts: Sequence[ImageContext] | None = None,
 ) -> str:
-    base = format_issue_text_block(issue)
+    comments_char_budget = (
+        settings.triage_comments_char_budget if settings is not None else None
+    )
+    base = format_issue_text_block(issue, comments_char_budget=comments_char_budget)
     images_section = _format_attached_images_section(image_contexts or ())
     if not images_section:
         return base
@@ -135,7 +139,11 @@ def compose_classification_prompt(
     Langfuse ``classification-user`` embeds policy and reason guidance; only ``issue_block`` is
     compiled in. Local fallback stitches bug policy and reason text from ``policy`` and templates.
     """
-    issue_block = _issue_block(issue, image_contexts=image_contexts)
+    issue_block = _issue_block(
+        issue,
+        settings=settings,
+        image_contexts=image_contexts,
+    )
     langfuse_prompt = fetch_langfuse_text_prompt(
         settings,
         settings.triage_langfuse_classification_prompt_name,
@@ -162,7 +170,11 @@ def compose_priority_prompt(
     Langfuse ``priority-user`` embeds policy and reason guidance; only ``issue_block`` is compiled
     in. Local fallback stitches priority policy and reason text from ``policy`` and templates.
     """
-    issue_block = _issue_block(issue, image_contexts=image_contexts)
+    issue_block = _issue_block(
+        issue,
+        settings=settings,
+        image_contexts=image_contexts,
+    )
     langfuse_prompt = fetch_langfuse_text_prompt(
         settings,
         settings.triage_langfuse_priority_prompt_name,

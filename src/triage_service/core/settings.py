@@ -266,12 +266,38 @@ class AppSettings(BaseSettings):
         validation_alias="TRIAGE_ZENDESK_MAX_TICKETS",
         description="Maximum linked Zendesk tickets to fetch per Jira issue.",
     )
+    triage_comments_char_budget: int = Field(
+        default=6000,
+        ge=0,
+        le=50000,
+        validation_alias="TRIAGE_COMMENTS_CHAR_BUDGET",
+        description=(
+            "Max cumulative comment body characters included in triage context; "
+            "oldest comments are dropped first when budget is exceeded."
+        ),
+    )
     triage_audit_redact_image_transcript: bool = Field(
         default=True,
         validation_alias="TRIAGE_AUDIT_REDACT_IMAGE_TRANSCRIPT",
         description=(
             "Redact vision model output (TRANSCRIPT/SUMMARY) in Langfuse inference_vision "
             "generations. Jira description and repro in vision inputs are always kept."
+        ),
+    )
+    triage_auto_apply_deescalation: bool = Field(
+        default=False,
+        validation_alias="TRIAGE_AUTO_APPLY_DEESCALATION",
+        description=(
+            "Auto-apply Jira priority field changes when TriageBot recommends a less urgent "
+            "priority (deescalation)."
+        ),
+    )
+    triage_auto_apply_bug_to_story: bool = Field(
+        default=False,
+        validation_alias="TRIAGE_AUTO_APPLY_BUG_TO_STORY",
+        description=(
+            "Auto-apply Jira issue-type update from Bug to Story when Story recommendation "
+            "mismatches current issue type."
         ),
     )
 

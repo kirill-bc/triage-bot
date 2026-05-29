@@ -21,6 +21,7 @@ def test_build_uvicorn_argv_includes_module_host_port() -> None:
         "0.0.0.0",
         "--port",
         "8000",
+        "--no-access-log",
     ]
 
 

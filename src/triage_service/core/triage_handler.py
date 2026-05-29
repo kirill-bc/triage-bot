@@ -41,6 +41,7 @@ from triage_service.core.triage_fallback import (
     TriageFailure,
     fallback_for_exception,
 )
+from triage_service.core.triage_mismatch import compute_mismatch_flags
 from triage_service.core.triage_recommendation_parser import (
     ClassificationStepOutput,
     InvalidTriageRecommendationError,
@@ -164,30 +165,50 @@ def _triage_completed_telemetry(
     *,
     issue: FetchedIssue,
     recommendation: TriageRecommendation,
+    settings: AppSettings,
     image_extraction: ImageContextExtractionResult | None = None,
 ) -> dict[str, object] | None:
+    auto_apply_flags: dict[str, object] = {
+        "auto_apply_deescalation_enabled": settings.triage_auto_apply_deescalation,
+        "auto_apply_bug_to_story_enabled": settings.triage_auto_apply_bug_to_story,
+    }
     image_telemetry = _image_context_telemetry(image_extraction)
     if recommendation.recommended_issue_type != "Bug":
-        return image_telemetry
+        flags = compute_mismatch_flags(issue, recommendation)
+        story_mismatch = (
+            flags.type_mismatch and recommendation.recommended_issue_type == "Story"
+        )
+        issue_type_telemetry: dict[str, object] = {
+            "would_post_jira_comment": story_mismatch,
+            "would_auto_apply_issue_type_change": (
+                settings.triage_auto_apply_bug_to_story
+                and story_mismatch
+                and str(issue.issue_type).strip().upper() == "BUG"
+            ),
+        }
+        return _merge_telemetry(image_telemetry, auto_apply_flags, issue_type_telemetry)
     rec_pri = recommendation.recommended_priority
     if rec_pri is None:
-        return image_telemetry
+        return _merge_telemetry(image_telemetry, auto_apply_flags)
     orig_rank = _p0_p4_rank(issue.priority)
     rec_rank = _p0_p4_rank(str(rec_pri))
     if orig_rank is None or rec_rank is None:
-        return image_telemetry
+        return _merge_telemetry(image_telemetry, auto_apply_flags)
     if rec_rank < orig_rank:
         signal = "prioritize"
     elif rec_rank > orig_rank:
         signal = "deescalate"
     else:
         signal = "aligned"
-    priority_telemetry = {
+    priority_telemetry: dict[str, object] = {
         "priority_signal": signal,
         "jira_priority": str(issue.priority).strip() if issue.priority is not None else "",
-        "would_post_jira_comment": signal == "deescalate",
+        "would_post_jira_comment": signal in ("prioritize", "deescalate"),
+        "would_auto_apply_priority_change": (
+            signal == "deescalate" and settings.triage_auto_apply_deescalation
+        ),
     }
-    return _merge_telemetry(image_telemetry, priority_telemetry)
+    return _merge_telemetry(image_telemetry, auto_apply_flags, priority_telemetry)
 
 
 @dataclass(frozen=True, slots=True)
@@ -728,6 +749,7 @@ class TriageHandler:
                     telemetry=_triage_completed_telemetry(
                         issue=issue,
                         recommendation=final_rec,
+                        settings=self._settings,
                         image_extraction=image_extraction,
                     ),
                 ),
@@ -799,6 +821,7 @@ class TriageHandler:
                 telemetry=_triage_completed_telemetry(
                     issue=issue,
                     recommendation=merged,
+                    settings=self._settings,
                     image_extraction=image_extraction,
                 ),
             ),
@@ -838,6 +861,8 @@ def build_default_triage_handler(
     *,
     post_mismatch_comments: bool = True,
     apply_to_jira: bool = True,
+    auto_apply_deescalation: bool | None = None,
+    auto_apply_bug_to_story: bool | None = None,
 ) -> TriageRunner:
     """Build handler from settings, policy, and Jira executor if Jira env is set."""
     from triage_service.adapters.image_context_extractor import build_image_context_extractor
@@ -869,6 +894,8 @@ def build_default_triage_handler(
         executor: TriageActionExecutor = JiraTriageActionExecutor(
             settings,
             post_mismatch_comments=post_mismatch_comments,
+            auto_apply_deescalation=auto_apply_deescalation,
+            auto_apply_bug_to_story=auto_apply_bug_to_story,
         )
     else:
         executor = NoOpTriageActionExecutor()

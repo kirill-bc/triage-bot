@@ -6,7 +6,7 @@ Jira Triage is an MVP service that accepts a triage trigger, fetches Jira issue 
 
 The repository currently includes:
 
-- a working `POST /triage` API that validates the request, runs synchronous triage (fetch → classify → optional priority), and returns `run_id` (per-request UUID), `status: completed|failed`, and a recommendation or `TriageFailure` (also invocable locally via `scripts/run_triage_cli.py` with `source=manual_trigger`, which generates its own `run_id` for the CLI attempt). When `JIRA_CLOUD_ID` and `JIRA_USER_EMAIL` are configured, successful triage applies Jira labels/comments via `src/triage_service/adapters/jira_action_executor.py` (see below); failures do not touch the issue.
+- a working `POST /triage` API that validates the request, runs synchronous triage (fetch → classify → optional priority), and returns `run_id` (per-request UUID), `status: completed|failed`, and a recommendation or `TriageFailure` (also invocable locally via `scripts/run_triage_cli.py` with `source=manual_trigger`, which generates its own `run_id` for the CLI attempt). When `JIRA_CLOUD_ID` and `JIRA_USER_EMAIL` are configured, successful triage applies Jira labels/comments via `src/triage_service/adapters/jira_action_executor.py` and can optionally auto-apply selected field mutations (see below); failures do not touch the issue.
 - Jira issue fetch support (`summary`, `description`, `issue type`, `priority`, `reporter`, and optional `reproduction_steps`)
 - bundled **policy text** for model context (`src/triage_service/core/policy/`) and a **`policy_context`** loader
 - **prompt composer** for separate classification vs priority model inputs (`src/triage_service/core/prompt_composer.py`)
@@ -24,13 +24,14 @@ See `TODO.md` for the active implementation backlog.
 - `src/triage_service/adapters/jira_jql_search.py`: paginated Jira Cloud `GET /rest/api/3/search/jql` helper (`search_issues_by_jql`) returning issue keys with current type/priority for bulk runs
 - `src/triage_service/adapters/jira_action_executor.py`: on success, applies `triagebot-reviewed` plus mismatch labels and a templated **TriageBot** ADF comment when needed; on `TriageFailure`, performs no Jira writes
 - `src/triage_service/adapters/openrouter_inference_client.py`: OpenRouter chat completions using `TRIAGE_TEXT_MODEL` (see `src/triage_service/core/settings.py`)
+- `src/triage_service/observability/runtime_logging.py`: stdout logging config (`LOG_LEVEL`), inbound `HttpAccessLogMiddleware`, and outbound HTTP log helpers used by `jira_http_retry`
 - `src/triage_service/core/settings.py`: environment-backed runtime settings, including `TRIAGE_ALLOWED_PROJECTS` allowlist parsing
 - `src/triage_service/core/policy_context.py`: loads bug and priority definition text from `src/triage_service/core/policy/` for prompts
 - `src/triage_service/core/prompt_composer.py`: builds classification-only and priority-only prompt strings from policy + issue
 - `src/triage_service/core/triage_recommendation_parser.py`: validates merged LLM JSON into `TriageRecommendation` (throws `InvalidTriageRecommendationError` when invalid)
 - `src/triage_service/core/triage_mismatch.py`: `compute_mismatch_flags(issue, recommendation)` for deterministic type/priority mismatch (Jira executor / comments)
 - `src/triage_service/core/triage_fallback.py`: `TriageFailure` plus `fallback_for_exception()` to map fetch/inference/parse errors to a stable category + message for orchestration
-- `triage_manual_cli.py`: infer project from `PROJ-123` keys, run `TriageHandler.run_sync(..., source="manual_trigger", run_id=...)`, and `main()` for the CLI (`--no-comment` applies labels without mismatch comments)
+- `triage_manual_cli.py`: infer project from `PROJ-123` keys, run `TriageHandler.run_sync(..., source="manual_trigger", run_id=...)`, and `main()` for the CLI (`--read-only` runs read-only: no Jira labels/comments/field updates)
 - `triage_bulk_cli.py`: JQL-driven batch triage with JSON report output; default read-only (no Jira writes); `--apply` / `--comment` opt in to executor behavior (`scripts/run_bulk_triage_cli.py`)
 - `dev_tunnel.py`: load repo `.env`, start `uvicorn`, then run `ngrok` or `cloudflared` for Jira-facing HTTPS during local development (`scripts/run_dev_tunnel.py`)
 - `src/triage_service/core/policy/`: `bug_definition.md` and `priority_definition.md` (edit to match your org)
@@ -79,7 +80,9 @@ From repository root:
   - optional Langfuse prompt management (defaults shown; Langfuse project `triagebot`): `TRIAGE_LANGFUSE_PROMPTS_ENABLED=true`, user prompts `TRIAGE_LANGFUSE_CLASSIFICATION_PROMPT_NAME=triagebot/classification-user` and `TRIAGE_LANGFUSE_PRIORITY_PROMPT_NAME=triagebot/priority-user` (policies and reason guidance are embedded in Langfuse; only `{{issue_block}}` is compiled at runtime), system prompts `TRIAGE_LANGFUSE_CLASSIFICATION_SYSTEM_PROMPT_NAME=triagebot/classification-system` / `TRIAGE_LANGFUSE_PRIORITY_SYSTEM_PROMPT_NAME=triagebot/priority-system`, optional `TRIAGE_LANGFUSE_REASON_FOR_HUMANS_PROMPT_NAME=triagebot/reason-for-humans` (local fallback only), shared `TRIAGE_LANGFUSE_PROMPT_LABEL=production`, `TRIAGE_LANGFUSE_PROMPT_CACHE_TTL_SECONDS` (unset uses SDK default). When Langfuse is unavailable, `prompt_templates.json` and `src/triage_service/core/policy/*.md` (`load_policy_context`) are composed locally.
    - optional audit routing and redaction (defaults: structured JSON logs **on**, Langfuse audit mirror **on** when Langfuse keys exist, model input redaction **off**, model output redaction **off**): `TRIAGE_AUDIT_STRUCTURED_LOG_ENABLED`, `TRIAGE_AUDIT_LANGFUSE_ENABLED`, `TRIAGE_AUDIT_REDACT_MODEL_INPUT`, `TRIAGE_AUDIT_REDACT_MODEL_OUTPUT`. Filter JSON log lines by `run_id` (API response field or CLI-generated UUID); in Langfuse, open **Sessions** and search by `run_id` (session id) or use `run_id` on the root span metadata to align traces, generations, and audit events.
    - optional local smoke mode: `TRIAGE_LOCAL_MOCK_MODE` (`1`, `true`, `yes`, or `on`) switches triage into a deterministic local runner that skips Jira/OpenRouter calls. Intended only for local container smoke checks.
-  - optional image attachment preprocessing (default **off**): `TRIAGE_IMAGE_CONTEXT_ENABLED` runs inline description images through a dedicated vision model before classification and priority. Uses `TRIAGE_VISION_MODEL` (independent from `TRIAGE_TEXT_MODEL`), `TRIAGE_IMAGE_CONTEXT_MAX_ATTACHMENTS` (default `5`), `TRIAGE_IMAGE_CONTEXT_MAX_BYTES_PER_IMAGE` (default 5 MiB), `TRIAGE_IMAGE_CONTEXT_TIMEOUT_SECONDS` (default `90`). Audit logs redact vision transcripts by default (`TRIAGE_AUDIT_REDACT_IMAGE_TRANSCRIPT=true`) because screenshots often contain PII. Each processed image is one billed OpenRouter vision call; failures degrade to placeholders and never abort triage.
+  - optional image attachment preprocessing (default **off**): `TRIAGE_IMAGE_CONTEXT_ENABLED` runs description-inline images first, then comment-referenced images (if slots remain) through a dedicated vision model before classification and priority. Uses `TRIAGE_VISION_MODEL` (independent from `TRIAGE_TEXT_MODEL`), `TRIAGE_IMAGE_CONTEXT_MAX_ATTACHMENTS` (default `5`), `TRIAGE_IMAGE_CONTEXT_MAX_BYTES_PER_IMAGE` (default 5 MiB), `TRIAGE_IMAGE_CONTEXT_TIMEOUT_SECONDS` (default `90`). Audit logs redact vision transcripts by default (`TRIAGE_AUDIT_REDACT_IMAGE_TRANSCRIPT=true`) because screenshots often contain PII. Each processed image is one billed OpenRouter vision call; failures degrade to placeholders and never abort triage.
+  - optional issue comment context budget: `TRIAGE_COMMENTS_CHAR_BUDGET` (default `6000`) controls total Jira comment body characters included in `issue_block`; oldest comments are dropped first when over budget.
+  - optional Jira auto-apply controls (default **off**): `TRIAGE_AUTO_APPLY_DEESCALATION=true` applies Bug deescalation priority recommendations directly to Jira priority; `TRIAGE_AUTO_APPLY_BUG_TO_STORY=true` applies Bug -> Story recommendations directly to Jira issue type. Escalation (`P2 -> P1`) remains advisory-only.
   - optional Zendesk enrichment (default **off**): when `TRIAGE_ZENDESK_CONTEXT_ENABLED=true` and Zendesk credentials are configured (`ZENDESK_BASE_URL`, `ZENDESK_USER_EMAIL` or `ZENDESK_AGENT_EMAIL`, `ZENDESK_API_TOKEN`), triage reads Zendesk ticket ids from Jira custom fields (`TRIAGE_JIRA_ZENDESK_TICKET_IDS_FIELD_ID`, default `customfield_10158`; `TRIAGE_JIRA_IMPORTED_ZENDESK_TICKET_IDS_FIELD_ID`, default `customfield_10162`), fetches all ids from those fields (or up to `TRIAGE_ZENDESK_MAX_TICKETS`, default `3`, when ids are parsed from issue body text only) from Zendesk API (`TRIAGE_ZENDESK_HTTP_TIMEOUT_SECONDS`, default `20`), and appends them to the issue block used by classification and priority prompts.
 3. Run quality gates:
    - `.venv/bin/pytest -m lint`
@@ -107,7 +110,7 @@ The script calls Jira REST and prints normalized JSON for the issue, including `
 
 ### Image attachment preprocessing
 
-When `TRIAGE_IMAGE_CONTEXT_ENABLED=true`, triage downloads **inline** image attachments from the issue description (not comment attachments), transcribes them once via `TRIAGE_VISION_MODEL`, and injects the result into the shared `{{issue_block}}` used by both classification and priority. Per-image failures become placeholders in the issue block; triage continues.
+When `TRIAGE_IMAGE_CONTEXT_ENABLED=true`, triage downloads image attachments referenced in issue context with this priority: (1) description-inline images, then (2) comment-referenced images if attachment slots remain (`TRIAGE_IMAGE_CONTEXT_MAX_ATTACHMENTS`). It transcribes each selected image once via `TRIAGE_VISION_MODEL` and injects the result into the shared `{{issue_block}}` used by both classification and priority. Per-image failures become placeholders in the issue block; triage continues.
 
 Example excerpt as models see it inside `issue_block`:
 
@@ -128,7 +131,7 @@ Vision-only smoke (no classification):
 .venv/bin/python scripts/fetch_jira_issue_image_context.py YOUR-123 --show-issue-block
 ```
 
-**Cost / PII:** one OpenRouter vision request per inline image (capped by `TRIAGE_IMAGE_CONTEXT_MAX_ATTACHMENTS`). Prefer a fast/cheap vision model for preprocessing; keep `TRIAGE_TEXT_MODEL` on your main triage model. Transcripts can include names, emails, or tokens visible in screenshots — keep `TRIAGE_AUDIT_REDACT_IMAGE_TRANSCRIPT=true` in shared logs and Langfuse unless you have a controlled debugging window.
+**Cost / PII:** one OpenRouter vision request per selected image (description-inline first, then comment-referenced; capped by `TRIAGE_IMAGE_CONTEXT_MAX_ATTACHMENTS`). Prefer a fast/cheap vision model for preprocessing; keep `TRIAGE_TEXT_MODEL` on your main triage model. Transcripts can include names, emails, or tokens visible in screenshots — keep `TRIAGE_AUDIT_REDACT_IMAGE_TRANSCRIPT=true` in shared logs and Langfuse unless you have a controlled debugging window.
 
 ## Benchmark dataset (optional)
 
@@ -169,7 +172,7 @@ Run the same synchronous pipeline as `POST /triage` without Jira Automation (Ope
 .venv/bin/python scripts/run_triage_cli.py YOUR-123
 ```
 
-Optional `--project TJC` overrides the project key inferred from the issue key (`TJC` from `TJC-123`). Use `--no-comment` to apply labels without posting mismatch comments (dry-run debugging). The handler receives `source="manual_trigger"`; stdout is JSON with `status`, `recommendation` or `failure`, per-step `classification` and `priority` when inference succeeded (Bug path includes both steps; Story path includes `classification` only), and `image_context` (compact attachment summary: `enabled`, counts, per-file `status`/`summary` or `failure` — no full transcripts). Honors `TRIAGE_IMAGE_CONTEXT_ENABLED` the same way as `POST /triage` (via `build_default_triage_handler`). Exit code `0` on completed triage, `1` on `TriageFailure`, `2` on settings validation errors.
+Optional `--project TJC` overrides the project key inferred from the issue key (`TJC` from `TJC-123`). Use `--read-only` for dry-run mode (no labels, no mismatch comments, no Jira field updates). Use `--auto-apply-deescalation` and/or `--auto-apply-bug-to-story` to override env defaults for this run. The handler receives `source="manual_trigger"`; stdout is JSON with `status`, `recommendation` or `failure`, per-step `classification` and `priority` when inference succeeded (Bug path includes both steps; Story path includes `classification` only), and `image_context` (compact attachment summary: `enabled`, counts, per-file `status`/`summary` or `failure` — no full transcripts). Honors `TRIAGE_IMAGE_CONTEXT_ENABLED` the same way as `POST /triage` (via `build_default_triage_handler`). Exit code `0` on completed triage, `1` on `TriageFailure`, `2` on settings validation errors.
 
 ## Bulk triage (CLI)
 
@@ -185,6 +188,7 @@ Run the same inference pipeline for every issue returned by a JQL query and writ
 - `--jql-page-size N` — optional Jira API page size when paginating (default `min(50, --max-results)`; max `100`).
 - `-o` / `--output` — path to the JSON report (includes `current_issue_type`, `current_priority`, per-issue `recommendation` with `reason`, and step-level `classification` / `priority` when present).
 - By default **does not** apply labels or post comments in Jira (read-only triage). Pass `--apply` to apply `triagebot-reviewed` and mismatch labels; add `--comment` with `--apply` to post mismatch comments too.
+- With `--apply`, use `--auto-apply-deescalation` and/or `--auto-apply-bug-to-story` to apply those mismatch recommendations directly to Jira fields.
 - Shows a **tqdm** progress bar on stderr when attached to a terminal (`--no-progress` to disable).
 
 Exit code `0` when every issue completed, `1` when any issue failed or the JQL matched nothing, `2` on settings/JQL errors.
@@ -221,8 +225,11 @@ Requests missing this header (or with the wrong value) receive `401 Unauthorized
 ### `triagebot-reviewed` lifecycle
 
 - On successful triage (mismatch or not), the executor applies `triagebot-reviewed`.
-- Jira mismatch comments are posted for Story reclassification or Bug **de-escalation** recommendations; Bug **prioritization** (for example `P2 -> P1`) stays in audit/API output and does not post a Jira comment.
-- `triagebot-priority-mismatch` is applied only for Bug de-escalation mismatches.
+- Jira mismatch comments are posted for Story reclassification and for Bug priority mismatches (both **de-escalation** and **prioritization**, for example `P2 -> P1`).
+- Mismatch comments include a **Helpful resources** line linking to Confluence: bug-requirements guidance when recommending Story, priority-definitions guidance on Bug priority mismatches (URLs in `jira_comment_templates.json`).
+- Comment copy differs by path: advisory runs use "recommended action" wording, while auto-apply runs use "action taken" wording and acknowledge that Jira fields were updated.
+- `triagebot-priority-mismatch` is applied for any Bug priority mismatch (de-escalation and prioritization).
+- Optional auto-apply is available via env/CLI flags: Bug deescalation can update Jira priority and Bug->Story can update issue type. Prioritization/escalation stays advisory-only.
 - On triage failure (`status: failed` / `TriageFailure`), no labels or comments are posted.
 - To force re-triage on an issue that already succeeded, remove `triagebot-reviewed` manually.
 - If an issue is older than the JQL window and still has no `triagebot-reviewed`, treat it as a
@@ -230,7 +237,7 @@ Requests missing this header (or with the wrong value) receive `401 Unauthorized
 
 ### MVP limitations
 
-- Jira mutations are advisory only: no automatic issue-type or priority field update.
+- Auto-apply defaults are disabled. Without `TRIAGE_AUTO_APPLY_DEESCALATION` / `TRIAGE_AUTO_APPLY_BUG_TO_STORY` (or matching CLI flags), Jira mutations remain advisory-only.
 - Confidence is metadata for operators and API/audit output; it is not used as a direct
   mutation threshold.
 - Retry/dedupe behavior is owned by Jira Automation JQL and labels, not by an internal queue.
@@ -309,3 +316,7 @@ Because this path runs with real secrets and the executor active, use a dedicate
 `GET /health` includes an `observability` object. Check **`langfuse_export_env_ready`**: it is only true when Langfuse keys are set **and** the Langfuse SDK is allowed to export (`LANGFUSE_TRACING_ENABLED` is not the string `false`, case-insensitive) **and** `OTEL_SDK_DISABLED` is not `true`. If that flag is false while `langfuse_inference_enabled` is true, the UI can stay empty even though Jira works.
 
 After the first real triage request, container logs should include `triage_observability_config` with **`langfuse_runtime_tracing_enabled`** (what the SDK actually enabled). For verbose Langfuse client logs, set `LANGFUSE_DEBUG=true` in the container env. Confirm `LANGFUSE_BASE_URL` matches your Langfuse region (for example US vs EU cloud hostnames).
+
+### Container / runtime logging
+
+The API configures process-wide stdout logging at startup from `LOG_LEVEL` (default `INFO`). Inbound requests emit `http_request` / `http_request_failed` lines with method, path, status, and latency; Jira and OpenRouter calls emit `outbound_http` lines from `jira_http_retry` (including attempt count). The Docker image runs uvicorn with `--no-access-log` so access lines come from the structured middleware instead of uvicorn’s default format. Set `LOG_LEVEL=DEBUG` for deeper service logs; `httpx` / `httpcore` / `urllib3` stay at `WARNING` unless you change the runtime logging helper.

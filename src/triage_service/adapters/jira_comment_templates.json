@@ -1,0 +1,27 @@
+{
+  "confluence": {
+    "helpful_resources_heading": "Helpful resources: ",
+    "bug_requirements_url": "https://britecore.atlassian.net/wiki/spaces/EN/pages/2492235777/Requirements+for+Creating+a+Jira+Bug+ticket",
+    "bug_requirements_link_text": "Requirements for Creating a Jira Bug ticket",
+    "priority_definitions_url": "https://britecore.atlassian.net/wiki/spaces/EN/pages/2488074251/Priority+Definitions+and+Engineering+Target+Resolution",
+    "priority_definitions_link_text": "Priority Definitions and Engineering Target Resolution"
+  },
+  "advisory": {
+    "mention_intro": " - This is an informational message from TriageBot. No modifications were made to this Jira ticket.",
+    "no_mention_intro": "This is an informational message from TriageBot. No modifications were made to this Jira ticket.",
+    "story_action": "TriageBot recommended action: Change this Bug to a Story.",
+    "priority_action": "TriageBot recommended action: Change ticket Priority from {from_priority} to {to_priority}.",
+    "rationale": "TriageBot rationale: {reason}",
+    "closing_bug": "If you would like to keep it as a Bug, please explain your reasoning. Thanks.",
+    "closing_priority": "If you would like to keep it as {current_priority}, please explain your reasoning. Thanks."
+  },
+  "applied": {
+    "mention_intro": " - This is a message from TriageBot. This ticket has been reviewed and adjusted with the following:",
+    "no_mention_intro": "This is a message from TriageBot. This ticket has been reviewed and adjusted with the following:",
+    "story_action": "The issue type was changed from Bug to Story.",
+    "priority_action": "The ticket Priority was changed from {from_priority} to {to_priority}.",
+    "rationale": "TriageBot rationale: {reason}",
+    "closing_bug": "If you would like to keep it as a Bug, please explain your reasoning. Thanks.",
+    "closing_priority": "If you would like to keep it as {current_priority}, please explain your reasoning. Thanks."
+  }
+}

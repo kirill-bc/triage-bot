@@ -11,6 +11,7 @@ import pytest
 
 from triage_service.adapters.jira_jql_search import JiraSearchIssueRef
 from triage_service.core.settings import AppSettings
+from triage_service.core.triage_handler import TriageRunner
 from triage_service.core.triage_fallback import fallback_for_exception
 from triage_service.core.triage_handler import TriageSyncResult
 from triage_service.core.triage_recommendation_parser import TriageRecommendation
@@ -147,3 +148,47 @@ def test_main_returns_1_when_jql_matches_nothing(capsys: pytest.CaptureFixture[s
 
     assert rc == 1
     assert "No issues matched" in capsys.readouterr().err
+
+
+@pytest.mark.unit
+def test_run_bulk_triage_forwards_auto_apply_flags_to_run_cli_triage() -> None:
+    from triage_bulk_cli import run_bulk_triage
+
+    refs = [JiraSearchIssueRef(issue_key="TJC-3", issue_type="Bug", priority="P2")]
+    forwarded: list[tuple[bool | None, bool | None]] = []
+
+    class _Settings:
+        triage_image_context_enabled = False
+
+    def _fake_run_cli_triage(
+        issue_key: str,
+        *,
+        project: str | None = None,
+        runner: object | None = None,
+        post_mismatch_comments: bool = True,
+        apply_to_jira: bool = True,
+        auto_apply_deescalation: bool | None = None,
+        auto_apply_bug_to_story: bool | None = None,
+    ) -> TriageSyncResult:
+        _ = (issue_key, project, runner, post_mismatch_comments, apply_to_jira)
+        forwarded.append((auto_apply_deescalation, auto_apply_bug_to_story))
+        return TriageSyncResult(
+            outcome=TriageRecommendation(
+                recommended_issue_type="Story",
+                recommended_priority=None,
+                confidence=0.9,
+                reason="Product work.",
+            ),
+        )
+
+    with patch("triage_bulk_cli.run_cli_triage", side_effect=_fake_run_cli_triage):
+        _ = run_bulk_triage(
+            refs,
+            settings=cast(AppSettings, _Settings()),
+            runner=cast(TriageRunner, object()),
+            auto_apply_deescalation=True,
+            auto_apply_bug_to_story=False,
+            show_progress=False,
+        )
+
+    assert forwarded == [(True, False)]

@@ -46,6 +46,8 @@ def run_cli_triage(
     runner: TriageRunner | None = None,
     post_mismatch_comments: bool = True,
     apply_to_jira: bool = True,
+    auto_apply_deescalation: bool | None = None,
+    auto_apply_bug_to_story: bool | None = None,
 ) -> TriageSyncResult:
     """Run synchronous triage with ``source="manual_trigger"`` (same pipeline as the webhook)."""
     key = issue_key.strip()
@@ -56,6 +58,8 @@ def run_cli_triage(
         resolved = build_default_triage_handler(
             post_mismatch_comments=post_mismatch_comments,
             apply_to_jira=apply_to_jira,
+            auto_apply_deescalation=auto_apply_deescalation,
+            auto_apply_bug_to_story=auto_apply_bug_to_story,
         )
     result = resolved.run_sync(key, proj, "manual_trigger", run_id=str(uuid.uuid4()))
     flush = getattr(resolved, "flush_inference_telemetry", None)
@@ -101,11 +105,34 @@ def main(argv: list[str] | None = None) -> int:
         help="Jira project key (default: inferred from issue key, e.g. TJC from TJC-123).",
     )
     parser.add_argument(
+        "--read-only",
+        action="store_true",
+        dest="read_only",
+        help=(
+            "Read-only mode: do not post mismatch comments or apply labels/field updates in Jira "
+            "(useful for dry-run debugging)."
+        ),
+    )
+    parser.add_argument(
         "--no-comment",
         action="store_true",
+        dest="read_only",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--auto-apply-deescalation",
+        action="store_true",
         help=(
-            "Apply triagebot labels but do not post mismatch comments to Jira "
-            "(useful for dry-run debugging)."
+            "When writing to Jira, apply less-urgent priority recommendations directly "
+            "instead of advisory-only comments."
+        ),
+    )
+    parser.add_argument(
+        "--auto-apply-bug-to-story",
+        action="store_true",
+        help=(
+            "When writing to Jira, apply Bug -> Story recommendation directly "
+            "instead of advisory-only comments."
         ),
     )
     ns = parser.parse_args(argv)
@@ -125,7 +152,10 @@ def main(argv: list[str] | None = None) -> int:
     result = run_cli_triage(
         ns.issue_key,
         project=project_arg,
-        post_mismatch_comments=not ns.no_comment,
+        post_mismatch_comments=not ns.read_only,
+        apply_to_jira=not ns.read_only,
+        auto_apply_deescalation=ns.auto_apply_deescalation,
+        auto_apply_bug_to_story=ns.auto_apply_bug_to_story,
     )
     image_context = build_cli_image_context_summary(
         enabled=settings.triage_image_context_enabled,
