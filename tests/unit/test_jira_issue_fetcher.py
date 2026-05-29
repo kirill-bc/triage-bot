@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import httpx
 import pytest
 
@@ -11,6 +13,7 @@ from triage_service.adapters.jira_issue_fetcher import (
     FetchedIssue,
     JiraIssueFetchError,
     JiraIssueFetcher,
+    _MAX_COMMENT_PAGES,
     _comments_needed_for_triage,
 )
 from triage_service.core.settings import AppSettings
@@ -127,6 +130,60 @@ def test_fetch_issue_includes_comments_and_comment_attachment_refs_with_paginati
             attachment_ids=["comment-att-2"],
         ),
     ]
+
+
+@pytest.mark.unit
+def test_fetch_comments_stops_at_pagination_limit_when_total_missing(
+    jira_app_settings: AppSettings,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.WARNING, logger="triage_service.adapters.jira_issue_fetcher")
+    issue_body = {
+        "key": "TJC-99",
+        "fields": {
+            "summary": "Pagination cap",
+            "description": "Issue description",
+            "issuetype": {"name": "Bug"},
+            "priority": {"name": "P2"},
+            "reporter": {"displayName": "Reporter"},
+            "attachment": [],
+        },
+    }
+    endless_comment_page = {
+        "startAt": 0,
+        "maxResults": 50,
+        "comments": [
+            {
+                "id": "1",
+                "created": "2026-05-29T11:00:00.000+0000",
+                "author": {"displayName": "Alice"},
+                "body": "repeat",
+            },
+        ],
+    }
+    comment_requests = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal comment_requests
+        if request.url.path.endswith("/comment"):
+            comment_requests += 1
+            return httpx.Response(200, json=endless_comment_page)
+        return httpx.Response(200, json=issue_body)
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        fetcher = JiraIssueFetcher(jira_app_settings, client=client)
+        issue = fetcher.fetch("TJC-99", run_id="run-test")
+
+    assert comment_requests == _MAX_COMMENT_PAGES
+    assert len(issue.comments) == _MAX_COMMENT_PAGES
+    warnings = [
+        r
+        for r in caplog.records
+        if str(r.msg) == "comments_pagination_limit_reached issue_key=%s"
+    ]
+    assert len(warnings) == 1
+    assert warnings[0].args == ("TJC-99",)
 
 
 @pytest.mark.unit

@@ -1,4 +1,11 @@
 {
+  "confluence": {
+    "helpful_resources_heading": "Helpful resources: ",
+    "bug_requirements_url": "https://britecore.atlassian.net/wiki/spaces/EN/pages/2492235777/Requirements+for+Creating+a+Jira+Bug+ticket",
+    "bug_requirements_link_text": "Requirements for Creating a Jira Bug ticket",
+    "priority_definitions_url": "https://britecore.atlassian.net/wiki/spaces/EN/pages/2488074251/Priority+Definitions+and+Engineering+Target+Resolution",
+    "priority_definitions_link_text": "Priority Definitions and Engineering Target Resolution"
+  },
   "advisory": {
     "mention_intro": " - This is an informational message from TriageBot. No modifications were made to this Jira ticket.",
     "no_mention_intro": "This is an informational message from TriageBot. No modifications were made to this Jira ticket.",

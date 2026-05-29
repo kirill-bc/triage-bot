@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 import logging
+import sys
 from time import perf_counter
 
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -50,6 +51,7 @@ def configure_runtime_logging(
         level=level,
         format=_LOG_FORMAT,
         datefmt=_LOG_DATE_FORMAT,
+        stream=sys.stdout,
         force=True,
     )
     for name in _QUIET_HTTP_CLIENT_LOGGERS:

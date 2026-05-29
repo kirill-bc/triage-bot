@@ -68,9 +68,11 @@ def _load_comment_templates() -> dict[str, dict[str, str]]:
     raw = json.loads(_COMMENT_TEMPLATES_PATH.read_text(encoding="utf-8"))
     advisory = raw["advisory"]
     applied = raw["applied"]
+    confluence = raw["confluence"]
     return {
         "advisory": {k: str(v) for k, v in advisory.items()},
         "applied": {k: str(v) for k, v in applied.items()},
+        "confluence": {k: str(v) for k, v in confluence.items()},
     }
 
 
@@ -161,6 +163,38 @@ def _closing_paragraph_text(
     return template_group["closing_priority"].format(current_priority=current)
 
 
+def _adf_text_link(text: str, href: str) -> dict[str, Any]:
+    return {
+        "type": "text",
+        "text": text,
+        "marks": [{"type": "link", "attrs": {"href": href}}],
+    }
+
+
+def _helpful_resources_paragraph_nodes(
+    recommendation: TriageRecommendation,
+) -> list[dict[str, Any]]:
+    confluence = _COMMENT_TEMPLATES["confluence"]
+    nodes: list[dict[str, Any]] = [
+        {"type": "text", "text": confluence["helpful_resources_heading"]},
+    ]
+    if recommendation.recommended_issue_type == "Story":
+        nodes.append(
+            _adf_text_link(
+                confluence["bug_requirements_link_text"],
+                confluence["bug_requirements_url"],
+            ),
+        )
+    else:
+        nodes.append(
+            _adf_text_link(
+                confluence["priority_definitions_link_text"],
+                confluence["priority_definitions_url"],
+            ),
+        )
+    return nodes
+
+
 def _mismatch_comment_body(
     issue: FetchedIssue,
     recommendation: TriageRecommendation,
@@ -216,6 +250,12 @@ def _mismatch_comment_body(
                     ),
                 },
             ],
+        },
+    )
+    content.append(
+        {
+            "type": "paragraph",
+            "content": _helpful_resources_paragraph_nodes(recommendation),
         },
     )
     return {"version": 1, "type": "doc", "content": content}

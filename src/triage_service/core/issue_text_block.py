@@ -23,6 +23,9 @@ def _select_comments_within_budget(
         if body_len == 0:
             selected_reversed.append(comment)
             continue
+        # Keep a contiguous newest-comment suffix: once an older comment would
+        # overflow, stop scanning so we don't skip it and include even older
+        # comments. Matches the "drop oldest comments first" budget contract.
         if used + body_len > comments_char_budget:
             break
         selected_reversed.append(comment)
@@ -41,6 +44,10 @@ def _format_comments_section(
         comments_char_budget=comments_char_budget,
     )
     if not selected:
+        if comments_char_budget is not None and comments_char_budget <= 0:
+            return "Comments:\n(omitted by comment budget)"
+        if comments:
+            return "Comments:\n(omitted by comment budget)"
         return "Comments:\n(none)"
     lines = ["Comments:"]
     for comment in selected:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 
 import httpx
 import pytest
@@ -30,6 +31,17 @@ def test_configure_runtime_logging_sets_root_and_quiets_http_clients() -> None:
     assert logging.getLogger("httpx").level == logging.WARNING
     assert logging.getLogger("httpcore").level == logging.WARNING
     assert logging.getLogger("urllib3").level == logging.WARNING
+
+
+@pytest.mark.unit
+def test_configure_runtime_logging_uses_stdout() -> None:
+    configure_runtime_logging(log_level="INFO", force=True)
+
+    handlers = logging.getLogger().handlers
+    assert len(handlers) == 1
+    handler = handlers[0]
+    assert isinstance(handler, logging.StreamHandler)
+    assert handler.stream is sys.stdout
 
 
 @pytest.mark.unit

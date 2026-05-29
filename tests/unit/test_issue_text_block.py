@@ -70,6 +70,75 @@ def test_format_issue_text_block_truncates_oldest_comments_when_over_budget() ->
 
 
 @pytest.mark.unit
+def test_format_issue_text_block_shows_none_when_no_comments() -> None:
+    issue = FetchedIssue(
+        issue_key="TJC-303",
+        summary="Login fails",
+        description="Cannot log in on Safari",
+        issue_type="Bug",
+        priority="P2",
+        reporter="Alice",
+        comments=[],
+    )
+
+    text = format_issue_text_block(issue, comments_char_budget=500)
+
+    assert "Comments:\n(none)" in text
+
+
+@pytest.mark.unit
+def test_format_issue_text_block_shows_omitted_when_budget_zero() -> None:
+    issue = FetchedIssue(
+        issue_key="TJC-304",
+        summary="Login fails",
+        description="Cannot log in on Safari",
+        issue_type="Bug",
+        priority="P2",
+        reporter="Alice",
+        comments=[
+            CommentRef(
+                id="1",
+                author="Bob",
+                created="2026-05-29T11:00:00.000+0000",
+                body="I can reproduce this issue",
+                attachment_ids=[],
+            ),
+        ],
+    )
+
+    text = format_issue_text_block(issue, comments_char_budget=0)
+
+    assert "Comments:\n(omitted by comment budget)" in text
+    assert "I can reproduce this issue" not in text
+
+
+@pytest.mark.unit
+def test_format_issue_text_block_shows_omitted_when_all_comments_exceed_budget() -> None:
+    issue = FetchedIssue(
+        issue_key="TJC-305",
+        summary="Login fails",
+        description="Cannot log in on Safari",
+        issue_type="Bug",
+        priority="P2",
+        reporter="Alice",
+        comments=[
+            CommentRef(
+                id="1",
+                author="Bob",
+                created="2026-05-29T11:00:00.000+0000",
+                body="this comment is too long for the budget",
+                attachment_ids=[],
+            ),
+        ],
+    )
+
+    text = format_issue_text_block(issue, comments_char_budget=5)
+
+    assert "Comments:\n(omitted by comment budget)" in text
+    assert "this comment is too long for the budget" not in text
+
+
+@pytest.mark.unit
 def test_format_issue_text_block_keeps_contiguous_newest_comment_suffix() -> None:
     issue = FetchedIssue(
         issue_key="TJC-302",

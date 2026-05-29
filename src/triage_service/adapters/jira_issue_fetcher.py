@@ -18,6 +18,7 @@ from triage_service.adapters.jira_http_retry import (
 from triage_service.core.settings import AppSettings
 
 _ATLASSIAN_GATEWAY = "https://api.atlassian.com/ex/jira"
+_MAX_COMMENT_PAGES = 20
 LOGGER = logging.getLogger(__name__)
 
 
@@ -531,7 +532,7 @@ class JiraIssueFetcher:
         comments_url = _issue_comments_url(self._settings, issue_key)
         comments: list[CommentRef] = []
         start_at = 0
-        while True:
+        for _page in range(_MAX_COMMENT_PAGES):
             params: dict[str, str] = {"maxResults": "50", "expand": "renderedBody"}
             if start_at > 0:
                 params["startAt"] = str(start_at)
@@ -555,6 +556,11 @@ class JiraIssueFetcher:
             total = payload.get("total")
             if isinstance(total, int) and start_at >= total:
                 break
+        else:
+            LOGGER.warning(
+                "comments_pagination_limit_reached issue_key=%s",
+                issue_key,
+            )
         return comments
 
     def _get_with_retries(

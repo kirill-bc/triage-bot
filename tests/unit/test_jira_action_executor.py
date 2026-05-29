@@ -11,6 +11,7 @@ import pytest
 from triage_service.adapters.jira_action_executor import (
     JiraActionExecutorError,
     JiraTriageActionExecutor,
+    _mismatch_comment_body,
     _should_post_mismatch_comment,
 )
 from triage_service.adapters.jira_issue_fetcher import FetchedIssue
@@ -56,6 +57,48 @@ def _rec(**overrides: Any) -> TriageRecommendation:
     }
     base.update(overrides)
     return TriageRecommendation.model_validate(base)
+
+
+@pytest.mark.unit
+def test_mismatch_comment_includes_bug_requirements_link_for_story_mismatch() -> None:
+    body = _mismatch_comment_body(
+        _issue(issue_type="Bug"),
+        _rec(
+            recommended_issue_type="Story",
+            recommended_priority=None,
+            reason="enhancement request",
+        ),
+        mutations_applied=False,
+    )
+    resources_para = body["content"][-1]
+    assert resources_para["type"] == "paragraph"
+    nodes = resources_para["content"]
+    assert nodes[0]["text"] == "Helpful resources: "
+    link_node = nodes[1]
+    assert link_node["text"] == "Requirements for Creating a Jira Bug ticket"
+    assert link_node["marks"][0]["type"] == "link"
+    assert link_node["marks"][0]["attrs"]["href"] == (
+        "https://britecore.atlassian.net/wiki/spaces/EN/pages/2492235777/"
+        "Requirements+for+Creating+a+Jira+Bug+ticket"
+    )
+
+
+@pytest.mark.unit
+def test_mismatch_comment_includes_priority_definitions_link_for_priority_mismatch() -> None:
+    body = _mismatch_comment_body(
+        _issue(priority="P1"),
+        _rec(recommended_priority="P2", reason="lower impact"),
+        mutations_applied=False,
+    )
+    resources_para = body["content"][-1]
+    nodes = resources_para["content"]
+    assert nodes[0]["text"] == "Helpful resources: "
+    link_node = nodes[1]
+    assert link_node["text"] == "Priority Definitions and Engineering Target Resolution"
+    assert link_node["marks"][0]["attrs"]["href"] == (
+        "https://britecore.atlassian.net/wiki/spaces/EN/pages/2488074251/"
+        "Priority+Definitions+and+Engineering+Target+Resolution"
+    )
 
 
 @pytest.mark.unit
@@ -207,7 +250,7 @@ def test_executor_posts_mismatch_comment_with_reporter_mention(
     raw = requests[1].content.decode()
     assert "Confidence" not in raw
     paras = comment_body["body"]["content"]
-    assert len(paras) == 4
+    assert len(paras) == 5
     first_para = paras[0]["content"]
     mention = first_para[0]
     assert mention["type"] == "mention"
@@ -258,7 +301,7 @@ def test_executor_priority_mismatch_includes_closing_when_bot_raises_priority(
     assert adds == ["triagebot-reviewed", "triagebot-priority-mismatch"]
     assert requests[1].method == "POST"
     doc = json.loads(requests[1].content.decode())["body"]
-    assert len(doc["content"]) == 4
+    assert len(doc["content"]) == 5
     assert doc["content"][2]["content"][0]["text"] == "TriageBot rationale: customer impact"
     assert doc["content"][3]["content"][0]["text"] == (
         "If you would like to keep it as P2, please explain your reasoning. Thanks."
@@ -292,7 +335,7 @@ def test_executor_priority_mismatch_p0_to_p1_includes_closing_prompt(
 
     doc = posted[0]["body"]
     paras = doc["content"]
-    assert len(paras) == 4
+    assert len(paras) == 5
     assert paras[2]["content"][0]["text"] == "TriageBot rationale: workaround exists"
     assert paras[3]["content"][0]["text"] == (
         "If you would like to keep it as P0, please explain your reasoning. Thanks."
@@ -336,7 +379,7 @@ def test_executor_mismatch_comment_without_account_id_has_no_mention_node(
     assert "change ticket priority" in mid
     assert "p1" in mid and "p3" in mid
     assert doc["content"][2]["content"][0]["text"] == "TriageBot rationale: defect"
-    assert len(doc["content"]) == 4
+    assert len(doc["content"]) == 5
     assert doc["content"][3]["content"][0]["text"] == (
         "If you would like to keep it as P1, please explain your reasoning. Thanks."
     )
@@ -370,7 +413,7 @@ def test_executor_priority_mismatch_p1_to_p0_includes_closing_prompt(
     assert requests[0].method == "PUT"
     assert requests[1].method == "POST"
     doc = json.loads(requests[1].content.decode())["body"]
-    assert len(doc["content"]) == 4
+    assert len(doc["content"]) == 5
     assert doc["content"][1]["content"][0]["text"].lower().startswith(
         "triagebot recommended action: change ticket priority from p1 to p0."
     )
@@ -457,7 +500,7 @@ def test_executor_auto_applies_deescalation_when_flag_enabled(
         "- The ticket Priority was changed from P1 to P3."
     )
     assert doc["content"][2]["content"][0]["text"] == "TriageBot rationale: not urgent"
-    assert len(doc["content"]) == 4
+    assert len(doc["content"]) == 5
     assert doc["content"][3]["content"][0]["text"] == (
         "If you would like to keep it as P1, please explain your reasoning. Thanks."
     )

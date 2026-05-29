@@ -225,6 +225,7 @@ Requests missing this header (or with the wrong value) receive `401 Unauthorized
 
 - On successful triage (mismatch or not), the executor applies `triagebot-reviewed`.
 - Jira mismatch comments are posted for Story reclassification and for Bug priority mismatches (both **de-escalation** and **prioritization**, for example `P2 -> P1`).
+- Mismatch comments include a **Helpful resources** line linking to Confluence: bug-requirements guidance when recommending Story, priority-definitions guidance on Bug priority mismatches (URLs in `jira_comment_templates.json`).
 - Comment copy differs by path: advisory runs use "recommended action" wording, while auto-apply runs use "action taken" wording and acknowledge that Jira fields were updated.
 - `triagebot-priority-mismatch` is applied for any Bug priority mismatch (de-escalation and prioritization).
 - Optional auto-apply is available via env/CLI flags: Bug deescalation can update Jira priority and Bug->Story can update issue type. Prioritization/escalation stays advisory-only.
