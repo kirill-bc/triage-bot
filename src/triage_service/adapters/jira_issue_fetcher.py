@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 import re
 from typing import Any
 
@@ -17,6 +18,7 @@ from triage_service.adapters.jira_http_retry import (
 from triage_service.core.settings import AppSettings
 
 _ATLASSIAN_GATEWAY = "https://api.atlassian.com/ex/jira"
+LOGGER = logging.getLogger(__name__)
 
 
 class AttachmentRef(BaseModel):
@@ -27,6 +29,17 @@ class AttachmentRef(BaseModel):
     mime_type: str | None = None
     size_bytes: int | None = None
     inline: bool = False
+    referenced_in_comments: bool = False
+
+
+class CommentRef(BaseModel):
+    """Normalized Jira comment metadata for triage context."""
+
+    id: str
+    author: str
+    created: str
+    body: str
+    attachment_ids: list[str] = Field(default_factory=list)
 
 
 class FetchedIssue(BaseModel):
@@ -41,6 +54,7 @@ class FetchedIssue(BaseModel):
     reporter: str
     reporter_account_id: str | None = None
     attachments: list[AttachmentRef] = Field(default_factory=list)
+    comments: list[CommentRef] = Field(default_factory=list)
 
 
 class JiraIssueFetchError(RuntimeError):
@@ -212,7 +226,9 @@ def _parse_attachments(
     *,
     description_raw: Any,
     rendered_description: Any,
+    comment_attachment_ids: set[str] | None = None,
 ) -> list[AttachmentRef]:
+    comment_attachment_ids = comment_attachment_ids or set()
     inline_ids = set(collect_media_attachment_ids_from_adf(description_raw))
     inline_ids.update(
         collect_attachment_ids_from_rendered_description(rendered_description),
@@ -228,15 +244,51 @@ def _parse_attachments(
         if ref is None:
             continue
         parsed.append(
-            ref.model_copy(update={"inline": ref.id in inline_ids}),
+            ref.model_copy(
+                update={
+                    "inline": ref.id in inline_ids,
+                    "referenced_in_comments": ref.id in comment_attachment_ids,
+                },
+            ),
         )
     return parsed
+
+
+def _parse_comment_payload(raw: dict[str, Any]) -> CommentRef | None:
+    raw_id = raw.get("id")
+    if raw_id is None:
+        return None
+    comment_id = str(raw_id).strip()
+    if not comment_id:
+        return None
+    attachment_ids = collect_media_attachment_ids_from_adf(raw.get("body"))
+    attachment_ids.extend(
+        collect_attachment_ids_from_rendered_description(raw.get("renderedBody")),
+    )
+    body = _normalize_description(raw.get("body"))
+    if body is None and not attachment_ids:
+        return None
+    deduped_ids: list[str] = []
+    seen: set[str] = set()
+    for attachment_id in attachment_ids:
+        if attachment_id in seen:
+            continue
+        seen.add(attachment_id)
+        deduped_ids.append(attachment_id)
+    return CommentRef(
+        id=comment_id,
+        author=_reporter_label(raw.get("author") or {}),
+        created=str(raw.get("created") or "").strip(),
+        body=body or "",
+        attachment_ids=deduped_ids,
+    )
 
 
 def _parse_issue_payload(
     payload: dict[str, Any],
     *,
     reproduction_steps_field_id: str | None = None,
+    comments: list[CommentRef] | None = None,
 ) -> FetchedIssue:
     key = str(payload["key"])
     fields = payload.get("fields") or {}
@@ -249,10 +301,17 @@ def _parse_issue_payload(
         if isinstance(rendered_fields, dict)
         else None
     )
+    parsed_comments = comments or []
+    comment_attachment_ids = {
+        attachment_id
+        for comment in parsed_comments
+        for attachment_id in comment.attachment_ids
+    }
     attachments = _parse_attachments(
         fields,
         description_raw=description_raw,
         rendered_description=rendered_description,
+        comment_attachment_ids=comment_attachment_ids,
     )
     reproduction_steps: str | None = None
     repro_field_id = (reproduction_steps_field_id or "").strip()
@@ -280,6 +339,7 @@ def _parse_issue_payload(
         reporter=reporter,
         reporter_account_id=reporter_aid,
         attachments=attachments,
+        comments=parsed_comments,
     )
 
 
@@ -302,6 +362,18 @@ def _gateway_prefix(settings: AppSettings) -> str:
 def _issue_get_url(settings: AppSettings, issue_key: str) -> str:
     """REST v3 issue URL using Atlassian gateway ``JIRA_CLOUD_ID``."""
     return f"{_gateway_prefix(settings)}/rest/api/3/issue/{issue_key}"
+
+
+def _issue_comments_url(settings: AppSettings, issue_key: str) -> str:
+    """REST v3 issue comments URL using Atlassian gateway ``JIRA_CLOUD_ID``."""
+    return f"{_gateway_prefix(settings)}/rest/api/3/issue/{issue_key}/comment"
+
+
+def _comments_needed_for_triage(settings: AppSettings) -> bool:
+    """True when triage consumes comment text and/or comment-referenced attachments."""
+    if settings.triage_image_context_enabled:
+        return True
+    return settings.triage_comments_char_budget > 0
 
 
 def _attachment_content_url(settings: AppSettings, attachment_id: str) -> str:
@@ -338,11 +410,23 @@ class JiraIssueFetcher:
         }
 
         if self._client is not None:
-            return self._request_issue(self._client, url, params, headers)
+            return self._request_issue(
+                self._client,
+                issue_key,
+                url,
+                params,
+                headers,
+            )
 
         timeout = httpx.Timeout(self._settings.jira_http_timeout_seconds)
         with httpx.Client(timeout=timeout) as client:
-            return self._request_issue(client, url, params, headers)
+            return self._request_issue(
+                client,
+                issue_key,
+                url,
+                params,
+                headers,
+            )
 
     def fetch_attachment_bytes(self, attachment_id: str, *, run_id: str) -> bytes:
         _ = run_id
@@ -403,6 +487,7 @@ class JiraIssueFetcher:
     def _request_issue(
         self,
         client: httpx.Client,
+        issue_key: str,
         url: str,
         params: dict[str, str],
         headers: dict[str, str],
@@ -414,10 +499,63 @@ class JiraIssueFetcher:
             headers=headers,
         )
         payload = response.json()
+        comments: list[CommentRef] = []
+        if _comments_needed_for_triage(self._settings):
+            try:
+                comments = self._fetch_comments(
+                    client,
+                    issue_key=issue_key,
+                    headers=headers,
+                )
+            except JiraIssueFetchError as exc:
+                LOGGER.warning(
+                    "comments_fetch_failed issue_key=%s http_status=%s attempts=%s: %s",
+                    issue_key,
+                    exc.http_status,
+                    exc.attempts,
+                    exc,
+                )
         return _parse_issue_payload(
             payload,
             reproduction_steps_field_id=self._settings.jira_reproduction_steps_field_id,
+            comments=comments,
         )
+
+    def _fetch_comments(
+        self,
+        client: httpx.Client,
+        *,
+        issue_key: str,
+        headers: dict[str, str],
+    ) -> list[CommentRef]:
+        comments_url = _issue_comments_url(self._settings, issue_key)
+        comments: list[CommentRef] = []
+        start_at = 0
+        while True:
+            params: dict[str, str] = {"maxResults": "50", "expand": "renderedBody"}
+            if start_at > 0:
+                params["startAt"] = str(start_at)
+            response = self._get_with_retries(
+                client,
+                comments_url,
+                params=params,
+                headers=headers,
+            )
+            payload = response.json()
+            raw_comments = payload.get("comments")
+            if not isinstance(raw_comments, list) or not raw_comments:
+                break
+            for raw_comment in raw_comments:
+                if not isinstance(raw_comment, dict):
+                    continue
+                parsed = _parse_comment_payload(raw_comment)
+                if parsed is not None:
+                    comments.append(parsed)
+            start_at += len(raw_comments)
+            total = payload.get("total")
+            if isinstance(total, int) and start_at >= total:
+                break
+        return comments
 
     def _get_with_retries(
         self,

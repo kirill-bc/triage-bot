@@ -92,6 +92,21 @@ def test_build_image_context_extractor_vision_when_enabled(
     assert extractor._inference.effective_model_id == "openai/gpt-4o"
 
 
+@pytest.mark.unit
+def test_build_image_context_extractor_uses_configured_max_attachments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _app_settings(
+        monkeypatch,
+        TRIAGE_IMAGE_CONTEXT_ENABLED="true",
+        TRIAGE_IMAGE_CONTEXT_MAX_ATTACHMENTS="9",
+    )
+    fetcher = MagicMock(spec=JiraIssueFetcher)
+    extractor = build_image_context_extractor(settings, fetcher)
+    assert isinstance(extractor, OpenRouterVisionImageContextExtractor)
+    assert extractor._max_attachments == 9
+
+
 class _NoOpExecutor:
     def apply_triage_outcome(self, **kwargs: object) -> None:
         _ = kwargs

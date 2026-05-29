@@ -52,6 +52,7 @@ def test_flake8_passes_on_src_and_tests() -> None:
             str(root / "src" / "triage_service" / "observability" / "observability_wiring.py"),
             str(root / "src" / "triage_service" / "observability" / "payload_redaction.py"),
             str(root / "src" / "triage_service" / "observability" / "log_payload_guard.py"),
+            str(root / "src" / "triage_service" / "observability" / "runtime_logging.py"),
             str(
                 root
                 / "src"

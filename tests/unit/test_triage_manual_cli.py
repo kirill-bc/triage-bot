@@ -514,3 +514,109 @@ def test_main_json_reports_image_context_disabled(
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["image_context"] == {"enabled": False}
+
+
+@pytest.mark.unit
+def test_main_read_only_sets_read_only_mode() -> None:
+    from triage_manual_cli import main
+
+    build_calls: list[tuple[bool, bool]] = []
+
+    def _fake_build(
+        *,
+        post_mismatch_comments: bool = True,
+        apply_to_jira: bool = True,
+        auto_apply_deescalation: bool | None = None,
+        auto_apply_bug_to_story: bool | None = None,
+    ) -> object:
+        _ = (auto_apply_deescalation, auto_apply_bug_to_story)
+        build_calls.append((post_mismatch_comments, apply_to_jira))
+
+        class _Runner:
+            def run_sync(
+                self,
+                issue_key: str,
+                project: str,
+                source: str,
+                *,
+                run_id: str,
+            ) -> TriageSyncResult:
+                _ = (issue_key, project, source, run_id)
+                return TriageSyncResult(
+                    outcome=TriageRecommendation(
+                        recommended_issue_type="Story",
+                        recommended_priority=None,
+                        confidence=0.5,
+                        reason="ok",
+                    ),
+                )
+
+            def flush_inference_telemetry(self) -> None:
+                return None
+
+        return _Runner()
+
+    class _Settings:
+        triage_image_context_enabled = False
+
+    with (
+        patch("triage_service.core.settings.load_settings", return_value=_Settings()),
+        patch("triage_manual_cli.build_default_triage_handler", side_effect=_fake_build),
+    ):
+        rc = main(["TJC-7", "--read-only"])
+
+    assert rc == 0
+    assert build_calls == [(False, False)]
+
+
+@pytest.mark.unit
+def test_main_no_comment_alias_sets_read_only_mode() -> None:
+    from triage_manual_cli import main
+
+    build_calls: list[tuple[bool, bool]] = []
+
+    def _fake_build(
+        *,
+        post_mismatch_comments: bool = True,
+        apply_to_jira: bool = True,
+        auto_apply_deescalation: bool | None = None,
+        auto_apply_bug_to_story: bool | None = None,
+    ) -> object:
+        _ = (auto_apply_deescalation, auto_apply_bug_to_story)
+        build_calls.append((post_mismatch_comments, apply_to_jira))
+
+        class _Runner:
+            def run_sync(
+                self,
+                issue_key: str,
+                project: str,
+                source: str,
+                *,
+                run_id: str,
+            ) -> TriageSyncResult:
+                _ = (issue_key, project, source, run_id)
+                return TriageSyncResult(
+                    outcome=TriageRecommendation(
+                        recommended_issue_type="Story",
+                        recommended_priority=None,
+                        confidence=0.5,
+                        reason="ok",
+                    ),
+                )
+
+            def flush_inference_telemetry(self) -> None:
+                return None
+
+        return _Runner()
+
+    class _Settings:
+        triage_image_context_enabled = False
+
+    with (
+        patch("triage_service.core.settings.load_settings", return_value=_Settings()),
+        patch("triage_manual_cli.build_default_triage_handler", side_effect=_fake_build),
+    ):
+        rc = main(["TJC-7", "--no-comment"])
+
+    assert rc == 0
+    assert build_calls == [(False, False)]

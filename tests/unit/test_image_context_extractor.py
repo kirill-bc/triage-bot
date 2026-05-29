@@ -393,7 +393,60 @@ def test_vision_extractor_sends_multimodal_message_with_data_url(
 
 
 @pytest.mark.unit
-def test_vision_extractor_processes_only_inline_images_from_description(
+def test_select_image_attachments_prioritizes_description_then_comment_refs(
+    settings: AppSettings,
+    vision_extractor_deps: tuple[MagicMock, MagicMock],
+) -> None:
+    jira_fetcher, inference = vision_extractor_deps
+    jira_fetcher.fetch_attachment_bytes.return_value = b"\x89PNG\r\n\x1a\n"
+    inference.chat_completion_with_details.return_value = OpenRouterCompletionResult(
+        content=_vision_response("t", "s"),
+    )
+    issue = FetchedIssue(
+        issue_key="TJC-4",
+        summary="s",
+        issue_type="Bug",
+        reporter="r",
+        attachments=[
+            AttachmentRef(
+                id="comment-large",
+                filename="large.png",
+                mime_type="image/png",
+                size_bytes=9000,
+                inline=False,
+                referenced_in_comments=True,
+            ),
+            AttachmentRef(
+                id="desc-small",
+                filename="desc.png",
+                mime_type="image/png",
+                size_bytes=50,
+                inline=True,
+            ),
+            AttachmentRef(
+                id="comment-small",
+                filename="comment-small.png",
+                mime_type="image/png",
+                size_bytes=40,
+                inline=False,
+                referenced_in_comments=True,
+            ),
+        ],
+    )
+    extractor = OpenRouterVisionImageContextExtractor(
+        settings=settings,
+        jira_fetcher=jira_fetcher,
+        inference_client=inference,
+        max_attachments=2,
+        max_bytes_per_image=1_000_000,
+    )
+    result = extractor.extract(issue, run_id="run-3")
+    assert [ctx.attachment_id for ctx in result.contexts] == ["desc-small", "comment-large"]
+    assert inference.chat_completion_with_details.call_count == 2
+
+
+@pytest.mark.unit
+def test_vision_extractor_ignores_unreferenced_attachments(
     settings: AppSettings,
     vision_extractor_deps: tuple[MagicMock, MagicMock],
 ) -> None:
@@ -414,6 +467,7 @@ def test_vision_extractor_processes_only_inline_images_from_description(
                 mime_type="image/png",
                 size_bytes=100,
                 inline=False,
+                referenced_in_comments=False,
             ),
             AttachmentRef(
                 id="large-off",
@@ -421,6 +475,7 @@ def test_vision_extractor_processes_only_inline_images_from_description(
                 mime_type="image/png",
                 size_bytes=9000,
                 inline=False,
+                referenced_in_comments=False,
             ),
             AttachmentRef(
                 id="inline-small",

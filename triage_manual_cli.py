@@ -105,12 +105,19 @@ def main(argv: list[str] | None = None) -> int:
         help="Jira project key (default: inferred from issue key, e.g. TJC from TJC-123).",
     )
     parser.add_argument(
-        "--no-comment",
+        "--read-only",
         action="store_true",
+        dest="read_only",
         help=(
-            "Apply triagebot labels but do not post mismatch comments to Jira "
+            "Read-only mode: do not post mismatch comments or apply labels/field updates in Jira "
             "(useful for dry-run debugging)."
         ),
+    )
+    parser.add_argument(
+        "--no-comment",
+        action="store_true",
+        dest="read_only",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--auto-apply-deescalation",
@@ -145,7 +152,8 @@ def main(argv: list[str] | None = None) -> int:
     result = run_cli_triage(
         ns.issue_key,
         project=project_arg,
-        post_mismatch_comments=not ns.no_comment,
+        post_mismatch_comments=not ns.read_only,
+        apply_to_jira=not ns.read_only,
         auto_apply_deescalation=ns.auto_apply_deescalation,
         auto_apply_bug_to_story=ns.auto_apply_bug_to_story,
     )

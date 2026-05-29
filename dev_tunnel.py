@@ -35,6 +35,7 @@ def build_uvicorn_argv(*, python_exe: str, host: str, port: int) -> list[str]:
         host,
         "--port",
         str(port),
+        "--no-access-log",
     ]
 
 

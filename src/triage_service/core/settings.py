@@ -214,6 +214,16 @@ class AppSettings(BaseSettings):
         validation_alias="TRIAGE_IMAGE_CONTEXT_TIMEOUT_SECONDS",
         description="Per-attempt HTTP timeout for OpenRouter vision calls.",
     )
+    triage_comments_char_budget: int = Field(
+        default=6000,
+        ge=0,
+        le=50000,
+        validation_alias="TRIAGE_COMMENTS_CHAR_BUDGET",
+        description=(
+            "Max cumulative comment body characters included in triage context; "
+            "oldest comments are dropped first when budget is exceeded."
+        ),
+    )
     triage_audit_redact_image_transcript: bool = Field(
         default=True,
         validation_alias="TRIAGE_AUDIT_REDACT_IMAGE_TRANSCRIPT",

@@ -167,11 +167,20 @@ def _select_image_attachments(
     *,
     max_attachments: int,
 ) -> list[AttachmentRef]:
-    # Description-only mode: process only images explicitly referenced in ADF.
-    inline_images = [
+    description_inline_images = [
         ref for ref in attachments if ref.inline and _is_image_attachment(ref)
     ]
-    ordered = sorted(inline_images, key=_attachment_size_desc_sort_key)
+    comment_referenced_images = [
+        ref
+        for ref in attachments
+        if (not ref.inline) and ref.referenced_in_comments and _is_image_attachment(ref)
+    ]
+    ordered_description = sorted(
+        description_inline_images,
+        key=_attachment_size_desc_sort_key,
+    )
+    ordered_comment = sorted(comment_referenced_images, key=_attachment_size_desc_sort_key)
+    ordered = ordered_description + ordered_comment
     return ordered[:max_attachments]
 
 
