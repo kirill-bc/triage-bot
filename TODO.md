@@ -20,7 +20,7 @@
   1. Classify Story vs Bug (bug policy only for this step).
   2. If the model says Story: recommend reclassifying to Story; do not run priority inference; do not compare or suggest P0–P4.
   3. If the model says Bug: run a second priority inference (priority policy + issue context). Then compare predicted P0–P4 to current Jira priority (triage is scoped to Bug issues in JQL).
-  4. Surface guidance via internal comment (and mismatch labels when applicable): suggest reclassification to Story and/or priority with reasoning; advisory only — no automatic Jira field mutation in Phase 1 (see Out-of-scope in `specification.md`).
+  4. Surface guidance via internal comment (and mismatch labels when applicable): suggest reclassification to Story and/or priority with reasoning. Optional auto-apply is feature-flagged: Bug deescalation (`TRIAGE_AUTO_APPLY_DEESCALATION`) and Bug->Story (`TRIAGE_AUTO_APPLY_BUG_TO_STORY`) can mutate Jira fields; Bug prioritization/escalation stays advisory-only.
 - [x] Build prompt/input composer for step (1) and, when needed, step (2) — do not bundle both model calls into one always-on prompt.
 - [x] Implement OpenRouter inference client with model name from configuration.
 - [x] Parse and validate model output to strict schema (per step or merged response), including:
@@ -38,8 +38,9 @@
 - [x] Implement mismatch detector: always compare issue type to `recommended_issue_type`; compare priority to `recommended_priority` only when the triage path ran priority (i.e. model classified as Bug). (`triage_mismatch.compute_mismatch_flags`; wire into executor when built.)
 - [x] Implement Jira action executor (`jira_action_executor.JiraTriageActionExecutor`; default handler uses it when `JIRA_CLOUD_ID` and `JIRA_USER_EMAIL` are set):
   - [x] Apply `triagebot-reviewed` after every successful triage (mismatch or not). This is the dedupe marker the Jira scheduled rule depends on — without it, the JQL keeps re-matching the issue.
-  - [x] Post internal comment with recommended values and concise reasoning for Story mismatches and Bug de-escalation mismatches (fixed **TriageBot** template; numeric confidence stays in API/audit only, not in the Jira body; optional reporter @mention when `reporter_account_id` is present on the fetched issue). Bug prioritization mismatches remain audit/API metadata only.
-  - [x] Apply mismatch-specific labels only when applicable: `triagebot-likely-story` (type mismatch when recommending Story), `triagebot-priority-mismatch` (Bug de-escalation mismatch; prioritize-only Bug mismatches are not Jira-labeled).
+  - [x] Post internal comment with recommended values and concise reasoning for Story mismatches and Bug priority mismatches (de-escalation and prioritization) using a fixed **TriageBot** template; numeric confidence stays in API/audit only, not in the Jira body; optional reporter @mention when `reporter_account_id` is present on the fetched issue.
+  - [x] Apply mismatch-specific labels only when applicable: `triagebot-likely-story` (type mismatch when recommending Story), `triagebot-priority-mismatch` (Bug priority mismatch, de-escalation and prioritization).
+  - [x] Add opt-in Jira field auto-apply toggles (default off): `TRIAGE_AUTO_APPLY_DEESCALATION` updates Jira priority for deescalation recommendations; `TRIAGE_AUTO_APPLY_BUG_TO_STORY` updates issue type for Bug->Story recommendations; escalation remains advisory-only.
 - [x] On `TriageFailure`, apply **no** labels and post **no** comment. The issue stays unlabeled so the next scheduled scan retries it automatically until success or `created >= -30m` ages it out.
 - [x] **Local CLI E2E (developer path):** With `JIRA_CLOUD_ID`, `JIRA_USER_EMAIL`, and model keys set, `scripts/run_triage_cli.py` / `triage_manual_cli.run_cli_triage` runs the full pipeline for a given issue key: fetch → classify → optional priority → mismatch → `JiraTriageActionExecutor` (`source="manual_trigger"`). This is the supported way to run triage from a laptop against real Jira without any Jira-side integration. Optional `--no-comment` applies labels without posting mismatch comments.
 - [x] **Bulk JQL CLI (evaluation batches):** `scripts/run_bulk_triage_cli.py` / `triage_bulk_cli.py` — JQL search (`jira_jql_search`), per-issue triage, JSON report with current Jira fields and per-step inference; read-only by default (`--apply` / `--comment` opt in to Jira writes). See README *Bulk triage (CLI)*.
@@ -123,7 +124,7 @@ Done when: issues with sparse text and load-bearing screenshots produce measurab
 - [x] Add Jira Automation setup recipe: scheduled rule cadence (every 5 min <= JQL window), reference JQL (`project = ... AND issuetype = Bug AND labels not in (triagebot-reviewed) AND created >= -30m AND created <= -5m`), and body template (`issue_key`, `project`, `source: bug_created|priority_changed`).
 - [x] Document `triagebot-reviewed` lifecycle: always applied on success, remove to force re-triage, absent on >30m-old issues indicates manual-QA fallback case.
 - [x] Document observability usage: where to inspect raw model output/confidence, and how to trace a run by `run_id`.
-- [x] Document known MVP limitations and out-of-scope items (no auto mutation, no Zendesk intake, no full RAG).
+- [x] Document known MVP limitations and out-of-scope items (escalation remains advisory-only, no Zendesk intake, no full RAG).
 - [ ] Record default model-selection rationale and confidence calibration strategy for next phase tuning.
 - Done when: a new engineer can run, operate, observe, and troubleshoot the service using repo docs only.
 

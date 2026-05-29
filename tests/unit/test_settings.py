@@ -83,6 +83,8 @@ def test_load_settings_optional_fields_default_when_omitted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("TRIAGE_AUTO_APPLY_DEESCALATION", raising=False)
+    monkeypatch.delenv("TRIAGE_AUTO_APPLY_BUG_TO_STORY", raising=False)
     (tmp_path / ".env").write_text(
         "JIRA_API_KEY=jira-token\nOPENROUTER_API_KEY=or-token\nTRIAGE_WEBHOOK_TOKEN=triage-token\n",
         encoding="utf-8",
@@ -100,6 +102,8 @@ def test_load_settings_optional_fields_default_when_omitted(
     assert settings.audit_redact_model_output is False
     assert settings.openrouter_http_timeout_seconds == 60.0
     assert settings.openrouter_http_max_retries == 2
+    assert settings.triage_auto_apply_deescalation is False
+    assert settings.triage_auto_apply_bug_to_story is False
 
 
 @pytest.mark.unit

@@ -100,6 +100,8 @@ def run_bulk_triage(
     runner: TriageRunner | None = None,
     apply_to_jira: bool = False,
     post_mismatch_comments: bool = False,
+    auto_apply_deescalation: bool | None = None,
+    auto_apply_bug_to_story: bool | None = None,
     show_progress: bool | None = None,
 ) -> list[BulkTriageIssueRow]:
     """Triage each issue ref and return structured rows (no file I/O)."""
@@ -109,6 +111,8 @@ def run_bulk_triage(
         resolved = build_default_triage_handler(
             post_mismatch_comments=post_mismatch_comments,
             apply_to_jira=apply_to_jira,
+            auto_apply_deescalation=auto_apply_deescalation,
+            auto_apply_bug_to_story=auto_apply_bug_to_story,
         )
     rows: list[BulkTriageIssueRow] = []
     ref_iter = tqdm(
@@ -127,6 +131,8 @@ def run_bulk_triage(
             runner=resolved,
             post_mismatch_comments=post_mismatch_comments,
             apply_to_jira=apply_to_jira,
+            auto_apply_deescalation=auto_apply_deescalation,
+            auto_apply_bug_to_story=auto_apply_bug_to_story,
         )
         image_context = build_cli_image_context_summary(
             enabled=settings.triage_image_context_enabled,
@@ -233,6 +239,22 @@ def main(argv: list[str] | None = None) -> int:
         help="Post mismatch comments when --apply is set (production-like side effects).",
     )
     parser.add_argument(
+        "--auto-apply-deescalation",
+        action="store_true",
+        help=(
+            "When --apply is set, directly update Jira priority for less-urgent "
+            "recommendations (deescalations)."
+        ),
+    )
+    parser.add_argument(
+        "--auto-apply-bug-to-story",
+        action="store_true",
+        help=(
+            "When --apply is set, directly update Jira issue type when recommendation "
+            "is Bug -> Story."
+        ),
+    )
+    parser.add_argument(
         "--no-progress",
         action="store_true",
         help="Disable the tqdm progress bar (default: on when stderr is a TTY).",
@@ -276,6 +298,8 @@ def main(argv: list[str] | None = None) -> int:
         settings=settings,
         apply_to_jira=apply_to_jira,
         post_mismatch_comments=post_mismatch_comments,
+        auto_apply_deescalation=ns.auto_apply_deescalation,
+        auto_apply_bug_to_story=ns.auto_apply_bug_to_story,
         show_progress=None if not ns.no_progress else False,
     )
     output_path = Path(ns.output)

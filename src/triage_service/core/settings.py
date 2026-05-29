@@ -222,6 +222,22 @@ class AppSettings(BaseSettings):
             "generations. Jira description and repro in vision inputs are always kept."
         ),
     )
+    triage_auto_apply_deescalation: bool = Field(
+        default=False,
+        validation_alias="TRIAGE_AUTO_APPLY_DEESCALATION",
+        description=(
+            "Auto-apply Jira priority field changes when TriageBot recommends a less urgent "
+            "priority (deescalation)."
+        ),
+    )
+    triage_auto_apply_bug_to_story: bool = Field(
+        default=False,
+        validation_alias="TRIAGE_AUTO_APPLY_BUG_TO_STORY",
+        description=(
+            "Auto-apply Jira issue-type update from Bug to Story when Story recommendation "
+            "mismatches current issue type."
+        ),
+    )
 
     log_level: str = Field(default="INFO", description="Standard library log level name.")
     logging_api_key: str | None = Field(

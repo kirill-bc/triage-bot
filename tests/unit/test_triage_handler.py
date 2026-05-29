@@ -54,12 +54,18 @@ class _RecordingAuditStore:
         self.events.append(event)
 
 
-def _app_settings(monkeypatch: pytest.MonkeyPatch) -> AppSettings:
+def _app_settings(monkeypatch: pytest.MonkeyPatch, **env: str) -> AppSettings:
     monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
     monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
     monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
     monkeypatch.setenv("JIRA_CLOUD_ID", "cloud-id-test")
     monkeypatch.setenv("JIRA_USER_EMAIL", "bot@example.com")
+    if "TRIAGE_AUTO_APPLY_DEESCALATION" not in env:
+        monkeypatch.setenv("TRIAGE_AUTO_APPLY_DEESCALATION", "false")
+    if "TRIAGE_AUTO_APPLY_BUG_TO_STORY" not in env:
+        monkeypatch.setenv("TRIAGE_AUTO_APPLY_BUG_TO_STORY", "false")
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
     return AppSettings()
 
 
@@ -492,9 +498,12 @@ def test_handler_bug_path_emits_classification_priority_and_triage_completed_aud
     assert e2.telemetry == {
         "image_context_attachments_considered": 0,
         "image_context_attachments_extracted": 0,
+        "auto_apply_deescalation_enabled": False,
+        "auto_apply_bug_to_story_enabled": False,
         "priority_signal": "prioritize",
         "jira_priority": "P2",
-        "would_post_jira_comment": False,
+        "would_post_jira_comment": True,
+        "would_auto_apply_priority_change": False,
     }
 
 
@@ -552,6 +561,181 @@ def test_handler_story_path_emits_classification_and_triage_completed_without_pr
     assert isinstance(audit.events[1], TriageCompletedAuditEvent)
     assert audit.events[1].recommended_issue_type == "Story"
     assert audit.events[1].recommended_priority is None
+    assert audit.events[1].telemetry == {
+        "image_context_attachments_considered": 0,
+        "image_context_attachments_extracted": 0,
+        "auto_apply_deescalation_enabled": False,
+        "auto_apply_bug_to_story_enabled": False,
+        "would_post_jira_comment": True,
+        "would_auto_apply_issue_type_change": False,
+    }
+
+
+@pytest.mark.unit
+def test_handler_bug_deescalation_telemetry_respects_auto_apply_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _app_settings(monkeypatch, TRIAGE_AUTO_APPLY_DEESCALATION="true")
+    issue = FetchedIssue(
+        issue_key="TJC-20",
+        summary="latency",
+        description="slow",
+        issue_type="Bug",
+        priority="P1",
+        reporter="bob",
+    )
+
+    def jira_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_jira_payload_for(issue))
+
+    cls_json = '{"recommended_issue_type":"Bug","confidence":0.55,"reason":"Defect."}'
+    pri_json = '{"recommended_priority":"P3","confidence":0.88,"reason":"Minor impact."}'
+    responses = [cls_json, pri_json]
+    idx = {"i": 0}
+
+    def openrouter_handler(request: httpx.Request) -> httpx.Response:
+        i = idx["i"]
+        idx["i"] = i + 1
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": responses[i]}}]},
+        )
+
+    audit = _RecordingAuditStore()
+    with httpx.Client(transport=httpx.MockTransport(jira_handler)) as j_client:
+        with httpx.Client(transport=httpx.MockTransport(openrouter_handler)) as o_client:
+            fetcher = JiraIssueFetcher(settings, client=j_client)
+            inference = OpenRouterInferenceClient(settings, client=o_client)
+            handler = TriageHandler(
+                allowed_projects=("TJC",),
+                fetcher=fetcher,
+                inference=inference,
+                policy=_policy(),
+                executor=_RecordingExecutor(),
+                audit_store=audit,
+                settings=settings,
+            )
+            _ = handler.run_sync(
+                issue_key="TJC-20",
+                project="TJC",
+                source="bug_created",
+                run_id="run-audit-bug-deescalate",
+            )
+
+    event = audit.events[2]
+    assert isinstance(event, TriageCompletedAuditEvent)
+    assert event.telemetry is not None
+    assert event.telemetry["priority_signal"] == "deescalate"
+    assert event.telemetry["would_post_jira_comment"] is True
+    assert event.telemetry["would_auto_apply_priority_change"] is True
+    assert event.telemetry["auto_apply_deescalation_enabled"] is True
+
+
+@pytest.mark.unit
+def test_handler_story_telemetry_marks_auto_apply_issue_type_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _app_settings(monkeypatch, TRIAGE_AUTO_APPLY_BUG_TO_STORY="true")
+    issue = FetchedIssue(
+        issue_key="TJC-21",
+        summary="feature ask",
+        description="add toggle",
+        issue_type="Bug",
+        priority="P2",
+        reporter="alice",
+    )
+
+    def jira_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_jira_payload_for(issue))
+
+    story_json = '{"recommended_issue_type":"Story","confidence":0.7,"reason":"Narrative work."}'
+
+    def openrouter_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": story_json}}]},
+        )
+
+    audit = _RecordingAuditStore()
+    with httpx.Client(transport=httpx.MockTransport(jira_handler)) as j_client:
+        with httpx.Client(transport=httpx.MockTransport(openrouter_handler)) as o_client:
+            fetcher = JiraIssueFetcher(settings, client=j_client)
+            inference = OpenRouterInferenceClient(settings, client=o_client)
+            handler = TriageHandler(
+                allowed_projects=("TJC",),
+                fetcher=fetcher,
+                inference=inference,
+                policy=_policy(),
+                executor=_RecordingExecutor(),
+                audit_store=audit,
+                settings=settings,
+            )
+            _ = handler.run_sync(
+                issue_key="TJC-21",
+                project="TJC",
+                source="bug_created",
+                run_id="run-audit-story-auto-apply",
+            )
+
+    event = audit.events[1]
+    assert isinstance(event, TriageCompletedAuditEvent)
+    assert event.telemetry is not None
+    assert event.telemetry["would_post_jira_comment"] is True
+    assert event.telemetry["would_auto_apply_issue_type_change"] is True
+    assert event.telemetry["auto_apply_bug_to_story_enabled"] is True
+
+
+@pytest.mark.unit
+def test_handler_story_telemetry_no_auto_apply_for_non_bug_issue_type(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _app_settings(monkeypatch, TRIAGE_AUTO_APPLY_BUG_TO_STORY="true")
+    issue = FetchedIssue(
+        issue_key="TJC-22",
+        summary="feature ask",
+        description="add toggle",
+        issue_type="Task",
+        priority="P2",
+        reporter="alice",
+    )
+
+    def jira_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_jira_payload_for(issue))
+
+    story_json = '{"recommended_issue_type":"Story","confidence":0.7,"reason":"Narrative work."}'
+
+    def openrouter_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": story_json}}]},
+        )
+
+    audit = _RecordingAuditStore()
+    with httpx.Client(transport=httpx.MockTransport(jira_handler)) as j_client:
+        with httpx.Client(transport=httpx.MockTransport(openrouter_handler)) as o_client:
+            fetcher = JiraIssueFetcher(settings, client=j_client)
+            inference = OpenRouterInferenceClient(settings, client=o_client)
+            handler = TriageHandler(
+                allowed_projects=("TJC",),
+                fetcher=fetcher,
+                inference=inference,
+                policy=_policy(),
+                executor=_RecordingExecutor(),
+                audit_store=audit,
+                settings=settings,
+            )
+            _ = handler.run_sync(
+                issue_key="TJC-22",
+                project="TJC",
+                source="bug_created",
+                run_id="run-audit-story-task",
+            )
+
+    event = audit.events[1]
+    assert isinstance(event, TriageCompletedAuditEvent)
+    assert event.telemetry is not None
+    assert event.telemetry["would_post_jira_comment"] is True
+    assert event.telemetry["would_auto_apply_issue_type_change"] is False
 
 
 @pytest.mark.unit
