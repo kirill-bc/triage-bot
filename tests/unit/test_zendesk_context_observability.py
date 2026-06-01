@@ -219,7 +219,10 @@ def test_handler_emits_zendesk_audit_events_and_telemetry_on_success(
 ) -> None:
     from triage_service.adapters.jira_issue_fetcher import JiraIssueFetcher
     from triage_service.adapters.openrouter_inference_client import OpenRouterInferenceClient
-    from triage_service.adapters.zendesk_ticket_fetcher import ZendeskTicketFetcher
+    from triage_service.adapters.zendesk_ticket_fetcher import (
+        ZendeskTicketFetcher,
+        ZendeskTicketsFetchResult,
+    )
     from triage_service.core.triage_handler import TriageHandler
 
     monkeypatch.setenv("TRIAGE_ZENDESK_COMMENT_SUMMARY_ENABLED", "true")
@@ -262,14 +265,12 @@ def test_handler_emits_zendesk_audit_events_and_telemetry_on_success(
             _ = issue
             return ["47322"], 0
 
-        def fetch_linked_tickets(
+        def fetch_tickets_by_ids_with_failures(
             self,
-            issue: FetchedIssue,
-            *,
-            run_id: str,
-        ) -> list[LinkedZendeskTicket]:
-            _ = (issue, run_id)
-            return [linked_ticket]
+            ticket_ids: list[str],
+        ) -> ZendeskTicketsFetchResult:
+            _ = ticket_ids
+            return ZendeskTicketsFetchResult(tickets=[linked_ticket])
 
     class _StubSummarizer:
         def summarize(
@@ -368,3 +369,126 @@ def test_handler_emits_zendesk_audit_events_and_telemetry_on_success(
     finish_fetch.assert_called_once()
     mock_tracer.zendesk_context_summary.assert_called_once_with()
     finish_summary.assert_called_once()
+
+
+@pytest.mark.unit
+def test_handler_emits_per_ticket_fetch_failures_when_one_ticket_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from triage_service.adapters.jira_issue_fetcher import JiraIssueFetcher
+    from triage_service.adapters.openrouter_inference_client import OpenRouterInferenceClient
+    from triage_service.adapters.zendesk_ticket_fetcher import (
+        ZendeskTicketFetchFailureRecord,
+        ZendeskTicketFetcher,
+        ZendeskTicketsFetchResult,
+    )
+    from triage_service.core.triage_handler import TriageHandler
+
+    settings = _app_settings(monkeypatch)
+    issue = FetchedIssue(
+        issue_key="TJC-61",
+        summary="linked ZD-47322 and ZD-48661",
+        issue_type="Bug",
+        priority="P2",
+        reporter="support",
+        zendesk_ticket_ids=["47322", "48661"],
+    )
+    linked_ticket = LinkedZendeskTicket(
+        ticket_id="47322",
+        subject="Outage",
+        description="Peak severity",
+        status="solved",
+        priority="urgent",
+    )
+
+    class _StubZendeskFetcher(ZendeskTicketFetcher):
+        @property
+        def enabled(self) -> bool:
+            return True
+
+        def collect_linked_ticket_ids_with_stats(
+            self,
+            issue: FetchedIssue,
+        ) -> tuple[list[str], int]:
+            _ = issue
+            return ["47322", "48661"], 0
+
+        def fetch_tickets_by_ids_with_failures(
+            self,
+            ticket_ids: list[str],
+        ) -> ZendeskTicketsFetchResult:
+            assert ticket_ids == ["47322", "48661"]
+            return ZendeskTicketsFetchResult(
+                tickets=[linked_ticket],
+                failures=[
+                    ZendeskTicketFetchFailureRecord(
+                        ticket_id="48661",
+                        failure="http_404",
+                    ),
+                ],
+            )
+
+    story_json = '{"recommended_issue_type":"Story","confidence":0.8,"reason":"Docs."}'
+
+    def jira_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_jira_payload_for(issue))
+
+    def openrouter_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": story_json}}]},
+        )
+
+    audit = _RecordingAuditStore()
+    mock_tracer = MagicMock()
+    root_cm = MagicMock()
+    fetch_cm = MagicMock()
+    finish_fetch = MagicMock()
+    root_cm.__enter__ = MagicMock(return_value=None)
+    root_cm.__exit__ = MagicMock(return_value=False)
+    fetch_cm.__enter__ = MagicMock(return_value=finish_fetch)
+    fetch_cm.__exit__ = MagicMock(return_value=False)
+    mock_tracer.triage_issue_trace.return_value = root_cm
+    mock_tracer.zendesk_context_fetch.return_value = fetch_cm
+
+    with httpx.Client(transport=httpx.MockTransport(jira_handler)) as j_client:
+        with httpx.Client(transport=httpx.MockTransport(openrouter_handler)) as o_client:
+            handler = TriageHandler(
+                allowed_projects=("TJC",),
+                fetcher=JiraIssueFetcher(settings, client=j_client),
+                inference=OpenRouterInferenceClient(settings, client=o_client),
+                policy=PolicyContext(
+                    bug_definition="bug",
+                    priority_definition="pri",
+                ),
+                executor=_NoOpExecutor(),
+                audit_store=audit,
+                zendesk_fetcher=_StubZendeskFetcher(settings),
+                inference_tracer=mock_tracer,
+                settings=settings,
+            )
+            sync_result = handler.run_sync(
+                issue_key="TJC-61",
+                project="TJC",
+                source="bug_created",
+                run_id="run-zd-partial",
+            )
+
+    assert sync_result.zendesk_context is not None
+    assert sync_result.zendesk_context.tickets_fetched == 1
+    assert sync_result.zendesk_context.fetch_failed is False
+
+    fetched = [e for e in audit.events if isinstance(e, ZendeskContextFetchedAuditEvent)]
+    assert len(fetched) == 1
+    assert fetched[0].tickets_fetched == 1
+    assert len(fetched[0].per_ticket_failures) == 1
+    assert fetched[0].per_ticket_failures[0].ticket_id == "48661"
+    assert fetched[0].per_ticket_failures[0].failure == "http_404"
+
+    finish_fetch.assert_called_once_with(
+        ticket_ids_requested=2,
+        tickets_fetched=1,
+        ticket_ids_deduped=0,
+        fetch_failed=False,
+        per_ticket_failures=1,
+    )

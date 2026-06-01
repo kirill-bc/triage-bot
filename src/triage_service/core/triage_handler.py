@@ -27,10 +27,7 @@ from triage_service.adapters.zendesk_comment_summarizer import (
     build_zendesk_comment_summarizer,
 )
 from triage_service.adapters.zendesk_context_cli import ZendeskContextEnrichmentResult
-from triage_service.adapters.zendesk_ticket_fetcher import (
-    ZendeskTicketFetchError,
-    ZendeskTicketFetcher,
-)
+from triage_service.adapters.zendesk_ticket_fetcher import ZendeskTicketFetcher
 from triage_service.adapters.openrouter_inference_client import (
     OpenRouterInferenceClient,
     OpenRouterInferenceError,
@@ -575,8 +572,16 @@ class TriageHandler:
         try:
             with self._inference_tracer.zendesk_context_fetch() as finish_fetch:
                 try:
-                    tickets = fetcher.fetch_linked_tickets(issue, run_id=run_id)
-                except ZendeskTicketFetchError:
+                    fetch_result = fetcher.fetch_tickets_by_ids_with_failures(ticket_ids)
+                    tickets = fetch_result.tickets
+                    per_ticket_failures = [
+                        ZendeskTicketFetchFailureDetail(
+                            ticket_id=failure.ticket_id,
+                            failure=failure.failure,
+                        )
+                        for failure in fetch_result.failures
+                    ]
+                except Exception:
                     LOGGER.exception(
                         "Zendesk enrichment failed",
                         extra={"issue_key": issue.issue_key, "run_id": run_id},

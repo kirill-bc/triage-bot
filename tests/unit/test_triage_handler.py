@@ -17,7 +17,10 @@ from triage_service.adapters.jira_issue_fetcher import (
 )
 from triage_service.adapters.openrouter_inference_client import OpenRouterInferenceClient
 from triage_service.adapters.zendesk_comment_summarizer import ZendeskSummarizationResult
-from triage_service.adapters.zendesk_ticket_fetcher import ZendeskTicketFetcher
+from triage_service.adapters.zendesk_ticket_fetcher import (
+    ZendeskTicketFetcher,
+    ZendeskTicketsFetchResult,
+)
 from triage_service.core.settings import AppSettings
 from triage_service.core.triage_fallback import TriageFailure
 from triage_service.core.triage_handler import (
@@ -170,23 +173,23 @@ def test_handler_enriches_issue_with_linked_zendesk_tickets_when_enabled(
         def enabled(self) -> bool:  # pragma: no cover - trivial override
             return True
 
-        def fetch_linked_tickets(
+        def fetch_tickets_by_ids_with_failures(
             self,
-            issue: FetchedIssue,
-            *,
-            run_id: str,
-        ) -> list[LinkedZendeskTicket]:
-            _ = (issue, run_id)
-            return [
-                LinkedZendeskTicket(
-                    ticket_id="99",
-                    subject="Portal sign-in broken",
-                    status="open",
-                    priority="urgent",
-                    description="Customer blocked",
-                    url="https://acme.zendesk.com/agent/tickets/99",
-                ),
-            ]
+            ticket_ids: list[str],
+        ) -> ZendeskTicketsFetchResult:
+            _ = ticket_ids
+            return ZendeskTicketsFetchResult(
+                tickets=[
+                    LinkedZendeskTicket(
+                        ticket_id="99",
+                        subject="Portal sign-in broken",
+                        status="open",
+                        priority="urgent",
+                        description="Customer blocked",
+                        url="https://acme.zendesk.com/agent/tickets/99",
+                    ),
+                ],
+            )
 
     transport_j = httpx.MockTransport(jira_handler)
     transport_o = httpx.MockTransport(openrouter_handler)
@@ -254,14 +257,12 @@ def test_handler_applies_zendesk_resolution_summary_from_summarizer(
         def enabled(self) -> bool:
             return True
 
-        def fetch_linked_tickets(
+        def fetch_tickets_by_ids_with_failures(
             self,
-            issue: FetchedIssue,
-            *,
-            run_id: str,
-        ) -> list[LinkedZendeskTicket]:
-            _ = (issue, run_id)
-            return [base_ticket]
+            ticket_ids: list[str],
+        ) -> ZendeskTicketsFetchResult:
+            _ = ticket_ids
+            return ZendeskTicketsFetchResult(tickets=[base_ticket])
 
     class _StubSummarizer:
         def summarize(

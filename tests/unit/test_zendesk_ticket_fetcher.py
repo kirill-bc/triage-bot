@@ -86,9 +86,18 @@ def test_collect_linked_ticket_ids_dedupes_ids_across_custom_fields_and_body(
 
 
 @pytest.mark.unit
-def test_collect_linked_ticket_ids_returns_all_custom_field_ids_without_cap(
-    settings: AppSettings,
+def test_collect_linked_ticket_ids_caps_custom_field_ids(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
+    monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
+    monkeypatch.setenv("TRIAGE_ZENDESK_CONTEXT_ENABLED", "true")
+    monkeypatch.setenv("ZENDESK_BASE_URL", "https://acme.zendesk.com")
+    monkeypatch.setenv("ZENDESK_USER_EMAIL", "agent@example.com")
+    monkeypatch.setenv("ZENDESK_API_TOKEN", "zd-token")
+    monkeypatch.setenv("TRIAGE_ZENDESK_MAX_TICKETS", "3")
+    limited = AppSettings()
     issue = FetchedIssue(
         issue_key="BC-9",
         summary="no extra zendesk ids in body",
@@ -96,13 +105,38 @@ def test_collect_linked_ticket_ids_returns_all_custom_field_ids_without_cap(
         reporter="support",
         zendesk_ticket_ids=["47322", "48661", "48950", "48951"],
     )
-    fetcher = ZendeskTicketFetcher(settings)
+    fetcher = ZendeskTicketFetcher(limited)
     assert fetcher.collect_linked_ticket_ids(issue) == [
         "47322",
         "48661",
         "48950",
-        "48951",
     ]
+
+
+@pytest.mark.unit
+def test_collect_linked_ticket_ids_with_stats_includes_cap_drops_for_custom_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
+    monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
+    monkeypatch.setenv("TRIAGE_ZENDESK_CONTEXT_ENABLED", "true")
+    monkeypatch.setenv("ZENDESK_BASE_URL", "https://acme.zendesk.com")
+    monkeypatch.setenv("ZENDESK_USER_EMAIL", "agent@example.com")
+    monkeypatch.setenv("ZENDESK_API_TOKEN", "zd-token")
+    monkeypatch.setenv("TRIAGE_ZENDESK_MAX_TICKETS", "2")
+    limited = AppSettings()
+    issue = FetchedIssue(
+        issue_key="BC-9",
+        summary="extra ZD-999 in body",
+        issue_type="Bug",
+        reporter="support",
+        zendesk_ticket_ids=["5001", "5002", "5003"],
+    )
+    fetcher = ZendeskTicketFetcher(limited)
+    ticket_ids, deduped = fetcher.collect_linked_ticket_ids_with_stats(issue)
+    assert ticket_ids == ["5001", "5002"]
+    assert deduped == 2
 
 
 @pytest.mark.unit
@@ -343,6 +377,43 @@ def test_fetch_ticket_comment_fetch_soft_fails_leaves_empty_comments(
     assert tickets[0].ticket_id == "999"
     assert tickets[0].subject == "Subject 999"
     assert tickets[0].comments == []
+
+
+@pytest.mark.unit
+def test_fetch_tickets_by_ids_with_failures_continues_on_per_ticket_error(
+    settings: AppSettings,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers.get("Authorization", "").startswith("Basic ")
+        if request.url.path == "/api/v2/tickets/100.json":
+            return httpx.Response(
+                200,
+                json={
+                    "ticket": {
+                        "id": 100,
+                        "subject": "Subject 100",
+                        "description": "Desc 100",
+                        "status": "open",
+                        "priority": "high",
+                    },
+                },
+            )
+        if request.url.path == "/api/v2/tickets/100/comments.json":
+            return httpx.Response(200, json={"comments": []})
+        if request.url.path == "/api/v2/tickets/200.json":
+            return httpx.Response(404, text="not found")
+        raise AssertionError(f"Unexpected Zendesk request: {request.url.path}")
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        fetcher = ZendeskTicketFetcher(settings, client=client)
+        result = fetcher.fetch_tickets_by_ids_with_failures(["100", "200"])
+
+    assert len(result.tickets) == 1
+    assert result.tickets[0].ticket_id == "100"
+    assert len(result.failures) == 1
+    assert result.failures[0].ticket_id == "200"
+    assert result.failures[0].failure == "http_404"
 
 
 @pytest.mark.unit

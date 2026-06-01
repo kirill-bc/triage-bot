@@ -6,6 +6,7 @@ import base64
 import logging
 import re
 from collections.abc import Iterable
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -178,6 +179,32 @@ class ZendeskTicketFetchError(RuntimeError):
     """Raised when an individual Zendesk ticket fetch fails."""
 
 
+@dataclass(frozen=True, slots=True)
+class ZendeskTicketFetchFailureRecord:
+    """Per-ticket Zendesk fetch failure collected during soft-fail batch fetch."""
+
+    ticket_id: str
+    failure: str
+
+
+@dataclass(frozen=True, slots=True)
+class ZendeskTicketsFetchResult:
+    """Linked Zendesk tickets fetched plus per-ticket soft failures."""
+
+    tickets: list[LinkedZendeskTicket]
+    failures: list[ZendeskTicketFetchFailureRecord] = field(default_factory=list)
+
+
+def _failure_code_from_fetch_error(exc: ZendeskTicketFetchError) -> str:
+    message = str(exc).lower()
+    http_match = re.search(r"http (\d{3})", message)
+    if http_match:
+        return f"http_{http_match.group(1)}"
+    if "missing" in message:
+        return "invalid_response"
+    return "fetch_error"
+
+
 class ZendeskTicketFetcher:
     """Loads linked Zendesk ticket summaries when optional credentials are configured."""
 
@@ -216,11 +243,14 @@ class ZendeskTicketFetcher:
         body_ids = extract_zendesk_ticket_ids(
             (issue.summary, issue.description, issue.reproduction_steps),
         )
+        max_tickets = self._settings.triage_zendesk_max_tickets
         if custom_ids:
             _append_unique_ids(found, seen, body_ids)
-            deduped = len(custom_ids) + len(body_ids) - len(found)
-            return found, deduped
-        capped = body_ids[: self._settings.triage_zendesk_max_tickets]
+            dropped = max(0, len(found) - max_tickets)
+            capped = found[:max_tickets]
+            deduped = len(custom_ids) + len(body_ids) - len(found) + dropped
+            return capped, deduped
+        capped = body_ids[:max_tickets]
         cap_dropped = max(0, len(body_ids) - len(capped))
         return capped, cap_dropped
 
@@ -236,21 +266,46 @@ class ZendeskTicketFetcher:
         ticket_ids = self.collect_linked_ticket_ids(issue)
         if not ticket_ids:
             return []
-        return self.fetch_tickets_by_ids(ticket_ids)
+        return self.fetch_tickets_by_ids_with_failures(ticket_ids).tickets
 
     def fetch_tickets_by_ids(self, ticket_ids: list[str]) -> list[LinkedZendeskTicket]:
+        return self.fetch_tickets_by_ids_with_failures(ticket_ids).tickets
+
+    def fetch_tickets_by_ids_with_failures(
+        self,
+        ticket_ids: list[str],
+    ) -> ZendeskTicketsFetchResult:
         if not self.credentials_configured:
-            return []
-        tickets: list[LinkedZendeskTicket] = []
+            return ZendeskTicketsFetchResult(tickets=[])
         if self._client is not None:
-            for ticket_id in ticket_ids:
-                tickets.append(self._fetch_ticket(self._client, ticket_id))
-            return tickets
+            return self._fetch_tickets_with_failures(self._client, ticket_ids)
         timeout = httpx.Timeout(self._settings.zendesk_http_timeout_seconds)
         with httpx.Client(timeout=timeout) as client:
-            for ticket_id in ticket_ids:
+            return self._fetch_tickets_with_failures(client, ticket_ids)
+
+    def _fetch_tickets_with_failures(
+        self,
+        client: httpx.Client,
+        ticket_ids: list[str],
+    ) -> ZendeskTicketsFetchResult:
+        tickets: list[LinkedZendeskTicket] = []
+        failures: list[ZendeskTicketFetchFailureRecord] = []
+        for ticket_id in ticket_ids:
+            try:
                 tickets.append(self._fetch_ticket(client, ticket_id))
-        return tickets
+            except ZendeskTicketFetchError as exc:
+                failures.append(
+                    ZendeskTicketFetchFailureRecord(
+                        ticket_id=ticket_id,
+                        failure=_failure_code_from_fetch_error(exc),
+                    ),
+                )
+                LOGGER.warning(
+                    "Zendesk ticket fetch failed; continuing with remaining tickets",
+                    extra={"ticket_id": ticket_id},
+                    exc_info=True,
+                )
+        return ZendeskTicketsFetchResult(tickets=tickets, failures=failures)
 
     def fetch_image_bytes(self, image_ref: ZendeskImageRef, *, run_id: str) -> bytes:
         """Download binary content for a discovered Zendesk image reference."""
