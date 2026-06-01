@@ -35,6 +35,7 @@ def test_build_fetch_output_uses_jira_custom_field_ids_and_fetches_zendesk() -> 
     assert payload["zendesk_ticket_count"] == 2
     assert payload["linked_zendesk_ticket_ids"] == ["5001", "5002"]
     assert payload["zendesk_tickets"] == []
+    zendesk.collect_linked_ticket_ids.assert_called_once_with(issue)
     zendesk.fetch_tickets_by_ids.assert_called_once_with(["5001", "5002"])
 
 
@@ -57,6 +58,7 @@ def test_build_fetch_output_skips_zendesk_when_credentials_missing() -> None:
 
     assert payload["zendesk_tickets"] == []
     assert "zendesk_fetch_skipped_reason" in payload
+    zendesk.collect_linked_ticket_ids.assert_called_once_with(issue)
     zendesk.fetch_tickets_by_ids.assert_not_called()
 
 

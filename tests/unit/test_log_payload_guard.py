@@ -5,6 +5,15 @@ from __future__ import annotations
 import pytest
 
 
+def test_truncate_log_string_skips_when_max_chars_zero() -> None:
+    from triage_service.observability.log_payload_guard import truncate_log_string
+
+    value = "x" * 10000
+    truncated, was_trunc = truncate_log_string(value, max_chars=0)
+    assert truncated == value
+    assert was_trunc is False
+
+
 @pytest.mark.unit
 def test_truncate_payload_tree_leaves_small_strings_unchanged() -> None:
     from triage_service.observability.log_payload_guard import (

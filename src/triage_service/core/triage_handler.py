@@ -19,7 +19,14 @@ from triage_service.adapters.jira_issue_fetcher import (
     FetchedIssue,
     JiraIssueFetcher,
     JiraIssueFetchError,
+    LinkedZendeskTicket,
 )
+from triage_service.adapters.zendesk_comment_summarizer import (
+    ZendeskCommentSummarizer,
+    ZendeskSummarizationResult,
+    build_zendesk_comment_summarizer,
+)
+from triage_service.adapters.zendesk_context_cli import ZendeskContextEnrichmentResult
 from triage_service.adapters.zendesk_ticket_fetcher import (
     ZendeskTicketFetchError,
     ZendeskTicketFetcher,
@@ -60,6 +67,11 @@ from triage_service.observability.audit_events import (
     TriageCompletedAuditEvent,
     TriageFailedAuditEvent,
     TriageSourceLiteral,
+    ZendeskContextFetchedAuditEvent,
+    ZendeskContextSummarizedAuditEvent,
+    ZendeskImageDedupeSkipDetail,
+    ZendeskTicketFetchFailureDetail,
+    ZendeskTicketSummaryDetail,
 )
 from triage_service.observability.audit_store import AuditStore, CompositeAuditStore
 from triage_service.observability.langfuse_inference_tracing import LangfuseInferenceTracer
@@ -153,6 +165,18 @@ def _image_context_telemetry(
     }
 
 
+def _zendesk_context_telemetry(
+    enrichment: ZendeskContextEnrichmentResult | None,
+) -> dict[str, object] | None:
+    if enrichment is None or not enrichment.ticket_ids_requested:
+        return None
+    return {
+        "zendesk_tickets_considered": len(enrichment.ticket_ids_requested),
+        "zendesk_tickets_fetched": enrichment.tickets_fetched,
+        "zendesk_tickets_summarized": enrichment.tickets_summarized,
+    }
+
+
 def _merge_telemetry(*parts: dict[str, object] | None) -> dict[str, object] | None:
     merged: dict[str, object] = {}
     for part in parts:
@@ -167,12 +191,14 @@ def _triage_completed_telemetry(
     recommendation: TriageRecommendation,
     settings: AppSettings,
     image_extraction: ImageContextExtractionResult | None = None,
+    zendesk_context: ZendeskContextEnrichmentResult | None = None,
 ) -> dict[str, object] | None:
     auto_apply_flags: dict[str, object] = {
         "auto_apply_deescalation_enabled": settings.triage_auto_apply_deescalation,
         "auto_apply_bug_to_story_enabled": settings.triage_auto_apply_bug_to_story,
     }
     image_telemetry = _image_context_telemetry(image_extraction)
+    zendesk_telemetry = _zendesk_context_telemetry(zendesk_context)
     if recommendation.recommended_issue_type != "Bug":
         flags = compute_mismatch_flags(issue, recommendation)
         story_mismatch = (
@@ -186,14 +212,19 @@ def _triage_completed_telemetry(
                 and str(issue.issue_type).strip().upper() == "BUG"
             ),
         }
-        return _merge_telemetry(image_telemetry, auto_apply_flags, issue_type_telemetry)
+        return _merge_telemetry(
+            image_telemetry,
+            zendesk_telemetry,
+            auto_apply_flags,
+            issue_type_telemetry,
+        )
     rec_pri = recommendation.recommended_priority
     if rec_pri is None:
-        return _merge_telemetry(image_telemetry, auto_apply_flags)
+        return _merge_telemetry(image_telemetry, zendesk_telemetry, auto_apply_flags)
     orig_rank = _p0_p4_rank(issue.priority)
     rec_rank = _p0_p4_rank(str(rec_pri))
     if orig_rank is None or rec_rank is None:
-        return _merge_telemetry(image_telemetry, auto_apply_flags)
+        return _merge_telemetry(image_telemetry, zendesk_telemetry, auto_apply_flags)
     if rec_rank < orig_rank:
         signal = "prioritize"
     elif rec_rank > orig_rank:
@@ -208,7 +239,19 @@ def _triage_completed_telemetry(
             signal == "deescalate" and settings.triage_auto_apply_deescalation
         ),
     }
-    return _merge_telemetry(image_telemetry, auto_apply_flags, priority_telemetry)
+    return _merge_telemetry(
+        image_telemetry,
+        zendesk_telemetry,
+        auto_apply_flags,
+        priority_telemetry,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _ZendeskFetchOutcome:
+    tickets: list[LinkedZendeskTicket]
+    fetch_failed: bool = False
+    enrichment: ZendeskContextEnrichmentResult | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -224,6 +267,7 @@ class TriageSyncResult:
 
     outcome: TriageRecommendation | TriageFailure
     image_extraction: ImageContextExtractionResult | None = None
+    zendesk_context: ZendeskContextEnrichmentResult | None = None
     classification: ClassificationStepOutput | None = None
     priority: PriorityStepOutput | None = None
 
@@ -326,6 +370,7 @@ class TriageHandler:
         audit_store: AuditStore | None = None,
         image_context_extractor: ImageContextExtractor | None = None,
         zendesk_fetcher: ZendeskTicketFetcher | None = None,
+        zendesk_summarizer: ZendeskCommentSummarizer | None = None,
         settings: AppSettings,
     ) -> None:
         self._allowed = frozenset(allowed_projects)
@@ -342,6 +387,7 @@ class TriageHandler:
             else NoOpImageContextExtractor()
         )
         self._zendesk_fetcher = zendesk_fetcher
+        self._zendesk_summarizer = zendesk_summarizer
 
     def flush_inference_telemetry(self) -> None:
         """Flush Langfuse buffers for inference traces and Langfuse-backed audit sinks."""
@@ -358,6 +404,7 @@ class TriageHandler:
         """Run the full pipeline for one issue; always notifies ``executor`` before returning."""
         issue: FetchedIssue | None = None
         image_extraction: ImageContextExtractionResult | None = None
+        zendesk_context: ZendeskContextEnrichmentResult | None = None
         tracer = self._inference_tracer
         with tracer.triage_run_session(run_id=run_id):
             try:
@@ -365,7 +412,6 @@ class TriageHandler:
                 fetch_start = perf_counter()
                 try:
                     issue = self._fetcher.fetch(issue_key, run_id=run_id)
-                    issue = self._enrich_with_zendesk(issue, run_id=run_id)
                 finally:
                     self._log_stage_timing(
                         stage="jira_fetch",
@@ -380,6 +426,12 @@ class TriageHandler:
                     issue_key=issue.issue_key,
                     project=project,
                 ):
+                    issue, zendesk_context = self._enrich_with_zendesk(
+                        issue,
+                        run_id=run_id,
+                        project=project,
+                        source=source,
+                    )
                     image_extraction = self._extract_image_contexts(
                         issue,
                         run_id=run_id,
@@ -393,6 +445,7 @@ class TriageHandler:
                         source=source,
                         image_contexts=image_extraction.contexts,
                         image_extraction=image_extraction,
+                        zendesk_context=zendesk_context,
                     )
             except Exception as exc:
                 failure = fallback_for_exception(exc)
@@ -404,6 +457,7 @@ class TriageHandler:
                     failure=failure,
                     exc=exc,
                     image_extraction=image_extraction,
+                    zendesk_context=zendesk_context,
                 )
                 action_start = perf_counter()
                 try:
@@ -427,6 +481,7 @@ class TriageHandler:
                 return TriageSyncResult(
                     outcome=failure,
                     image_extraction=image_extraction,
+                    zendesk_context=zendesk_context,
                 )
             action_start = perf_counter()
             try:
@@ -450,25 +505,278 @@ class TriageHandler:
             return TriageSyncResult(
                 outcome=steps.recommendation,
                 image_extraction=image_extraction,
+                zendesk_context=zendesk_context,
                 classification=steps.classification,
                 priority=steps.priority,
             )
 
-    def _enrich_with_zendesk(self, issue: FetchedIssue, *, run_id: str) -> FetchedIssue:
+    def _enrich_with_zendesk(
+        self,
+        issue: FetchedIssue,
+        *,
+        run_id: str,
+        project: str,
+        source: str,
+    ) -> tuple[FetchedIssue, ZendeskContextEnrichmentResult | None]:
         fetcher = self._zendesk_fetcher
         if fetcher is None or not fetcher.enabled:
-            return issue
-        try:
-            tickets = fetcher.fetch_linked_tickets(issue, run_id=run_id)
-        except ZendeskTicketFetchError:
-            LOGGER.exception(
-                "Zendesk enrichment failed",
-                extra={"issue_key": issue.issue_key, "run_id": run_id},
+            return issue, None
+        audit_source = cast(TriageSourceLiteral, source)
+        ticket_ids, ticket_ids_deduped = fetcher.collect_linked_ticket_ids_with_stats(issue)
+        if not ticket_ids:
+            return issue, ZendeskContextEnrichmentResult(ticket_ids_requested=[])
+        fetch_outcome = self._fetch_zendesk_linked_tickets(
+            issue,
+            fetcher=fetcher,
+            ticket_ids=ticket_ids,
+            ticket_ids_deduped=ticket_ids_deduped,
+            run_id=run_id,
+            project=project,
+            source=source,
+            audit_source=audit_source,
+        )
+        if fetch_outcome.enrichment is not None:
+            return issue, fetch_outcome.enrichment
+        enriched = issue.model_copy(update={"zendesk_tickets": fetch_outcome.tickets})
+        if (
+            self._zendesk_summarizer is None
+            or not self._settings.triage_zendesk_comment_summary_enabled
+        ):
+            return enriched, ZendeskContextEnrichmentResult(
+                ticket_ids_requested=ticket_ids,
+                tickets_fetched=len(fetch_outcome.tickets),
+                tickets=fetch_outcome.tickets,
             )
-            return issue
+        return self._summarize_zendesk_tickets(
+            enriched,
+            tickets=fetch_outcome.tickets,
+            ticket_ids=ticket_ids,
+            run_id=run_id,
+            project=project,
+            source=source,
+            audit_source=audit_source,
+        )
+
+    def _fetch_zendesk_linked_tickets(
+        self,
+        issue: FetchedIssue,
+        *,
+        fetcher: ZendeskTicketFetcher,
+        ticket_ids: list[str],
+        ticket_ids_deduped: int,
+        run_id: str,
+        project: str,
+        source: str,
+        audit_source: TriageSourceLiteral,
+    ) -> _ZendeskFetchOutcome:
+        enrich_start = perf_counter()
+        tickets: list[LinkedZendeskTicket] = []
+        per_ticket_failures: list[ZendeskTicketFetchFailureDetail] = []
+        try:
+            with self._inference_tracer.zendesk_context_fetch() as finish_fetch:
+                try:
+                    tickets = fetcher.fetch_linked_tickets(issue, run_id=run_id)
+                except ZendeskTicketFetchError:
+                    LOGGER.exception(
+                        "Zendesk enrichment failed",
+                        extra={"issue_key": issue.issue_key, "run_id": run_id},
+                    )
+                    finish_fetch(
+                        ticket_ids_requested=len(ticket_ids),
+                        tickets_fetched=0,
+                        ticket_ids_deduped=ticket_ids_deduped,
+                        fetch_failed=True,
+                        per_ticket_failures=0,
+                    )
+                    self._record_zendesk_fetched_audit(
+                        run_id=run_id,
+                        issue_key=issue.issue_key,
+                        project=project,
+                        source=audit_source,
+                        ticket_ids=ticket_ids,
+                        tickets_fetched=0,
+                        ticket_ids_deduped=ticket_ids_deduped,
+                        fetch_failed=True,
+                        per_ticket_failures=per_ticket_failures,
+                    )
+                    return _ZendeskFetchOutcome(
+                        tickets=[],
+                        fetch_failed=True,
+                        enrichment=ZendeskContextEnrichmentResult(
+                            ticket_ids_requested=ticket_ids,
+                            fetch_failed=True,
+                        ),
+                    )
+                finish_fetch(
+                    ticket_ids_requested=len(ticket_ids),
+                    tickets_fetched=len(tickets),
+                    ticket_ids_deduped=ticket_ids_deduped,
+                    fetch_failed=False,
+                    per_ticket_failures=len(per_ticket_failures),
+                )
+        finally:
+            self._log_stage_timing(
+                stage="zendesk_context_fetch",
+                run_id=run_id,
+                issue_key=issue.issue_key,
+                project=project,
+                source=source,
+                started_at=enrich_start,
+            )
+        self._record_zendesk_fetched_audit(
+            run_id=run_id,
+            issue_key=issue.issue_key,
+            project=project,
+            source=audit_source,
+            ticket_ids=ticket_ids,
+            tickets_fetched=len(tickets),
+            ticket_ids_deduped=ticket_ids_deduped,
+            fetch_failed=False,
+            per_ticket_failures=per_ticket_failures,
+        )
         if not tickets:
-            return issue
-        return issue.model_copy(update={"zendesk_tickets": tickets})
+            return _ZendeskFetchOutcome(
+                tickets=[],
+                enrichment=ZendeskContextEnrichmentResult(
+                    ticket_ids_requested=ticket_ids,
+                    tickets_fetched=0,
+                ),
+            )
+        return _ZendeskFetchOutcome(tickets=tickets, enrichment=None)
+
+    def _summarize_zendesk_tickets(
+        self,
+        issue: FetchedIssue,
+        *,
+        tickets: list[LinkedZendeskTicket],
+        ticket_ids: list[str],
+        run_id: str,
+        project: str,
+        source: str,
+        audit_source: TriageSourceLiteral,
+    ) -> tuple[FetchedIssue, ZendeskContextEnrichmentResult]:
+        summarizer = self._zendesk_summarizer
+        assert summarizer is not None
+        summary_start = perf_counter()
+        try:
+            with self._inference_tracer.zendesk_context_summary() as finish_summary:
+                try:
+                    summary_result = summarizer.summarize(issue, tickets, run_id=run_id)
+                except Exception:
+                    LOGGER.exception(
+                        "Zendesk comment summarization failed",
+                        extra={"issue_key": issue.issue_key, "run_id": run_id},
+                    )
+                    finish_summary(
+                        tickets_considered=len(tickets),
+                        tickets_summarized=0,
+                        total_summary_cost=None,
+                    )
+                    return issue, ZendeskContextEnrichmentResult(
+                        ticket_ids_requested=ticket_ids,
+                        tickets_fetched=len(tickets),
+                        summary_failed=True,
+                        tickets=tickets,
+                    )
+                finish_summary(
+                    tickets_considered=summary_result.tickets_considered,
+                    tickets_summarized=summary_result.tickets_summarized,
+                    total_summary_cost=summary_result.total_inference_cost,
+                )
+        finally:
+            self._log_stage_timing(
+                stage="zendesk_context_summary",
+                run_id=run_id,
+                issue_key=issue.issue_key,
+                project=project,
+                source=source,
+                started_at=summary_start,
+            )
+        self._record_zendesk_summarized_audit(
+            run_id=run_id,
+            issue_key=issue.issue_key,
+            project=project,
+            source=audit_source,
+            summary_result=summary_result,
+        )
+        if not summary_result.tickets:
+            return issue, ZendeskContextEnrichmentResult(
+                ticket_ids_requested=ticket_ids,
+                tickets_fetched=len(tickets),
+                tickets=tickets,
+            )
+        enriched = issue.model_copy(update={"zendesk_tickets": summary_result.tickets})
+        return enriched, ZendeskContextEnrichmentResult(
+            ticket_ids_requested=ticket_ids,
+            tickets_fetched=len(summary_result.tickets),
+            tickets_summarized=summary_result.tickets_summarized,
+            total_summary_cost=summary_result.total_inference_cost,
+            tickets=summary_result.tickets,
+        )
+
+    def _record_zendesk_fetched_audit(
+        self,
+        *,
+        run_id: str,
+        issue_key: str,
+        project: str,
+        source: TriageSourceLiteral,
+        ticket_ids: list[str],
+        tickets_fetched: int,
+        ticket_ids_deduped: int,
+        fetch_failed: bool,
+        per_ticket_failures: list[ZendeskTicketFetchFailureDetail],
+    ) -> None:
+        if not ticket_ids:
+            return
+        self._audit_store.record(
+            ZendeskContextFetchedAuditEvent(
+                event_type="zendesk_context_fetched",
+                run_id=run_id,
+                issue_key=issue_key,
+                project=project,
+                source=source,
+                ticket_ids_requested=ticket_ids,
+                tickets_fetched=tickets_fetched,
+                ticket_ids_deduped=ticket_ids_deduped,
+                fetch_failed=fetch_failed,
+                per_ticket_failures=per_ticket_failures,
+            ),
+        )
+
+    def _record_zendesk_summarized_audit(
+        self,
+        *,
+        run_id: str,
+        issue_key: str,
+        project: str,
+        source: TriageSourceLiteral,
+        summary_result: ZendeskSummarizationResult,
+    ) -> None:
+        if summary_result.tickets_considered <= 0:
+            return
+        per_ticket = [
+            ZendeskTicketSummaryDetail(
+                ticket_id=metric.ticket_id,
+                summarized=metric.summarized,
+                inference_cost=metric.inference_cost,
+                failure=metric.failure,
+            )
+            for metric in summary_result.per_ticket
+        ]
+        self._audit_store.record(
+            ZendeskContextSummarizedAuditEvent(
+                event_type="zendesk_context_summarized",
+                run_id=run_id,
+                issue_key=issue_key,
+                project=project,
+                source=source,
+                tickets_considered=summary_result.tickets_considered,
+                tickets_summarized=summary_result.tickets_summarized,
+                total_summary_cost=summary_result.total_inference_cost,
+                per_ticket=per_ticket,
+            ),
+        )
 
     def run_sync_on_fetched(
         self,
@@ -572,10 +880,12 @@ class TriageHandler:
         failure: TriageFailure,
         exc: BaseException | None = None,
         image_extraction: ImageContextExtractionResult | None = None,
+        zendesk_context: ZendeskContextEnrichmentResult | None = None,
     ) -> None:
         resilience = _audit_telemetry_for_exception(exc) if exc is not None else None
         telemetry = _merge_telemetry(
             _image_context_telemetry(image_extraction),
+            _zendesk_context_telemetry(zendesk_context),
             resilience,
         )
         audit_source = cast(TriageSourceLiteral, source)
@@ -646,7 +956,7 @@ class TriageHandler:
                 source=source,
                 started_at=extract_start,
             )
-        if result.attachments_considered > 0 or result.contexts:
+        if result.attachments_considered > 0 or result.contexts or result.zendesk_skipped:
             per_attachment = [
                 ImageAttachmentExtractionDetail(
                     attachment_id=metric.attachment_id,
@@ -656,6 +966,16 @@ class TriageHandler:
                     extraction_failure=metric.extraction_failure,
                 )
                 for metric in result.per_attachment
+            ]
+            zendesk_skipped = [
+                ZendeskImageDedupeSkipDetail(
+                    ticket_id=row.ticket_id,
+                    url=row.url,
+                    filename=row.filename,
+                    skip_reason=row.skip_reason,
+                    matched_jira_attachment_id=row.matched_jira_attachment_id,
+                )
+                for row in result.zendesk_skipped
             ]
             self._audit_store.record(
                 ImageContextExtractedAuditEvent(
@@ -669,6 +989,7 @@ class TriageHandler:
                     total_bytes=result.total_bytes,
                     total_vision_cost=result.total_vision_cost,
                     per_attachment=per_attachment,
+                    zendesk_skipped=zendesk_skipped,
                 ),
             )
         return result
@@ -682,6 +1003,7 @@ class TriageHandler:
         source: str,
         image_contexts: list[ImageContext] | None = None,
         image_extraction: ImageContextExtractionResult | None = None,
+        zendesk_context: ZendeskContextEnrichmentResult | None = None,
     ) -> _TriageInferenceSteps:
         audit_source = cast(TriageSourceLiteral, source)
         tracer = self._inference_tracer
@@ -751,6 +1073,7 @@ class TriageHandler:
                         recommendation=final_rec,
                         settings=self._settings,
                         image_extraction=image_extraction,
+                        zendesk_context=zendesk_context,
                     ),
                 ),
             )
@@ -823,6 +1146,7 @@ class TriageHandler:
                     recommendation=merged,
                     settings=self._settings,
                     image_extraction=image_extraction,
+                    zendesk_context=zendesk_context,
                 ),
             ),
         )
@@ -884,6 +1208,11 @@ def build_default_triage_handler(
     )
     zendesk_fetcher = ZendeskTicketFetcher(settings)
     inference = OpenRouterInferenceClient(settings)
+    zendesk_summarizer = build_zendesk_comment_summarizer(
+        settings,
+        inference_client=inference,
+        inference_tracer=obs.inference_tracer,
+    )
     cloud_id_configured = settings.jira_cloud_id and str(settings.jira_cloud_id).strip()
     if (
         apply_to_jira
@@ -909,6 +1238,7 @@ def build_default_triage_handler(
         audit_store=obs.audit_store,
         image_context_extractor=image_extractor,
         zendesk_fetcher=zendesk_fetcher,
+        zendesk_summarizer=zendesk_summarizer,
         settings=settings,
     )
 

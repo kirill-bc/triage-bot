@@ -10,7 +10,7 @@ import pytest
 
 from triage_service.core.settings import AppSettings
 from triage_service.adapters.image_context_extractor import ImageContext
-from triage_service.adapters.jira_issue_fetcher import FetchedIssue
+from triage_service.adapters.jira_issue_fetcher import AttachmentRef, FetchedIssue
 from triage_service.adapters.jira_issue_fetcher import LinkedZendeskTicket
 from triage_service.core.policy_context import PolicyContext
 
@@ -134,6 +134,172 @@ def test_issue_block_renders_attached_images_summary_without_transcript(
 
 
 @pytest.mark.unit
+def test_issue_block_renders_jira_image_source_hints_for_description_and_comments(
+    settings: AppSettings,
+) -> None:
+    issue = FetchedIssue(
+        issue_key="TJC-11a",
+        summary="UI broken",
+        description="See screenshot",
+        issue_type="Bug",
+        priority="P1",
+        reporter="bob",
+        attachments=[
+            AttachmentRef(
+                id="a-1",
+                filename="desc-inline.png",
+                mime_type="image/png",
+                inline=True,
+            ),
+            AttachmentRef(
+                id="a-2",
+                filename="comment-shot.png",
+                mime_type="image/png",
+                referenced_in_comments=True,
+            ),
+        ],
+    )
+    contexts = [
+        ImageContext(
+            attachment_id="a-1",
+            filename="desc-inline.png",
+            summary="Inline UI state.",
+        ),
+        ImageContext(
+            attachment_id="a-2",
+            filename="comment-shot.png",
+            summary="Comment follow-up screenshot.",
+        ),
+    ]
+
+    block = _issue_block(issue, image_contexts=contexts)
+
+    assert "Source: Jira issue description attachment" in block
+    assert "Source: Jira comment attachment" in block
+
+
+@pytest.mark.unit
+def test_issue_block_keeps_jira_images_in_attached_section_excludes_zendesk(
+    settings: AppSettings,
+) -> None:
+    issue = FetchedIssue(
+        issue_key="TJC-16",
+        summary="Mixed image sources",
+        issue_type="Bug",
+        reporter="erin",
+        zendesk_tickets=[
+            LinkedZendeskTicket(
+                ticket_id="47322",
+                subject="Customer report",
+                description="See screenshot in Zendesk.",
+                status="open",
+                priority="high",
+            ),
+        ],
+    )
+    contexts = [
+        ImageContext(
+            attachment_id="10001",
+            filename="jira-inline.png",
+            summary="Jira screenshot summary.",
+        ),
+        ImageContext(
+            attachment_id="zendesk:47322:https://z/2",
+            filename="zendesk-only.png",
+            summary="Zendesk modal summary.",
+        ),
+    ]
+
+    block = _issue_block(issue, settings=settings, image_contexts=contexts)
+
+    assert "Attached images:" in block
+    assert "[Attachment 1: jira-inline.png]" in block
+    assert "Jira screenshot summary." in block
+    assert "[Zendesk ticket #47322 attachment: zendesk-only.png]" in block
+    assert "Zendesk modal summary." in block
+    attached_idx = block.index("Attached images:")
+    zendesk_attachment_idx = block.index("[Zendesk ticket #47322 attachment:")
+    assert zendesk_attachment_idx < attached_idx
+
+
+@pytest.mark.unit
+def test_issue_block_renders_zendesk_image_source_hint_when_present(
+    settings: AppSettings,
+) -> None:
+    issue = FetchedIssue(
+        issue_key="TJC-16a",
+        summary="Mixed image sources",
+        issue_type="Bug",
+        reporter="erin",
+        zendesk_tickets=[
+            LinkedZendeskTicket(
+                ticket_id="47322",
+                subject="Customer report",
+                description="See screenshot in Zendesk.",
+                status="open",
+                priority="high",
+            ),
+        ],
+    )
+    contexts = [
+        ImageContext(
+            attachment_id="zendesk:47322:https://z/2",
+            filename="zendesk-comment.png",
+            summary="Zendesk modal summary.",
+            source_hint="Zendesk comment attachment",
+        ),
+    ]
+
+    block = _issue_block(issue, settings=settings, image_contexts=contexts)
+
+    assert "[Zendesk ticket #47322 attachment: zendesk-comment.png]" in block
+    assert "Source: Zendesk comment attachment" in block
+
+
+@pytest.mark.unit
+def test_issue_block_routes_zendesk_images_to_matching_ticket_only(
+    settings: AppSettings,
+) -> None:
+    issue = FetchedIssue(
+        issue_key="TJC-17",
+        summary="Two linked tickets",
+        issue_type="Bug",
+        reporter="erin",
+        zendesk_tickets=[
+            LinkedZendeskTicket(
+                ticket_id="1",
+                subject="Ticket one",
+                description="First ticket.",
+                status="open",
+                priority="normal",
+            ),
+            LinkedZendeskTicket(
+                ticket_id="2",
+                subject="Ticket two",
+                description="Second ticket.",
+                status="open",
+                priority="normal",
+            ),
+        ],
+    )
+    contexts = [
+        ImageContext(
+            attachment_id="zendesk:2:https://z/two.png",
+            filename="two.png",
+            summary="Screenshot from ticket two.",
+        ),
+    ]
+
+    block = _issue_block(issue, settings=settings, image_contexts=contexts)
+
+    ticket_one_idx = block.index("[Zendesk 1: #1 |")
+    ticket_two_idx = block.index("[Zendesk 2: #2 |")
+    attachment_idx = block.index("[Zendesk ticket #2 attachment: two.png]")
+    assert ticket_one_idx < ticket_two_idx < attachment_idx
+    assert "[Zendesk ticket #1 attachment:" not in block
+
+
+@pytest.mark.unit
 def test_issue_block_renders_soft_failure_placeholder_for_extraction_errors(
     settings: AppSettings,
 ) -> None:
@@ -153,6 +319,21 @@ def test_issue_block_renders_soft_failure_placeholder_for_extraction_errors(
     block = _issue_block(issue, image_contexts=contexts)
     assert "[Attachment 1: extraction unavailable — exceeds size limit]" in block
     assert "Transcript:" not in block
+
+
+@pytest.mark.unit
+def test_priority_template_reinforces_recovery_over_historical_peak() -> None:
+    templates_path = (
+        Path(__file__).resolve().parents[2]
+        / "src"
+        / "triage_service"
+        / "core"
+        / "prompt_templates.json"
+    )
+    payload = json.loads(templates_path.read_text(encoding="utf-8"))
+    template = payload["priority_template"].lower()
+    assert "recovery" in template or "recovered" in template
+    assert "historical" in template or "zendesk" in template
 
 
 @pytest.mark.unit
@@ -178,6 +359,38 @@ def test_issue_block_includes_linked_zendesk_tickets(settings: AppSettings) -> N
     assert "[Zendesk 1: #91234 | status=open | priority=urgent]" in block
     assert "Subject: Portal login broken" in block
     assert "Description:\nCustomer cannot sign in after MFA prompt." in block
+
+
+@pytest.mark.unit
+def test_issue_block_renders_zendesk_resolution_signals_when_summary_present(
+    settings: AppSettings,
+) -> None:
+    from triage_service.adapters.jira_issue_fetcher import ZendeskResolutionSummary
+
+    issue = FetchedIssue(
+        issue_key="TJC-15",
+        summary="Escalated issue",
+        issue_type="Bug",
+        reporter="erin",
+        zendesk_tickets=[
+            LinkedZendeskTicket(
+                ticket_id="99",
+                subject="Outage",
+                description="Stale peak severity prose.",
+                status="solved",
+                priority="urgent",
+                resolution_summary=ZendeskResolutionSummary(
+                    initial_impact="Peak outage.",
+                    latest_status="Recovered after vendor fix.",
+                    resolution_hints="Third-party outage.",
+                    open_risks="(none)",
+                ),
+            ),
+        ],
+    )
+    block = _issue_block(issue)
+    assert "Zendesk resolution signals:" in block
+    assert "Stale peak severity prose." not in block
 
 
 @pytest.mark.unit

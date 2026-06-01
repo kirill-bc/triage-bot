@@ -62,6 +62,33 @@ def test_parse_image_context_extracted_round_trip() -> None:
 
 
 @pytest.mark.unit
+def test_parse_image_context_extracted_includes_zendesk_skipped() -> None:
+    payload: dict[str, Any] = {
+        "event_type": "image_context_extracted",
+        "run_id": "run-zd-skip",
+        "issue_key": "TJC-2",
+        "project": "TJC",
+        "source": "bug_created",
+        "attachments_considered": 0,
+        "attachments_extracted": 0,
+        "total_bytes": 0,
+        "zendesk_skipped": [
+            {
+                "ticket_id": "47322",
+                "url": "https://z/1",
+                "filename": "blobid0.png",
+                "skip_reason": "jira_filename_match",
+                "matched_jira_attachment_id": "10001",
+            },
+        ],
+    }
+    event = parse_triage_audit_event(payload)
+    assert isinstance(event, ImageContextExtractedAuditEvent)
+    assert len(event.zendesk_skipped) == 1
+    assert event.zendesk_skipped[0].skip_reason == "jira_filename_match"
+
+
+@pytest.mark.unit
 def test_tracer_records_image_context_extraction_span_nested_under_pipeline() -> None:
     root_cm = MagicMock()
     img_cm = MagicMock()

@@ -12,11 +12,15 @@ from triage_service.adapters.image_context_extractor import (
     NoOpImageContextExtractor,
     OpenRouterVisionImageContextExtractor,
     _select_image_attachments,
+    _select_zendesk_images_for_vision,
 )
+from triage_service.adapters.zendesk_ticket_fetcher import ZendeskTicketFetchError
 from triage_service.adapters.jira_issue_fetcher import (
     AttachmentRef,
     FetchedIssue,
     JiraIssueFetchError,
+    LinkedZendeskTicket,
+    ZendeskImageRef,
 )
 from triage_service.adapters.openrouter_inference_client import (
     OpenRouterCompletionResult,
@@ -97,6 +101,294 @@ def test_noop_extractor_returns_empty_result() -> None:
     result = extractor.extract(issue, run_id="run-1")
     assert result.contexts == []
     assert result.attachments_considered == 0
+
+
+@pytest.mark.unit
+def test_vision_extractor_records_zendesk_dedupe_skips_against_jira_attachments(
+    settings: AppSettings,
+    vision_extractor_deps: tuple[MagicMock, MagicMock],
+) -> None:
+    jira_fetcher, inference = vision_extractor_deps
+    inference.effective_model_id = "google/gemini-2.0-flash-001"
+    inference.chat_completion_with_details.return_value = OpenRouterCompletionResult(
+        content=_vision_response("ok", "summary"),
+    )
+    issue = FetchedIssue(
+        issue_key="TJC-zd-dedupe",
+        summary="s",
+        issue_type="Bug",
+        reporter="r",
+        attachments=[
+            AttachmentRef(
+                id="jira-img",
+                filename="blobid0.png",
+                mime_type="image/png",
+                size_bytes=1000,
+                inline=True,
+            ),
+        ],
+        zendesk_tickets=[
+            LinkedZendeskTicket(
+                ticket_id="47322",
+                subject="Customer report",
+                description_image_refs=[
+                    ZendeskImageRef(url="https://z/1", filename="blobid0.png"),
+                    ZendeskImageRef(url="https://z/2", filename="new-screenshot.png"),
+                ],
+            ),
+        ],
+    )
+    extractor = OpenRouterVisionImageContextExtractor(
+        settings=settings,
+        jira_fetcher=jira_fetcher,
+        inference_client=inference,
+    )
+    result = extractor.extract(issue, run_id="run-zd-dedupe")
+    assert len(result.zendesk_skipped) == 1
+    assert result.zendesk_skipped[0].ticket_id == "47322"
+    assert result.zendesk_skipped[0].skip_reason == "jira_filename_match"
+    assert result.zendesk_skipped[0].matched_jira_attachment_id == "jira-img"
+
+
+@pytest.mark.unit
+def test_select_zendesk_images_for_vision_respects_shared_attachment_cap() -> None:
+    issue = FetchedIssue(
+        issue_key="TJC-zd-cap",
+        summary="s",
+        issue_type="Bug",
+        reporter="r",
+        attachments=[
+            AttachmentRef(
+                id="jira-img",
+                filename="blobid0.png",
+                mime_type="image/png",
+                size_bytes=1000,
+                inline=True,
+            ),
+        ],
+        zendesk_tickets=[
+            LinkedZendeskTicket(
+                ticket_id="47322",
+                subject="s",
+                description_image_refs=[
+                    ZendeskImageRef(url="https://z/1", filename="blobid0.png"),
+                    ZendeskImageRef(url="https://z/2", filename="only-a.png"),
+                    ZendeskImageRef(url="https://z/3", filename="only-b.png"),
+                ],
+            ),
+        ],
+    )
+    selected, skipped = _select_zendesk_images_for_vision(
+        issue,
+        jira_selected_count=2,
+        max_attachments=3,
+    )
+    assert len(skipped) == 1
+    assert skipped[0].filename == "blobid0.png"
+    assert len(selected) == 1
+    assert selected[0][1].filename == "only-a.png"
+
+
+@pytest.mark.unit
+def test_vision_extractor_processes_zendesk_only_image_in_remaining_budget_slots(
+    settings: AppSettings,
+    vision_extractor_deps: tuple[MagicMock, MagicMock],
+) -> None:
+    jira_fetcher, inference = vision_extractor_deps
+    zendesk_fetcher = MagicMock()
+    png_bytes = b"\x89PNG\r\n\x1a\n"
+    jira_fetcher.fetch_attachment_bytes.return_value = png_bytes
+    zendesk_fetcher.fetch_image_bytes.return_value = png_bytes
+    inference.effective_model_id = "google/gemini-2.0-flash-001"
+    inference.chat_completion_with_details.return_value = OpenRouterCompletionResult(
+        content=_vision_response("zendesk ui", "Zendesk modal."),
+    )
+    issue = FetchedIssue(
+        issue_key="TJC-zd-vision",
+        summary="s",
+        issue_type="Bug",
+        reporter="r",
+        attachments=[
+            AttachmentRef(
+                id="jira-inline",
+                filename="blobid0.png",
+                mime_type="image/png",
+                size_bytes=500,
+                inline=True,
+            ),
+        ],
+        zendesk_tickets=[
+            LinkedZendeskTicket(
+                ticket_id="47322",
+                subject="Customer report",
+                description_image_refs=[
+                    ZendeskImageRef(url="https://z/1", filename="blobid0.png"),
+                    ZendeskImageRef(
+                        url="https://z/2",
+                        filename="zendesk-only.png",
+                        mime_type="image/png",
+                        source="ticket_description_inline",
+                    ),
+                ],
+            ),
+        ],
+    )
+    extractor = OpenRouterVisionImageContextExtractor(
+        settings=settings,
+        jira_fetcher=jira_fetcher,
+        inference_client=inference,
+        zendesk_fetcher=zendesk_fetcher,
+        max_attachments=2,
+    )
+    result = extractor.extract(issue, run_id="run-zd-vision")
+    assert result.attachments_considered == 2
+    assert result.attachments_extracted == 2
+    assert [ctx.attachment_id for ctx in result.contexts] == [
+        "jira-inline",
+        "zendesk:47322:https://z/2",
+    ]
+    assert result.contexts[0].source_hint == "Jira issue description attachment"
+    assert result.contexts[1].source_hint == "Zendesk ticket description inline image"
+    assert result.contexts[1].filename == "zendesk-only.png"
+    assert inference.chat_completion_with_details.call_count == 2
+    zendesk_fetcher.fetch_image_bytes.assert_called_once()
+
+
+@pytest.mark.unit
+def test_vision_extractor_skips_zendesk_vision_when_jira_fills_attachment_cap(
+    settings: AppSettings,
+    vision_extractor_deps: tuple[MagicMock, MagicMock],
+) -> None:
+    jira_fetcher, inference = vision_extractor_deps
+    zendesk_fetcher = MagicMock()
+    jira_fetcher.fetch_attachment_bytes.return_value = b"\x89PNG\r\n\x1a\n"
+    inference.chat_completion_with_details.return_value = OpenRouterCompletionResult(
+        content=_vision_response("t", "s"),
+    )
+    issue = FetchedIssue(
+        issue_key="TJC-zd-full",
+        summary="s",
+        issue_type="Bug",
+        reporter="r",
+        attachments=[
+            AttachmentRef(
+                id="j1",
+                filename="a.png",
+                mime_type="image/png",
+                size_bytes=100,
+                inline=True,
+            ),
+            AttachmentRef(
+                id="j2",
+                filename="b.png",
+                mime_type="image/png",
+                size_bytes=200,
+                inline=True,
+            ),
+        ],
+        zendesk_tickets=[
+            LinkedZendeskTicket(
+                ticket_id="99",
+                subject="s",
+                description_image_refs=[
+                    ZendeskImageRef(url="https://z/only", filename="only.png"),
+                ],
+            ),
+        ],
+    )
+    extractor = OpenRouterVisionImageContextExtractor(
+        settings=settings,
+        jira_fetcher=jira_fetcher,
+        inference_client=inference,
+        zendesk_fetcher=zendesk_fetcher,
+        max_attachments=2,
+    )
+    result = extractor.extract(issue, run_id="run-zd-full")
+    assert result.attachments_considered == 2
+    assert inference.chat_completion_with_details.call_count == 2
+    zendesk_fetcher.fetch_image_bytes.assert_not_called()
+
+
+@pytest.mark.unit
+def test_vision_extractor_zendesk_oversized_image_soft_fails(
+    settings: AppSettings,
+    vision_extractor_deps: tuple[MagicMock, MagicMock],
+) -> None:
+    jira_fetcher, inference = vision_extractor_deps
+    zendesk_fetcher = MagicMock()
+    jira_fetcher.fetch_attachment_bytes.return_value = b"\x89PNG\r\n\x1a\n"
+    zendesk_fetcher.fetch_image_bytes.return_value = b"\x89PNG\r\n\x1a\n" + (b"x" * 200)
+    inference.chat_completion_with_details.return_value = OpenRouterCompletionResult(
+        content=_vision_response("jira ok", "Jira summary."),
+    )
+    issue = FetchedIssue(
+        issue_key="TJC-zd-big",
+        summary="s",
+        issue_type="Bug",
+        reporter="r",
+        zendesk_tickets=[
+            LinkedZendeskTicket(
+                ticket_id="55",
+                subject="s",
+                description_image_refs=[
+                    ZendeskImageRef(
+                        url="https://z/big",
+                        filename="big.png",
+                        mime_type="image/png",
+                    ),
+                ],
+            ),
+        ],
+    )
+    extractor = OpenRouterVisionImageContextExtractor(
+        settings=settings,
+        jira_fetcher=jira_fetcher,
+        inference_client=inference,
+        zendesk_fetcher=zendesk_fetcher,
+        max_attachments=2,
+        max_bytes_per_image=100,
+    )
+    result = extractor.extract(issue, run_id="run-zd-big")
+    assert len(result.contexts) == 1
+    assert result.contexts[0].extraction_failure is not None
+    assert "size limit" in (result.contexts[0].extraction_failure or "")
+    inference.chat_completion_with_details.assert_not_called()
+
+
+@pytest.mark.unit
+def test_vision_extractor_zendesk_fetch_failure_soft_fails(
+    settings: AppSettings,
+    vision_extractor_deps: tuple[MagicMock, MagicMock],
+) -> None:
+    jira_fetcher, inference = vision_extractor_deps
+    zendesk_fetcher = MagicMock()
+    zendesk_fetcher.fetch_image_bytes.side_effect = ZendeskTicketFetchError("HTTP 403")
+    issue = FetchedIssue(
+        issue_key="TJC-zd-fetch",
+        summary="s",
+        issue_type="Bug",
+        reporter="r",
+        zendesk_tickets=[
+            LinkedZendeskTicket(
+                ticket_id="12",
+                subject="s",
+                description_image_refs=[
+                    ZendeskImageRef(url="https://z/x", filename="x.png", mime_type="image/png"),
+                ],
+            ),
+        ],
+    )
+    extractor = OpenRouterVisionImageContextExtractor(
+        settings=settings,
+        jira_fetcher=jira_fetcher,
+        inference_client=inference,
+        zendesk_fetcher=zendesk_fetcher,
+        max_attachments=1,
+    )
+    result = extractor.extract(issue, run_id="run-zd-fetch")
+    assert len(result.contexts) == 1
+    assert "attachment fetch failed" in (result.contexts[0].extraction_failure or "")
+    inference.chat_completion_with_details.assert_not_called()
 
 
 @pytest.mark.unit
@@ -442,6 +734,10 @@ def test_select_image_attachments_prioritizes_description_then_comment_refs(
     )
     result = extractor.extract(issue, run_id="run-3")
     assert [ctx.attachment_id for ctx in result.contexts] == ["desc-small", "comment-large"]
+    assert [ctx.source_hint for ctx in result.contexts] == [
+        "Jira issue description attachment",
+        "Jira comment attachment",
+    ]
     assert inference.chat_completion_with_details.call_count == 2
 
 

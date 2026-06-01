@@ -12,6 +12,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from triage_service.adapters.image_context_extractor import build_cli_image_context_summary
+from triage_service.adapters.zendesk_context_cli import build_cli_zendesk_context_summary
 from triage_service.core.settings import AppSettings
 from triage_service.core.triage_fallback import TriageFailure
 from triage_service.core.triage_handler import (
@@ -72,6 +73,7 @@ def build_triage_cli_result_payload(
     result: TriageSyncResult,
     *,
     image_context: dict[str, Any],
+    zendesk_context: dict[str, Any],
 ) -> dict[str, Any]:
     outcome = result.outcome
     assert not isinstance(outcome, TriageFailure)
@@ -79,6 +81,7 @@ def build_triage_cli_result_payload(
         "status": "completed",
         "recommendation": outcome.model_dump(),
         "image_context": image_context,
+        "zendesk_context": zendesk_context,
     }
     if result.classification is not None:
         payload["classification"] = result.classification.model_dump()
@@ -161,6 +164,10 @@ def main(argv: list[str] | None = None) -> int:
         enabled=settings.triage_image_context_enabled,
         extraction=result.image_extraction,
     )
+    zendesk_context = build_cli_zendesk_context_summary(
+        enabled=bool(getattr(settings, "triage_zendesk_context_enabled", False)),
+        enrichment=result.zendesk_context,
+    )
     outcome = result.outcome
     if isinstance(outcome, TriageFailure):
         print(
@@ -169,6 +176,7 @@ def main(argv: list[str] | None = None) -> int:
                     "status": "failed",
                     "failure": outcome.model_dump(),
                     "image_context": image_context,
+                    "zendesk_context": zendesk_context,
                 },
                 indent=2,
             ),
@@ -176,7 +184,11 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     print(
         json.dumps(
-            build_triage_cli_result_payload(result, image_context=image_context),
+            build_triage_cli_result_payload(
+                result,
+                image_context=image_context,
+                zendesk_context=zendesk_context,
+            ),
             indent=2,
             ensure_ascii=False,
         ),

@@ -43,6 +43,36 @@ class CommentRef(BaseModel):
     attachment_ids: list[str] = Field(default_factory=list)
 
 
+class ZendeskCommentRef(BaseModel):
+    """Normalized Zendesk ticket comment for resolution-aware summarization."""
+
+    comment_id: str
+    body: str
+    public: bool
+    created_at: str | None = None
+    image_refs: list["ZendeskImageRef"] = Field(default_factory=list)
+
+
+class ZendeskImageRef(BaseModel):
+    """Image discovered from Zendesk ticket description or comment bodies/attachments."""
+
+    url: str
+    filename: str | None = None
+    attachment_id: str | None = None
+    mime_type: str | None = None
+    size_bytes: int | None = None
+    source: str = "inline_body"
+
+
+class ZendeskResolutionSummary(BaseModel):
+    """Resolution-aware signals extracted from a Zendesk ticket thread."""
+
+    initial_impact: str
+    latest_status: str
+    resolution_hints: str
+    open_risks: str
+
+
 class LinkedZendeskTicket(BaseModel):
     """Normalized Zendesk ticket context linked from a Jira issue."""
 
@@ -51,7 +81,11 @@ class LinkedZendeskTicket(BaseModel):
     description: str | None = None
     status: str | None = None
     priority: str | None = None
+    problem_id: str | None = None
     url: str | None = None
+    comments: list[ZendeskCommentRef] = Field(default_factory=list)
+    description_image_refs: list[ZendeskImageRef] = Field(default_factory=list)
+    resolution_summary: ZendeskResolutionSummary | None = None
 
 
 _ZENDESK_FIELD_URL_RE = re.compile(

@@ -13,6 +13,8 @@ def _chars_truncated_suffix(total_len: int) -> str:
 
 def truncate_log_string(value: str, *, max_chars: int) -> tuple[str, bool]:
     """Return ``value`` or a prefix plus a fixed truncation marker (character-safe)."""
+    if max_chars <= 0:
+        return value, False
     if len(value) <= max_chars:
         return value, False
     return value[:max_chars] + _chars_truncated_suffix(len(value)), True

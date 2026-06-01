@@ -14,6 +14,11 @@ from triage_service.adapters.jira_issue_fetcher import (
     FetchedIssue,
     JiraIssueFetchError,
     JiraIssueFetcher,
+    ZendeskImageRef,
+)
+from triage_service.adapters.zendesk_ticket_fetcher import (
+    ZendeskTicketFetchError,
+    ZendeskTicketFetcher,
 )
 from triage_service.adapters.openrouter_inference_client import (
     OpenRouterInferenceClient,
@@ -23,6 +28,11 @@ from triage_service.core.settings import AppSettings
 from triage_service.core.vision_prompt_composer import (
     compose_vision_system_prompt,
     compose_vision_user_instruction,
+)
+from triage_service.core.zendesk_image_dedupe import (
+    ZendeskImageDedupeSkip,
+    collect_zendesk_image_refs_from_tickets,
+    dedupe_zendesk_images_against_jira,
 )
 from triage_service.observability.langfuse_inference_tracing import LangfuseInferenceTracer
 
@@ -39,6 +49,7 @@ class ImageContext(BaseModel):
     transcript: str | None = None
     summary: str | None = None
     extraction_failure: str | None = None
+    source_hint: str | None = None
 
 
 class ImageAttachmentMetric(BaseModel):
@@ -61,6 +72,37 @@ class ImageContextExtractionResult(BaseModel):
     total_bytes: int = Field(ge=0, default=0)
     total_vision_cost: float | None = Field(default=None, ge=0.0)
     per_attachment: list[ImageAttachmentMetric] = Field(default_factory=list)
+    zendesk_skipped: list[ZendeskImageDedupeSkip] = Field(default_factory=list)
+
+
+def _zendesk_image_attachment_id(ticket_id: str, image_ref: ZendeskImageRef) -> str:
+    key = image_ref.attachment_id or image_ref.url
+    return f"zendesk:{ticket_id}:{key}"
+
+
+def _select_zendesk_images_for_vision(
+    issue: FetchedIssue,
+    *,
+    jira_selected_count: int,
+    max_attachments: int,
+) -> tuple[list[tuple[str, ZendeskImageRef]], list[ZendeskImageDedupeSkip]]:
+    """Return deduped Zendesk-only images that fit remaining shared attachment budget."""
+    if not issue.zendesk_tickets:
+        return [], []
+    refs = collect_zendesk_image_refs_from_tickets(issue.zendesk_tickets)
+    kept, skipped = dedupe_zendesk_images_against_jira(refs, issue.attachments)
+    remaining = max(0, max_attachments - jira_selected_count)
+    return kept[:remaining], skipped
+
+
+def collect_zendesk_image_dedupe_skips(issue: FetchedIssue) -> list[ZendeskImageDedupeSkip]:
+    """Return Zendesk images that duplicate Jira attachments (for audit before vision)."""
+    _, skipped = _select_zendesk_images_for_vision(
+        issue,
+        jira_selected_count=0,
+        max_attachments=0,
+    )
+    return skipped
 
 
 def build_cli_image_context_summary(
@@ -137,6 +179,7 @@ def build_image_context_extractor(
         jira_fetcher=jira_fetcher,
         inference_client=inference,
         inference_tracer=inference_tracer or LangfuseInferenceTracer(None),
+        zendesk_fetcher=ZendeskTicketFetcher(settings),
         max_attachments=settings.triage_image_context_max_attachments,
         max_bytes_per_image=settings.triage_image_context_max_bytes_per_image,
     )
@@ -184,6 +227,27 @@ def _select_image_attachments(
     return ordered[:max_attachments]
 
 
+def _jira_attachment_source_hint(ref: AttachmentRef) -> str:
+    if ref.inline:
+        return "Jira issue description attachment"
+    if ref.referenced_in_comments:
+        return "Jira comment attachment"
+    return "Jira attachment"
+
+
+def _zendesk_image_source_hint(image_ref: ZendeskImageRef) -> str:
+    source = image_ref.source.strip().lower()
+    if source == "ticket_description_inline":
+        return "Zendesk ticket description inline image"
+    if source == "comment_inline_body":
+        return "Zendesk comment inline image"
+    if source == "comment_attachment":
+        return "Zendesk comment attachment"
+    if source == "attachment":
+        return "Zendesk attachment"
+    return "Zendesk inline image"
+
+
 def _sniff_image_mime_from_bytes(data: bytes) -> str | None:
     if len(data) < 4:
         return None
@@ -210,6 +274,24 @@ def _is_probably_non_image_payload(data: bytes) -> bool:
     if lowered.startswith(b"<!doctype") or lowered.startswith(b"<html"):
         return True
     return False
+
+
+def _resolve_zendesk_image_mime_type(ref: ZendeskImageRef) -> str | None:
+    mime = (ref.mime_type or "").strip().lower()
+    if mime.startswith(_IMAGE_MIME_PREFIX):
+        return mime
+    filename = (ref.filename or "").lower()
+    if filename.endswith(".png"):
+        return "image/png"
+    if filename.endswith(".jpg") or filename.endswith(".jpeg"):
+        return "image/jpeg"
+    if filename.endswith(".gif"):
+        return "image/gif"
+    if filename.endswith(".webp"):
+        return "image/webp"
+    if filename.endswith(".bmp"):
+        return "image/bmp"
+    return None
 
 
 def _resolve_image_mime_type(ref: AttachmentRef) -> str | None:
@@ -269,8 +351,9 @@ def _parse_vision_response(content: str) -> tuple[str | None, str | None, str | 
 
 
 def _attachment_extraction_metric(
-    ref: AttachmentRef,
     *,
+    attachment_id: str,
+    filename: str,
     started: float,
     context: ImageContext,
     bytes_fetched: int = 0,
@@ -278,8 +361,8 @@ def _attachment_extraction_metric(
 ) -> tuple[ImageContext, ImageAttachmentMetric]:
     latency_ms = max((perf_counter() - started) * 1000.0, 0.0)
     metric = ImageAttachmentMetric(
-        attachment_id=ref.id,
-        filename=ref.filename,
+        attachment_id=attachment_id,
+        filename=filename,
         latency_ms=latency_ms,
         bytes_fetched=bytes_fetched,
         extraction_failure=context.extraction_failure,
@@ -349,41 +432,63 @@ class OpenRouterVisionImageContextExtractor:
         jira_fetcher: JiraIssueFetcher,
         inference_client: OpenRouterInferenceClient,
         inference_tracer: LangfuseInferenceTracer | None = None,
+        zendesk_fetcher: ZendeskTicketFetcher | None = None,
         max_attachments: int = 5,
         max_bytes_per_image: int = _DEFAULT_MAX_BYTES_PER_IMAGE,
     ) -> None:
         self._settings = settings
         self._jira_fetcher = jira_fetcher
+        self._zendesk_fetcher = zendesk_fetcher
         self._inference = inference_client
         self._inference_tracer = inference_tracer or LangfuseInferenceTracer(None)
         self._max_attachments = max_attachments
         self._max_bytes_per_image = max_bytes_per_image
 
     def extract(self, issue: FetchedIssue, *, run_id: str) -> ImageContextExtractionResult:
-        selected = _select_image_attachments(
+        jira_selected = _select_image_attachments(
             issue.attachments,
+            max_attachments=self._max_attachments,
+        )
+        zendesk_selected, zendesk_skipped = _select_zendesk_images_for_vision(
+            issue,
+            jira_selected_count=len(jira_selected),
             max_attachments=self._max_attachments,
         )
         contexts: list[ImageContext] = []
         per_attachment: list[ImageAttachmentMetric] = []
         total_bytes = 0
         vision_costs: list[float] = []
-        for ref in selected:
+        for ref in jira_selected:
             context, metric = self._extract_one(issue, ref, run_id=run_id)
             contexts.append(context)
             per_attachment.append(metric)
             total_bytes += metric.bytes_fetched
             if metric.vision_cost is not None:
                 vision_costs.append(metric.vision_cost)
+        if self._zendesk_fetcher is not None:
+            for ticket_id, image_ref in zendesk_selected:
+                context, metric = self._extract_zendesk_one(
+                    issue,
+                    ticket_id,
+                    image_ref,
+                    run_id=run_id,
+                )
+                contexts.append(context)
+                per_attachment.append(metric)
+                total_bytes += metric.bytes_fetched
+                if metric.vision_cost is not None:
+                    vision_costs.append(metric.vision_cost)
         extracted = sum(1 for ctx in contexts if ctx.extraction_failure is None)
         total_vision_cost = sum(vision_costs) if vision_costs else None
+        considered = len(jira_selected) + len(zendesk_selected)
         return ImageContextExtractionResult(
             contexts=contexts,
-            attachments_considered=len(selected),
+            attachments_considered=considered,
             attachments_extracted=extracted,
             total_bytes=total_bytes,
             total_vision_cost=total_vision_cost,
             per_attachment=per_attachment,
+            zendesk_skipped=zendesk_skipped,
         )
 
     def _extract_one(
@@ -397,18 +502,29 @@ class OpenRouterVisionImageContextExtractor:
         base = ImageContext(
             attachment_id=ref.id,
             filename=ref.filename,
+            source_hint=_jira_attachment_source_hint(ref),
         )
         resolved_mime = _resolve_image_mime_type(ref)
         if resolved_mime is None:
             failed = base.model_copy(update={"extraction_failure": "unsupported MIME type"})
-            return _attachment_extraction_metric(ref, started=started, context=failed)
+            return _attachment_extraction_metric(
+                attachment_id=ref.id,
+                filename=ref.filename,
+                started=started,
+                context=failed,
+            )
         try:
             image_bytes = self._jira_fetcher.fetch_attachment_bytes(ref.id, run_id=run_id)
         except JiraIssueFetchError as exc:
             failed = base.model_copy(
                 update={"extraction_failure": f"attachment fetch failed: {exc}"},
             )
-            return _attachment_extraction_metric(ref, started=started, context=failed)
+            return _attachment_extraction_metric(
+                attachment_id=ref.id,
+                filename=ref.filename,
+                started=started,
+                context=failed,
+            )
         bytes_fetched = len(image_bytes)
         validation_failure = _validate_image_bytes_for_vision(
             image_bytes,
@@ -417,14 +533,90 @@ class OpenRouterVisionImageContextExtractor:
         )
         if validation_failure is not None:
             return _attachment_extraction_metric(
-                ref,
+                attachment_id=ref.id,
+                filename=ref.filename,
                 started=started,
                 context=validation_failure,
                 bytes_fetched=bytes_fetched,
             )
         return self._vision_extract_one(
             issue,
-            ref,
+            attachment_id=ref.id,
+            filename=ref.filename,
+            image_bytes=image_bytes,
+            mime_type=resolved_mime,
+            base=base,
+            run_id=run_id,
+            started=started,
+            bytes_fetched=bytes_fetched,
+        )
+
+    def _extract_zendesk_one(
+        self,
+        issue: FetchedIssue,
+        ticket_id: str,
+        image_ref: ZendeskImageRef,
+        *,
+        run_id: str,
+    ) -> tuple[ImageContext, ImageAttachmentMetric]:
+        started = perf_counter()
+        attachment_id = _zendesk_image_attachment_id(ticket_id, image_ref)
+        filename = image_ref.filename or "zendesk-image"
+        base = ImageContext(
+            attachment_id=attachment_id,
+            filename=filename,
+            source_hint=_zendesk_image_source_hint(image_ref),
+        )
+        resolved_mime = _resolve_zendesk_image_mime_type(image_ref)
+        if resolved_mime is None:
+            failed = base.model_copy(update={"extraction_failure": "unsupported MIME type"})
+            return _attachment_extraction_metric(
+                attachment_id=attachment_id,
+                filename=filename,
+                started=started,
+                context=failed,
+            )
+        fetcher = self._zendesk_fetcher
+        if fetcher is None:
+            failed = base.model_copy(
+                update={"extraction_failure": "Zendesk image fetch is not configured"},
+            )
+            return _attachment_extraction_metric(
+                attachment_id=attachment_id,
+                filename=filename,
+                started=started,
+                context=failed,
+            )
+        try:
+            image_bytes = fetcher.fetch_image_bytes(image_ref, run_id=run_id)
+        except ZendeskTicketFetchError as exc:
+            failed = base.model_copy(
+                update={"extraction_failure": f"attachment fetch failed: {exc}"},
+            )
+            return _attachment_extraction_metric(
+                attachment_id=attachment_id,
+                filename=filename,
+                started=started,
+                context=failed,
+            )
+        bytes_fetched = len(image_bytes)
+        validation_failure = _validate_image_bytes_for_vision(
+            image_bytes,
+            base,
+            max_bytes=self._max_bytes_per_image,
+        )
+        if validation_failure is not None:
+            return _attachment_extraction_metric(
+                attachment_id=attachment_id,
+                filename=filename,
+                started=started,
+                context=validation_failure,
+                bytes_fetched=bytes_fetched,
+            )
+        return self._vision_extract_one(
+            issue,
+            attachment_id=attachment_id,
+            filename=filename,
             image_bytes=image_bytes,
             mime_type=resolved_mime,
             base=base,
@@ -436,8 +628,9 @@ class OpenRouterVisionImageContextExtractor:
     def _vision_extract_one(
         self,
         issue: FetchedIssue,
-        ref: AttachmentRef,
         *,
+        attachment_id: str,
+        filename: str,
         image_bytes: bytes,
         mime_type: str,
         base: ImageContext,
@@ -456,8 +649,8 @@ class OpenRouterVisionImageContextExtractor:
             model=model_id,
             messages=messages,
             model_parameters={"temperature": 0.0},
-            attachment_id=ref.id,
-            filename=ref.filename,
+            attachment_id=attachment_id,
+            filename=filename,
         ) as finish_vision:
             try:
                 result = self._inference.chat_completion_with_details(
@@ -471,7 +664,8 @@ class OpenRouterVisionImageContextExtractor:
                     update={"extraction_failure": f"vision extraction failed: {exc}"},
                 )
                 return _attachment_extraction_metric(
-                    ref,
+                    attachment_id=attachment_id,
+                    filename=filename,
                     started=started,
                     context=failed,
                     bytes_fetched=bytes_fetched,
@@ -481,8 +675,8 @@ class OpenRouterVisionImageContextExtractor:
             finish_vision(
                 result.content,
                 {
-                    "attachment_id": ref.id,
-                    "filename": ref.filename,
+                    "attachment_id": attachment_id,
+                    "filename": filename,
                     "parse_failure": parse_failure,
                 },
                 usage_details=result.usage_details,
@@ -491,7 +685,8 @@ class OpenRouterVisionImageContextExtractor:
             if parse_failure is not None:
                 failed = base.model_copy(update={"extraction_failure": parse_failure})
                 return _attachment_extraction_metric(
-                    ref,
+                    attachment_id=attachment_id,
+                    filename=filename,
                     started=started,
                     context=failed,
                     bytes_fetched=bytes_fetched,
@@ -501,7 +696,8 @@ class OpenRouterVisionImageContextExtractor:
                 update={"transcript": transcript, "summary": summary},
             )
             return _attachment_extraction_metric(
-                ref,
+                attachment_id=attachment_id,
+                filename=filename,
                 started=started,
                 context=success,
                 bytes_fetched=bytes_fetched,

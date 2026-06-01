@@ -13,7 +13,6 @@ from langfuse import Langfuse, propagate_attributes
 from langfuse.types import TraceContext
 
 from triage_service.observability.log_payload_guard import (
-    DEFAULT_MAX_LOG_STRING_CHARS,
     truncate_log_string,
     truncate_logging_value,
 )
@@ -30,6 +29,8 @@ _LANGFUSE_SESSION_ID_MAX_LEN = 199
 InferenceStepName = Literal["classification", "priority"]
 GenerationFinish = Callable[..., None]
 ImageContextExtractionFinish = Callable[..., None]
+ZendeskContextFetchFinish = Callable[..., None]
+ZendeskContextSummaryFinish = Callable[..., None]
 
 
 def _apply_langfuse_generation_update(
@@ -40,11 +41,12 @@ def _apply_langfuse_generation_update(
     redact_model_output: bool,
     usage_details: dict[str, int] | None,
     cost_details: dict[str, float] | None,
+    max_string_chars: int,
 ) -> None:
     out_text = sanitize_model_output_text(raw, redact=redact_model_output)
     out_text, out_trunc = truncate_log_string(
         out_text,
-        max_chars=DEFAULT_MAX_LOG_STRING_CHARS,
+        max_chars=max_string_chars,
     )
     merged_meta = dict(meta)
     if redact_model_output:
@@ -55,7 +57,7 @@ def _apply_langfuse_generation_update(
         }
     merged_any, meta_trunc = truncate_logging_value(
         merged_meta,
-        max_string_chars=DEFAULT_MAX_LOG_STRING_CHARS,
+        max_string_chars=max_string_chars,
     )
     merged_meta = cast(dict[str, Any], merged_any)
     if out_trunc or meta_trunc:
@@ -138,11 +140,13 @@ class LangfuseInferenceTracer:
         redact_model_input: bool = False,
         redact_model_output: bool = True,
         redact_vision_transcript: bool = True,
+        max_string_chars: int = 0,
     ) -> None:
         self._client = client
         self._redact_model_input = redact_model_input
         self._redact_model_output = redact_model_output
         self._redact_vision_transcript = redact_vision_transcript
+        self._max_string_chars = max_string_chars
 
     def flush(self) -> None:
         """Best-effort flush for short-lived processes (CLI, tests, serverless)."""
@@ -252,6 +256,188 @@ class LangfuseInferenceTracer:
             yield noop_finish
 
     @contextmanager
+    def zendesk_context_fetch(self) -> Generator[ZendeskContextFetchFinish, None, None]:
+        def noop_finish(
+            *,
+            ticket_ids_requested: int = 0,
+            tickets_fetched: int = 0,
+            ticket_ids_deduped: int = 0,
+            fetch_failed: bool = False,
+            per_ticket_failures: int = 0,
+        ) -> None:
+            _ = (
+                ticket_ids_requested,
+                tickets_fetched,
+                ticket_ids_deduped,
+                fetch_failed,
+                per_ticket_failures,
+            )
+            return None
+
+        if self._client is None:
+            yield noop_finish
+            return
+        try:
+            trace_context = _safe_current_trace_context(self._client)
+            with _start_current_observation(
+                self._client,
+                trace_context=trace_context,
+                name="zendesk_context_fetch",
+                as_type="span",
+                metadata={"operation": "zendesk_context_fetch"},
+            ) as span:
+
+                def finish(
+                    *,
+                    ticket_ids_requested: int,
+                    tickets_fetched: int,
+                    ticket_ids_deduped: int,
+                    fetch_failed: bool,
+                    per_ticket_failures: int,
+                ) -> None:
+                    metadata: dict[str, Any] = {
+                        "ticket_ids_requested": ticket_ids_requested,
+                        "tickets_fetched": tickets_fetched,
+                        "ticket_ids_deduped": ticket_ids_deduped,
+                        "fetch_failed": fetch_failed,
+                        "per_ticket_failures": per_ticket_failures,
+                    }
+                    try:
+                        update = getattr(span, "update")
+                        update(metadata=metadata)
+                    except Exception:
+                        LOGGER.warning(
+                            "Langfuse zendesk_context_fetch update failed",
+                            exc_info=True,
+                        )
+
+                yield finish
+        except Exception:
+            LOGGER.warning("Langfuse zendesk_context_fetch span failed", exc_info=True)
+            yield noop_finish
+
+    @contextmanager
+    def zendesk_context_summary(self) -> Generator[ZendeskContextSummaryFinish, None, None]:
+        def noop_finish(
+            *,
+            tickets_considered: int = 0,
+            tickets_summarized: int = 0,
+            total_summary_cost: float | None = None,
+        ) -> None:
+            _ = (tickets_considered, tickets_summarized, total_summary_cost)
+            return None
+
+        if self._client is None:
+            yield noop_finish
+            return
+        try:
+            trace_context = _safe_current_trace_context(self._client)
+            with _start_current_observation(
+                self._client,
+                trace_context=trace_context,
+                name="zendesk_context_summary",
+                as_type="span",
+                metadata={"operation": "zendesk_context_summary"},
+            ) as span:
+
+                def finish(
+                    *,
+                    tickets_considered: int,
+                    tickets_summarized: int,
+                    total_summary_cost: float | None,
+                ) -> None:
+                    metadata: dict[str, Any] = {
+                        "tickets_considered": tickets_considered,
+                        "tickets_summarized": tickets_summarized,
+                    }
+                    if total_summary_cost is not None:
+                        metadata["total_summary_cost"] = total_summary_cost
+                    try:
+                        update = getattr(span, "update")
+                        update(metadata=metadata)
+                    except Exception:
+                        LOGGER.warning(
+                            "Langfuse zendesk_context_summary update failed",
+                            exc_info=True,
+                        )
+
+                yield finish
+        except Exception:
+            LOGGER.warning("Langfuse zendesk_context_summary span failed", exc_info=True)
+            yield noop_finish
+
+    @contextmanager
+    def zendesk_summary_generation(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, str]],
+        model_parameters: dict[str, Any],
+        ticket_id: str,
+    ) -> Generator[GenerationFinish, None, None]:
+        def noop_finish(
+            _raw: str,
+            _meta: dict[str, Any],
+            *,
+            usage_details: dict[str, int] | None = None,
+            cost_details: dict[str, float] | None = None,
+        ) -> None:
+            _ = (usage_details, cost_details)
+            return None
+
+        if self._client is None:
+            yield noop_finish
+            return
+        traced_input = sanitize_chat_messages(
+            messages,
+            redact=self._redact_model_input,
+        )
+        traced_input, input_trunc = truncate_logging_value(
+            traced_input,
+            max_string_chars=self._max_string_chars,
+        )
+        gen_metadata: dict[str, Any] = {
+            "operation": "inference_zendesk_summary",
+            "ticket_id": ticket_id,
+        }
+        if input_trunc:
+            gen_metadata["log_payload_truncated"] = True
+        try:
+            trace_context = _safe_current_trace_context(self._client)
+            with _start_current_observation(
+                self._client,
+                trace_context=trace_context,
+                name="inference_zendesk_summary",
+                as_type="generation",
+                model=model,
+                input=traced_input,
+                model_parameters=model_parameters,
+                metadata=gen_metadata,
+            ) as gen:
+
+                def finish(
+                    raw: str,
+                    meta: dict[str, Any],
+                    *,
+                    usage_details: dict[str, int] | None = None,
+                    cost_details: dict[str, float] | None = None,
+                ) -> None:
+                    _apply_langfuse_generation_update(
+                        gen,
+                        raw,
+                        meta,
+                        redact_model_output=self._redact_model_output,
+                        usage_details=usage_details,
+                        cost_details=cost_details,
+                        max_string_chars=self._max_string_chars,
+                    )
+
+                yield finish
+        except Exception:
+            LOGGER.warning("Langfuse zendesk summary generation span failed", exc_info=True)
+            yield noop_finish
+
+    @contextmanager
     def vision_generation(
         self,
         *,
@@ -309,6 +495,7 @@ class LangfuseInferenceTracer:
                         redact_model_output=self._redact_vision_transcript,
                         usage_details=usage_details,
                         cost_details=cost_details,
+                        max_string_chars=self._max_string_chars,
                     )
 
                 yield finish
@@ -345,7 +532,7 @@ class LangfuseInferenceTracer:
         )
         traced_input, input_trunc = truncate_logging_value(
             traced_input,
-            max_string_chars=DEFAULT_MAX_LOG_STRING_CHARS,
+            max_string_chars=self._max_string_chars,
         )
         gen_metadata: dict[str, Any] = {"operation": gen_name, "step": step}
         if input_trunc:
@@ -377,6 +564,7 @@ class LangfuseInferenceTracer:
                         redact_model_output=self._redact_model_output,
                         usage_details=usage_details,
                         cost_details=cost_details,
+                        max_string_chars=self._max_string_chars,
                     )
 
                 yield finish
@@ -392,6 +580,7 @@ def build_langfuse_inference_tracer(
     base_url: str | None = None,
     redact_model_input: bool = False,
     redact_model_output: bool = True,
+    max_string_chars: int = 0,
 ) -> LangfuseInferenceTracer:
     """Construct a tracer when LangFuse keys are configured; otherwise a no-op tracer."""
     pk = str(public_key or "").strip()
@@ -401,6 +590,7 @@ def build_langfuse_inference_tracer(
             None,
             redact_model_input=redact_model_input,
             redact_model_output=redact_model_output,
+            max_string_chars=max_string_chars,
         )
     bu = str(base_url or "").strip() or None
     client = Langfuse(public_key=pk, secret_key=sk, base_url=bu)
@@ -408,4 +598,5 @@ def build_langfuse_inference_tracer(
         client,
         redact_model_input=redact_model_input,
         redact_model_output=redact_model_output,
+        max_string_chars=max_string_chars,
     )

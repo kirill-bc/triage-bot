@@ -86,6 +86,11 @@ def build_triage_observability(settings: AppSettings) -> TriageObservability:
     pk = str(settings.langfuse_public_key or "").strip()
     sk = str(settings.langfuse_secret_key or "").strip()
     bu = str(settings.langfuse_base_url or "").strip() or None
+    langfuse_max_string_chars = (
+        settings.triage_langfuse_max_string_chars
+        if settings.triage_langfuse_truncate_payloads
+        else 0
+    )
     langfuse_client: Langfuse | None = None
     if pk and sk:
         langfuse_client = Langfuse(public_key=pk, secret_key=sk, base_url=bu)
@@ -95,13 +100,19 @@ def build_triage_observability(settings: AppSettings) -> TriageObservability:
         redact_model_input=settings.audit_redact_model_input,
         redact_model_output=settings.audit_redact_model_output,
         redact_vision_transcript=settings.triage_audit_redact_image_transcript,
+        max_string_chars=langfuse_max_string_chars,
     )
 
     stores: list[AuditStore] = []
     if settings.audit_structured_log_enabled:
         stores.append(StructuredLoggerAuditStore())
     if settings.audit_langfuse_enabled and langfuse_client is not None:
-        stores.append(LangfuseAuditStore(client=cast(Any, langfuse_client)))
+        stores.append(
+            LangfuseAuditStore(
+                client=cast(Any, langfuse_client),
+                max_audit_string_chars=langfuse_max_string_chars,
+            ),
+        )
 
     if not stores:
         audit_store: AuditStore = NoOpAuditStore()

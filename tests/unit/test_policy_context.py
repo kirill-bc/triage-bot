@@ -41,6 +41,14 @@ def test_load_policy_context_default_uses_bundled_policy_files() -> None:
 
 
 @pytest.mark.unit
+def test_bundled_priority_definition_weighs_current_impact_over_historical_peak() -> None:
+    ctx = load_policy_context()
+    lowered = ctx.priority_definition.lower()
+    assert "recovery" in lowered or "recovered" in lowered
+    assert "historical" in lowered or "older severe" in lowered
+
+
+@pytest.mark.unit
 def test_load_policy_context_raises_when_bug_file_missing(tmp_path: Path) -> None:
     policy_dir = tmp_path / "p"
     policy_dir.mkdir()

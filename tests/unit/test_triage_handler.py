@@ -13,8 +13,10 @@ from triage_service.adapters.jira_issue_fetcher import (
     FetchedIssue,
     JiraIssueFetcher,
     LinkedZendeskTicket,
+    ZendeskResolutionSummary,
 )
 from triage_service.adapters.openrouter_inference_client import OpenRouterInferenceClient
+from triage_service.adapters.zendesk_comment_summarizer import ZendeskSummarizationResult
 from triage_service.adapters.zendesk_ticket_fetcher import ZendeskTicketFetcher
 from triage_service.core.settings import AppSettings
 from triage_service.core.triage_fallback import TriageFailure
@@ -202,7 +204,7 @@ def test_handler_enriches_issue_with_linked_zendesk_tickets_when_enabled(
                 zendesk_fetcher=_StubZendeskFetcher(settings),
                 settings=settings,
             )
-            _ = handler.run_sync(
+            sync_result = handler.run_sync(
                 issue_key="TJC-90",
                 project="TJC",
                 source="bug_created",
@@ -212,6 +214,118 @@ def test_handler_enriches_issue_with_linked_zendesk_tickets_when_enabled(
     assert applied_issue is not None
     assert len(applied_issue.zendesk_tickets) == 1
     assert applied_issue.zendesk_tickets[0].ticket_id == "99"
+    assert sync_result.zendesk_context is not None
+    assert sync_result.zendesk_context.tickets_fetched == 1
+
+
+@pytest.mark.unit
+def test_handler_applies_zendesk_resolution_summary_from_summarizer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TRIAGE_ZENDESK_COMMENT_SUMMARY_ENABLED", "true")
+    settings = _app_settings(monkeypatch)
+    issue = FetchedIssue(
+        issue_key="TJC-91",
+        summary="linked zendesk ZD-55",
+        issue_type="Bug",
+        priority="P3",
+        reporter="support",
+    )
+    base_ticket = LinkedZendeskTicket(
+        ticket_id="55",
+        subject="Outage thread",
+        description="Peak severity opening text.",
+        status="solved",
+        priority="urgent",
+    )
+    summarized_ticket = base_ticket.model_copy(
+        update={
+            "resolution_summary": ZendeskResolutionSummary(
+                initial_impact="Major outage reported.",
+                latest_status="Third-party outage resolved.",
+                resolution_hints="Temporary external cause.",
+                open_risks="(none)",
+            ),
+        },
+    )
+
+    class _StubZendeskFetcher(ZendeskTicketFetcher):
+        @property
+        def enabled(self) -> bool:
+            return True
+
+        def fetch_linked_tickets(
+            self,
+            issue: FetchedIssue,
+            *,
+            run_id: str,
+        ) -> list[LinkedZendeskTicket]:
+            _ = (issue, run_id)
+            return [base_ticket]
+
+    class _StubSummarizer:
+        def summarize(
+            self,
+            issue: FetchedIssue,
+            tickets: list[LinkedZendeskTicket],
+            *,
+            run_id: str,
+        ) -> ZendeskSummarizationResult:
+            _ = (issue, run_id)
+            return ZendeskSummarizationResult(
+                tickets=[summarized_ticket],
+                tickets_considered=1,
+                tickets_summarized=1,
+            )
+
+    def jira_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_jira_payload_for(issue))
+
+    priority_json = (
+        '{"recommended_priority":"P3","confidence":0.8,'
+        '"reason":"Current impact is normal after recovery."}'
+    )
+    classification_json = (
+        '{"recommended_issue_type":"Bug","confidence":0.9,"reason":"Defect."}'
+    )
+    responses = [classification_json, priority_json]
+
+    def openrouter_handler(request: httpx.Request) -> httpx.Response:
+        body = responses.pop(0)
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": body}}]},
+        )
+
+    transport_j = httpx.MockTransport(jira_handler)
+    transport_o = httpx.MockTransport(openrouter_handler)
+    with httpx.Client(transport=transport_j) as j_client:
+        with httpx.Client(transport=transport_o) as o_client:
+            fetcher = JiraIssueFetcher(settings, client=j_client)
+            inference = OpenRouterInferenceClient(settings, client=o_client)
+            executor = _RecordingExecutor()
+            handler = TriageHandler(
+                allowed_projects=("TJC",),
+                fetcher=fetcher,
+                inference=inference,
+                policy=_policy(),
+                executor=executor,
+                zendesk_fetcher=_StubZendeskFetcher(settings),
+                zendesk_summarizer=_StubSummarizer(),
+                settings=settings,
+            )
+            sync_result = handler.run_sync(
+                issue_key="TJC-91",
+                project="TJC",
+                source="bug_created",
+                run_id="run-zd-summary",
+            )
+    applied_issue, _, _ = executor.calls[0]
+    assert applied_issue is not None
+    assert applied_issue.zendesk_tickets[0].resolution_summary is not None
+    assert "resolved" in applied_issue.zendesk_tickets[0].resolution_summary.latest_status.lower()
+    assert sync_result.zendesk_context is not None
+    assert sync_result.zendesk_context.tickets_summarized == 1
 
 
 @pytest.mark.unit

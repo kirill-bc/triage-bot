@@ -15,8 +15,11 @@ from collections.abc import Sequence
 from typing import TypedDict
 
 from triage_service.adapters.image_context_extractor import ImageContext
-from triage_service.adapters.jira_issue_fetcher import FetchedIssue
-from triage_service.core.issue_text_block import format_issue_text_block
+from triage_service.adapters.jira_issue_fetcher import AttachmentRef, FetchedIssue
+from triage_service.core.issue_text_block import (
+    format_issue_text_block,
+    _parse_zendesk_ticket_id_from_attachment_id,
+)
 from triage_service.core.langfuse_prompt_config import fetch_langfuse_text_prompt
 from triage_service.core.policy_context import PolicyContext
 from triage_service.core.settings import AppSettings
@@ -95,17 +98,51 @@ def compose_priority_system_prompt(*, settings: AppSettings) -> str:
     return _PROMPT_TEMPLATES["priority_system_prompt"]
 
 
+def _jira_image_contexts(
+    contexts: Sequence[ImageContext],
+) -> list[ImageContext]:
+    return [
+        ctx
+        for ctx in contexts
+        if _parse_zendesk_ticket_id_from_attachment_id(ctx.attachment_id) is None
+    ]
+
+
 def _format_attached_images_section(contexts: Sequence[ImageContext]) -> str:
+    return _format_attached_images_section_with_sources(contexts, attachments=())
+
+
+def _jira_source_hint_from_attachment(ref: AttachmentRef) -> str:
+    if ref.inline:
+        return "Jira issue description attachment"
+    if ref.referenced_in_comments:
+        return "Jira comment attachment"
+    return "Jira attachment"
+
+
+def _format_attached_images_section_with_sources(
+    contexts: Sequence[ImageContext],
+    *,
+    attachments: Sequence[AttachmentRef],
+) -> str:
     if not contexts:
         return ""
+    source_by_attachment_id = {
+        ref.id: _jira_source_hint_from_attachment(ref) for ref in attachments
+    }
     lines = ["Attached images:"]
     for index, ctx in enumerate(contexts, start=1):
+        source_hint = ctx.source_hint or source_by_attachment_id.get(ctx.attachment_id)
         if ctx.extraction_failure:
             lines.append(
                 f"[Attachment {index}: extraction unavailable — {ctx.extraction_failure}]",
             )
+            if source_hint:
+                lines.append(f"Source: {source_hint}")
             continue
         lines.append(f"[Attachment {index}: {ctx.filename}]")
+        if source_hint:
+            lines.append(f"Source: {source_hint}")
         if ctx.summary:
             lines.append(f"Summary:\n{ctx.summary}")
     return "\n".join(lines)
@@ -120,8 +157,15 @@ def _issue_block(
     comments_char_budget = (
         settings.triage_comments_char_budget if settings is not None else None
     )
-    base = format_issue_text_block(issue, comments_char_budget=comments_char_budget)
-    images_section = _format_attached_images_section(image_contexts or ())
+    base = format_issue_text_block(
+        issue,
+        comments_char_budget=comments_char_budget,
+        image_contexts=image_contexts,
+    )
+    images_section = _format_attached_images_section_with_sources(
+        _jira_image_contexts(image_contexts or ()),
+        attachments=issue.attachments,
+    )
     if not images_section:
         return base
     return f"{base}\n{images_section}"

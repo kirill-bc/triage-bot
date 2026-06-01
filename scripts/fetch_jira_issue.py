@@ -43,7 +43,7 @@ def build_fetch_output(issue: FetchedIssue, *, settings: AppSettings) -> dict[st
     """Assemble Jira issue JSON plus linked Zendesk ticket metadata."""
     payload: dict[str, object] = issue.model_dump()
     zendesk = ZendeskTicketFetcher(settings)
-    ticket_ids = issue.zendesk_ticket_ids or zendesk.collect_linked_ticket_ids(issue)
+    ticket_ids = zendesk.collect_linked_ticket_ids(issue)
     payload["linked_zendesk_ticket_ids"] = ticket_ids
     zendesk_error: str | None = None
     if not zendesk.credentials_configured:

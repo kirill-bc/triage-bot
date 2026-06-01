@@ -118,34 +118,47 @@ Linked Zendesk tickets often carry the original customer report, follow-up comme
 - [x] Wire enrichment into `TriageHandler.run_sync` behind `TRIAGE_ZENDESK_CONTEXT_ENABLED` (soft-fail on fetch errors; triage continues).
 - [x] Smoke script parity: `scripts/fetch_jira_issue.py` fetches all ids from Jira custom fields and prints `zendesk_tickets` JSON.
 
-**Remaining — ticket deduplication:**
-- [ ] **Id union dedupe:** when custom fields are empty and ids are parsed from issue body text, union with any ids discovered in summary/description/reproduction steps without duplicates (today custom-field path and body-text path are mutually exclusive in `collect_linked_ticket_ids`).
-- [ ] **Cross-ticket content dedupe:** when multiple linked Zendesk tickets repeat the same narrative (merged/related tickets, re-opened escalations), collapse redundant subject/description blocks in `_issue_block` rather than appending N near-identical sections. Heuristics: normalized text hash, shared subject prefix, or explicit Zendesk `via`/`problem_id` linkage when available from API.
-- [ ] **Jira ↔ Zendesk text dedupe:** strip Zendesk description paragraphs that are already present verbatim (or near-verbatim) in the Jira description/reproduction steps so the model is not fed duplicate prose.
+**Remaining — resolution-aware comment summarization (priority-balance fix):**
+Raw ticket `subject` / `description` overweights the *initial* customer report and ignores *end-of-thread* resolution context. Observed failure: a P3 was escalated to P0 because the linked ticket's opening prose described a major outage, while the actual cause (temporary third-party outage, since recovered) only appears in the last comments. Dumping full comment threads would amplify this and blow up the prompt (up to `TRIAGE_ZENDESK_MAX_TICKETS` tickets/issue). Fix: one LLM summarization call per ticket that extracts recency- and resolution-aware signals, rendered into `_issue_block` instead of raw prose, plus an explicit priority-prompt rule.
+- [x] **Fetch ticket comments:** `GET /api/v2/tickets/{id}/comments.json` in `ZendeskTicketFetcher` (reuse Basic auth), newest-first, capped by `TRIAGE_ZENDESK_MAX_COMMENTS_PER_TICKET`; include public + internal comments (internal notes often hold root-cause/resolution). Soft-fail per ticket.
+- [x] **New `ZendeskCommentSummarizer` adapter** (mirror `OpenRouterVisionImageContextExtractor`): NoOp when flag off; OpenRouter-backed using `TRIAGE_ZENDESK_SUMMARY_MODEL` (default `TRIAGE_TEXT_MODEL`) and `TRIAGE_ZENDESK_SUMMARY_TIMEOUT_SECONDS`. Per-ticket input pre-trimmed newest-first by `TRIAGE_ZENDESK_COMMENTS_CHAR_BUDGET`.
+- [x] **Structured summary contract:** parse fixed sections `INITIAL_IMPACT` / `LATEST_STATUS` / `RESOLUTION_HINTS` / `OPEN_RISKS` into a `ZendeskResolutionSummary` model on `LinkedZendeskTicket`; on inference/parse failure leave summary `None` and fall back to current subject/description rendering.
+- [x] **Summary prompt:** add `zendesk_summary_system_prompt` / `zendesk_summary_user_instruction` to `prompt_templates.json` (+ optional Langfuse names) with a small `core` composer mirroring `vision_prompt_composer.py`. Pass the Jira summary/description/reproduction steps as context and instruct the model to emit only net-new signal (the Jira ↔ Zendesk dedupe above).
+- [x] **Render in `_issue_block`:** when a resolution summary is present, emit a compact `Zendesk resolution signals` block (initial impact + latest status + hints + open risks) instead of the full ticket `description`; collapse near-identical per-ticket summaries and repeated hints (the cross-ticket dedupe above).
+- [x] **Priority guidance (the actual balance fix):** add a rule to `core/policy/priority_definition.md` (and reinforce in `priority_template`): when older severe impact is followed by confirmed recovery or a temporary external/third-party cause, do not escalate on historical peak alone; weigh current impact highest.
+- [x] **Wire into `_enrich_with_zendesk`:** after `fetch_linked_tickets`, run the summarizer (soft-fail) and `model_copy` summaries onto `issue.zendesk_tickets`; build it in `build_default_triage_handler` behind `TRIAGE_ZENDESK_COMMENT_SUMMARY_ENABLED`.
+- [x] **TDD first:** failing tests for summary parsing, newest-first budget trim, soft-fail to `None`, NoOp when disabled, render-vs-fallback + hint dedupe, and the motivating scenario (old severe comment + newer "third-party outage resolved" comment → `LATEST_STATUS`/`RESOLUTION_HINTS` capture recovery and de-emphasize the peak).
 
 **Remaining — Zendesk images (extends §7 vision preprocessor):**
-- [ ] **Discover Zendesk inline images:** parse `![](…)` / HTML `<img>` URLs from fetched ticket descriptions and list ticket-level attachments via Zendesk Attachments API (`GET /api/v2/tickets/{id}/comments.json` with `include_inline_images` or attachment endpoints as appropriate).
-- [ ] **Fetch Zendesk attachment bytes** with the same Zendesk Basic auth used for ticket fetch; follow redirects for signed/token URLs.
-- [ ] **Cross-source image dedupe (required before vision):** do not run vision on a Zendesk image that is already represented on the Jira issue. Match candidates against Jira `AttachmentRef` entries using a tiered key: (1) exact filename match (e.g. `blobid0.png`, `image-20260219-160437.png`), (2) same MIME + size within tolerance, (3) optional content hash when bytes are cheap to fetch. Skip duplicates; record skip reason in audit metadata.
-- [ ] **Budget sharing with Jira images:** Zendesk-only images consume the same `TRIAGE_IMAGE_CONTEXT_MAX_ATTACHMENTS` / byte budget as inline Jira attachments (Jira inline images first, then deduped Zendesk-only images up to the cap).
-- [ ] **Render in `_issue_block`:** label Zendesk-sourced transcripts distinctly (e.g. `[Zendesk ticket #47322 attachment: …]`) so prompts attribute screenshot context correctly.
-- [ ] **TDD first:** failing unit tests for URL parsing, dedupe keys, budget enforcement, and soft-failure placeholders before implementation.
+This builds on the comment fetch already landed for summarization (`ZendeskTicketFetcher._fetch_comments` / `ZendeskCommentRef`) and the §7 Jira vision preprocessor. It is independent of the summarization LLM call but shares the per-ticket render structure, so it should land after the resolution-signals rendering is settled.
+- [x] **Discover Zendesk inline images from already-fetched comments:** reuse the comments fetched for summarization instead of a second API call — extend `ZendeskCommentRef` (and ticket-description parsing) to capture inline `![](…)` / `<img>` URLs and comment/ticket attachment refs (Zendesk returns these on the same `comments.json` payload; request `include_inline_images` there). Avoid double-fetching `GET /api/v2/tickets/{id}/comments.json`.
+- [x] **Fetch Zendesk attachment bytes** with the same Zendesk Basic auth used for ticket/comment fetch; follow redirects for signed/token URLs.
+- [x] **Cross-source image dedupe (required before vision):** do not run vision on a Zendesk image that is already represented on the Jira issue. Match candidates against Jira `AttachmentRef` entries using a tiered key: (1) exact filename match (e.g. `blobid0.png`, `image-20260219-160437.png`), (2) same MIME + size within tolerance, (3) optional content hash when bytes are cheap to fetch. Skip duplicates; record skip reason in audit metadata.
+- [x] **Budget sharing with Jira images:** Zendesk-only images consume the same `TRIAGE_IMAGE_CONTEXT_MAX_ATTACHMENTS` / byte budget as inline Jira attachments (Jira inline images first, then deduped Zendesk-only images up to the cap). Note this is the §7 vision attachment budget, separate from the `TRIAGE_ZENDESK_COMMENTS_CHAR_BUDGET` text budget used by summarization.
+- [x] **Render within the per-ticket block:** attach transcripts to the same `Zendesk resolution signals` block as the ticket's summary (e.g. `[Zendesk ticket #47322 attachment: …]`) rather than a disjoint section, so prompts attribute screenshot context to the right ticket.
+- [x] **TDD first:** failing unit tests for URL parsing, dedupe keys, budget enforcement, and soft-failure placeholders before implementation.
 
-**Remaining — observability & ops:**
-- [ ] Add Langfuse span `zendesk_context_fetch` (ticket count, latency, per-ticket failures) nested under `triage_issue_pipeline`.
-- [ ] Emit `zendesk_context_fetched` audit event (ids requested vs returned, dedupe counts, fetch error breakdown).
-- [ ] Extend `triage_completed` telemetry with `zendesk_tickets_considered` / `zendesk_tickets_fetched`.
-- [x] Document Zendesk enrichment flags in `README.md` and `.env.example`; update §10 “no Zendesk intake” limitation to reflect linked-ticket enrichment scope (dedupe behavior still open).
+**Remaining — ticket deduplication:**
+- [x] **Id union dedupe:** when custom fields are empty and ids are parsed from issue body text, union with any ids discovered in summary/description/reproduction steps without duplicates (today custom-field path and body-text path are mutually exclusive in `collect_linked_ticket_ids`).
+- [x] **Cross-ticket content dedupe (post-summarization):** depends on resolution-aware summarization below — once each ticket is condensed into a `ZendeskResolutionSummary`, dedupe operates on the *summaries*, not raw subject/description blocks. When multiple linked tickets are merged/related/re-opened escalations producing near-identical summaries, collapse them into one rendered block. Heuristics: normalized hash of the summary text, shared subject prefix, or explicit Zendesk `via`/`problem_id` linkage when available from API. Subsumes the existing per-hint dedupe in the "Render in `_issue_block`" item.
+- [x] **Jira ↔ Zendesk text dedupe (prefer prompt-level):** the summarizer receives the Jira summary/description/reproduction steps as context and is instructed to emit only net-new signal (omit content already in the Jira issue), so duplicate prose is avoided at generation time rather than stripped post-hoc. Keep a light post-render guard only if summaries still echo Jira text verbatim.
+
+**Remaining — observability & ops:** 
+- [x] Add Langfuse span `zendesk_context_fetch` (ticket count, latency, per-ticket failures) nested under `triage_issue_pipeline`.
+- [x] Add Langfuse span `zendesk_context_summary` (tickets considered/summarized, per-ticket generation, total cost) and a `ZendeskContextSummarizedAuditEvent` (considered vs summarized, failure breakdown).
+- [x] Emit `zendesk_context_fetched` audit event (ids requested vs returned, dedupe counts, fetch error breakdown).
+- [x] Extend `triage_completed` telemetry with `zendesk_tickets_considered` / `zendesk_tickets_fetched` (and `zendesk_tickets_summarized`).
+- [x] Document Zendesk enrichment flags in `README.md` and `.env.example`; update §10 “no Zendesk intake” limitation to reflect linked-ticket enrichment scope (id/summary/image dedupe implemented).
 
 **Remaining — evaluation:**
 - [ ] Benchmark / bulk-triage stratification: accuracy breakdown for issues with vs without linked Zendesk context (and with vs without Zendesk-only images once vision path lands).
 
 Out of scope (do not pull in):
 - Full Zendesk intake / ticket creation from triage.
-- Zendesk comment thread replay beyond what is already in ticket description at fetch time.
+- Verbatim Zendesk comment thread replay into `_issue_block` — comments are condensed into a bounded resolution summary, never dumped raw.
 - True multimodal classification — Zendesk images flow through the same text-only vision preprocessor as §7.
 
-Done when: linked Zendesk tickets enrich triage without duplicate ticket prose or duplicate screenshot vision calls; Zendesk-only images improve classification on benchmark cases where Jira text is sparse; dedupe and fetch metrics are visible in audit/Langfuse; all gates pass.
+Done when: linked Zendesk tickets enrich triage without duplicate ticket prose or duplicate screenshot vision calls; comment threads are condensed into recency/resolution-aware summaries so end-of-thread recovery context balances (not reinforces) priority; Zendesk-only images improve classification on benchmark cases where Jira text is sparse; dedupe, fetch, and summarization metrics are visible in audit/Langfuse; all gates pass.
 
 ## 9. Integration tests (deferred until post-deploy stabilization)
 - [ ] Add API contract tests for `POST /triage` request/response shape and validation errors.
@@ -172,3 +185,5 @@ Done when: linked Zendesk tickets enrich triage without duplicate ticket prose o
 - [x] Add link to relevant confluence documents in bug vs comment
 - [ ] **Langfuse root trace cost in trace list:** OpenRouter token usage and cost fields (when returned) are forwarded to nested `inference_*` Langfuse generations; nested views and cost dashboards can reflect that. The top-level trace row / trace menu may still show `$0.00` for `triage_issue_pipeline`. Revisit later (SDK trace vs span model, trace-level aggregates vs UI, or Langfuse product behavior). Good enough for MVP observability.
 - Done when: at least one baseline model is scored on the current curated set and swapping `TRIAGE_TEXT_MODEL` (or passing alternate model ids to the benchmark runner) reproduces comparable runs with saved result artifacts for A/B comparison (local `benchmark_runs/` is gitignored; operators keep artifacts outside git or attach as CI artifacts).
+- [ ] Inject image context INSIDE description/comment body at the place where they were inserted, not as bulk attachments by the end.
+- [ ] Add advisory step post triage to add to reasoning / additional comment when ticket formatting / description could be improved.

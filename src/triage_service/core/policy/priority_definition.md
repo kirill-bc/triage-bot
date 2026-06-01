@@ -1,5 +1,9 @@
 Bug priority policy (P0-P4)
 
+## Current impact vs historical peak (linked Zendesk context)
+
+When the issue block includes **Zendesk resolution signals** (or equivalent linked-ticket context), weigh **latest status** and **resolution hints** highest. Do **not** escalate on older severe impact language alone when newer comments or signals confirm **recovery**, **mitigation in place**, or a **temporary third-party / external** cause that is no longer active. Historical peak severity in an opening report or early thread is context only when current impact is lower.
+
 P0 Outage
 Definition:
 Client or production component/platform is non-functional and not working as expected. P0 is for client/production impact only — not internal development blockers (e.g. broken builds, CI failures, dev-environment issues).

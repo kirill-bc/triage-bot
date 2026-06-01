@@ -413,6 +413,81 @@ def test_run_cli_triage_passes_auto_apply_flags_to_handler_builder() -> None:
 
 
 @pytest.mark.unit
+def test_main_json_includes_zendesk_context_summary_from_handler(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from triage_manual_cli import main
+
+    from triage_service.adapters.jira_issue_fetcher import (
+        LinkedZendeskTicket,
+        ZendeskResolutionSummary,
+    )
+    from triage_service.adapters.zendesk_context_cli import ZendeskContextEnrichmentResult
+
+    enrichment = ZendeskContextEnrichmentResult(
+        ticket_ids_requested=["47322"],
+        tickets_fetched=1,
+        tickets_summarized=1,
+        tickets=[
+            LinkedZendeskTicket(
+                ticket_id="47322",
+                subject="Checkout outage",
+                status="solved",
+                priority="urgent",
+                resolution_summary=ZendeskResolutionSummary(
+                    initial_impact="Peak outage.",
+                    latest_status="Recovered.",
+                    resolution_hints="Vendor fix.",
+                    open_risks="(none)",
+                ),
+            ),
+        ],
+    )
+
+    class _RunnerWithZendesk:
+        def run_sync(
+            self,
+            issue_key: str,
+            project: str,
+            source: str,
+            *,
+            run_id: str,
+        ) -> TriageSyncResult:
+            _ = (issue_key, project, source, run_id)
+            return TriageSyncResult(
+                outcome=TriageRecommendation(
+                    recommended_issue_type="Bug",
+                    recommended_priority="P2",
+                    confidence=0.8,
+                    reason="zendesk-assisted",
+                ),
+                zendesk_context=enrichment,
+            )
+
+        def flush_inference_telemetry(self) -> None:
+            return None
+
+    class _Settings:
+        triage_image_context_enabled = False
+        triage_zendesk_context_enabled = True
+
+    with (
+        patch("triage_service.core.settings.load_settings", return_value=_Settings()),
+        patch(
+            "triage_manual_cli.build_default_triage_handler",
+            return_value=_RunnerWithZendesk(),
+        ),
+    ):
+        rc = main(["TJC-7"])
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["zendesk_context"]["enabled"] is True
+    assert payload["zendesk_context"]["tickets_summarized"] == 1
+    assert payload["zendesk_context"]["tickets"][0]["render_mode"] == "resolution_signals"
+
+
+@pytest.mark.unit
 def test_main_json_includes_image_context_summary_from_handler(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

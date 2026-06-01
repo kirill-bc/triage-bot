@@ -90,6 +90,11 @@ def _clear_zendesk_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "TRIAGE_JIRA_ZENDESK_TICKET_COUNT_FIELD_ID",
         "TRIAGE_ZENDESK_HTTP_TIMEOUT_SECONDS",
         "TRIAGE_ZENDESK_MAX_TICKETS",
+        "TRIAGE_ZENDESK_MAX_COMMENTS_PER_TICKET",
+        "TRIAGE_ZENDESK_COMMENT_SUMMARY_ENABLED",
+        "TRIAGE_ZENDESK_SUMMARY_MODEL",
+        "TRIAGE_ZENDESK_SUMMARY_TIMEOUT_SECONDS",
+        "TRIAGE_ZENDESK_COMMENTS_CHAR_BUDGET",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -125,12 +130,19 @@ def test_load_settings_optional_fields_default_when_omitted(
     assert settings.zendesk_api_token is None
     assert settings.zendesk_http_timeout_seconds == 20.0
     assert settings.triage_zendesk_max_tickets == 3
+    assert settings.triage_zendesk_max_comments_per_ticket == 20
+    assert settings.triage_zendesk_comment_summary_enabled is False
+    assert settings.triage_zendesk_summary_model is None
+    assert settings.triage_zendesk_summary_timeout_seconds == 60.0
+    assert settings.triage_zendesk_comments_char_budget == 4000
     assert settings.jira_zendesk_ticket_ids_field_id == "customfield_10158"
     assert settings.jira_imported_zendesk_ticket_ids_field_id == "customfield_10162"
     assert settings.jira_zendesk_ticket_count_field_id == "customfield_10157"
     assert settings.triage_comments_char_budget == 6000
     assert settings.triage_auto_apply_deescalation is False
     assert settings.triage_auto_apply_bug_to_story is False
+    assert settings.triage_langfuse_truncate_payloads is False
+    assert settings.triage_langfuse_max_string_chars == 8192
 
 
 @pytest.mark.unit
@@ -208,7 +220,8 @@ def test_load_settings_reads_optional_zendesk_enrichment_settings(
         "ZENDESK_API_TOKEN=token-1\n"
         "TRIAGE_JIRA_ZENDESK_TICKET_IDS_FIELD_ID=customfield_10158\n"
         "TRIAGE_ZENDESK_HTTP_TIMEOUT_SECONDS=25\n"
-        "TRIAGE_ZENDESK_MAX_TICKETS=5\n",
+        "TRIAGE_ZENDESK_MAX_TICKETS=5\n"
+        "TRIAGE_ZENDESK_MAX_COMMENTS_PER_TICKET=10\n",
         encoding="utf-8",
     )
     settings = load_settings(env_file=env_path)
@@ -218,6 +231,7 @@ def test_load_settings_reads_optional_zendesk_enrichment_settings(
     assert settings.zendesk_api_token == "token-1"
     assert settings.zendesk_http_timeout_seconds == 25.0
     assert settings.triage_zendesk_max_tickets == 5
+    assert settings.triage_zendesk_max_comments_per_ticket == 10
     assert settings.jira_zendesk_ticket_ids_field_id == "customfield_10158"
 
 

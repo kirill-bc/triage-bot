@@ -12,10 +12,8 @@ Primary goal: keep triage reliable, observable, and easy to operate while preser
 - Sequential triage contract is implemented: classify `Bug|Story` first; run priority (`P0..P4`) only when classification is `Bug`.
 - Observability baseline is in place: structured audit logs, Langfuse tracing hooks, `run_id` correlation.
 - Image-context preprocessing for Jira inline description attachments is implemented (feature-flagged).
-- Zendesk context baseline is implemented (linked ticket text enrichment), but dedupe and Zendesk-image follow-up work is still open.
+- Zendesk linked-ticket enrichment is implemented end-to-end (fetch, resolution summarization, dedupe, Zendesk-only vision, observability); benchmark stratification for Zendesk context is still open in `TODO.md` §8.
 - Integration-test expansion and some polish/backlog items remain open in `TODO.md`.
-
-Working tree is currently dirty on `main`, with active edits primarily around Zendesk/Jira fetch and related tests. Do not assume a clean base.
 
 ## Non-Negotiable Workflow
 
@@ -97,17 +95,10 @@ Reference `.env.example` for the full set.
 
 Highest-priority unfinished area in `TODO.md`:
 
-- Zendesk context deduplication:
-  - union dedupe across custom-field and body-parsed ids,
-  - dedupe repeated cross-ticket narrative blocks,
-  - dedupe repeated Jira-vs-Zendesk text.
-- Zendesk image follow-up:
-  - discover/fetch ticket images,
-  - cross-source image dedupe vs Jira attachments,
-  - shared attachment budget with existing image preprocessor,
-  - observability counters/spans and benchmark stratification.
+- **§8 evaluation:** benchmark / bulk-triage stratification for issues with vs without linked Zendesk context (and Zendesk-only images).
+- **§9:** integration tests (deferred until post-deploy stabilization).
 
-Keep these additions soft-fail-safe: enrichment failures should not abort triage.
+Zendesk enrichment remains soft-fail-safe: fetch/summary/vision failures must not abort triage.
 
 ## Guardrails
 

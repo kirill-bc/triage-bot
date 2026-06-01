@@ -1,5 +1,59 @@
 # Project memory
 
+## 2026-06-01 (close — §8 Zendesk phase)
+
+- **Phase close (`/close-phase`):** From `.venv`, `pytest -m lint` (5 passed), `mypy .` (105 files), `pytest -m "unit or integration"` (**514 passed**, **1 skipped** `OPENROUTER_LIVE_SMOKE`, **6 deselected**). **§8 Zendesk context augmentation** is feature-complete for MVP except benchmark stratification (§8 evaluation item): linked-ticket fetch + id union dedupe; resolution-aware comment summarization (`ZendeskCommentSummarizer`, `TRIAGE_ZENDESK_COMMENT_SUMMARY_ENABLED`); cross-ticket / Jira↔Zendesk text dedupe; Zendesk-only vision path with cross-source image dedupe and shared attachment budget; per-ticket render in `_issue_block`; Langfuse spans `zendesk_context_fetch` / `zendesk_context_summary` and audit events `zendesk_context_fetched` / `zendesk_context_summarized`; `triage_completed` zendesk counters; `zendesk_context` on manual CLI JSON; `.env.example` / `README.md` / `AGENTS.md` updated. **Remaining §8:** benchmark / bulk-triage accuracy breakdown with vs without Zendesk context (and Zendesk-only images). **Next backlog:** §9 integration tests (deferred), §10 model-selection rationale doc.
+
+## 2026-06-01 (§8 Zendesk observability)
+
+- **§8 Zendesk observability:** Langfuse spans `zendesk_context_fetch` and `zendesk_context_summary` nested under `triage_issue_pipeline` (enrichment moved inside trace); per-ticket `inference_zendesk_summary` generations when summarization runs. Audit events `zendesk_context_fetched` (ids requested/fetched, dedupe count, fetch failure) and `zendesk_context_summarized` (considered/summarized, cost, per-ticket failure breakdown). `triage_completed` / `triage_failed` telemetry adds `zendesk_tickets_considered` / `_fetched` / `_summarized`. `collect_linked_ticket_ids_with_stats` returns dedupe/cap counts; `ZendeskSummarizationResult.per_ticket` metrics. Tests: `test_zendesk_context_observability.py`.
+
+## 2026-05-29 (§8 Jira ↔ Zendesk text dedupe)
+
+- **§8 Jira ↔ Zendesk text dedupe:** Prompt-level net-new instruction in `prompt_templates.json` / `zendesk_summary_prompt_composer.py` (Jira summary/description/repro passed as `jira_context`). Post-render guard `core/zendesk_jira_text_dedupe.py`: sections ≥24 chars that verbatim-echo normalized Jira fields render as `(same as Jira issue above)` in `issue_text_block._format_zendesk_resolution_signals`. Tests: `test_zendesk_jira_text_dedupe.py`, `test_zendesk_summary_prompt_composer.py`.
+
+## 2026-05-29 (§8 cross-ticket summary dedupe)
+
+- **§8 cross-ticket content dedupe:** `core/zendesk_summary_dedupe.py` collapses duplicate `Zendesk resolution signals` across linked tickets using exact summary fingerprint, near-identical core (`latest_status` + `resolution_hints`) with shared subject prefix (≥12 chars), or `problem_id` linkage to a prior ticket with matching core. `LinkedZendeskTicket.problem_id` parsed from Zendesk API; `issue_text_block` uses `ZendeskSummaryDedupeState` instead of inline fingerprint sets. Distinct core summaries still render when only `problem_id` links tickets. Tests: `test_zendesk_summary_dedupe.py`, extended `test_issue_text_block.py`, `test_fetch_ticket_parses_problem_id_from_api`.
+
+## 2026-05-29 (§8 Zendesk image render in ticket block)
+
+- **§8 render Zendesk vision in ticket block:** `format_issue_text_block(..., image_contexts=…)` groups contexts by `zendesk:{ticket_id}:…` attachment id and renders `[Zendesk ticket #… attachment: …]` (+ summary or soft-fail placeholder) inside each linked-ticket section after resolution signals or description fallback; attachments still render when resolution summary is omitted by cross-ticket dedupe. `prompt_composer._issue_block` passes contexts through and keeps Jira-only images in the trailing `Attached images:` section. Tests: `test_issue_text_block.py` (within signals block, description fallback, soft-fail, deduped summary), `test_prompt_composer.py` (mixed sources, per-ticket routing).
+
+## 2026-05-29 (§8 Zendesk vision budget sharing)
+
+- **§8 budget sharing with Jira images:** `_select_zendesk_images_for_vision` applies cross-source dedupe then caps to `max_attachments - len(jira_selected)`. `OpenRouterVisionImageContextExtractor` processes Jira attachments first, then Zendesk-only images via `ZendeskTicketFetcher.fetch_image_bytes` with shared `max_bytes_per_image`; synthetic ids `zendesk:{ticket_id}:{url|attachment_id}`. `build_image_context_extractor` wires `ZendeskTicketFetcher`. Tests: `test_select_zendesk_images_for_vision_respects_shared_attachment_cap`, `test_vision_extractor_processes_zendesk_only_image_in_remaining_budget_slots`, cap/full, oversized soft-fail, fetch failure soft-fail.
+
+## 2026-05-29 (§8 cross-source Zendesk image dedupe)
+
+- **§8 cross-source image dedupe:** `core/zendesk_image_dedupe.py` tiered match against Jira `AttachmentRef`: filename (case-insensitive), MIME+size within 512 bytes, optional content hash. `collect_zendesk_image_refs_from_tickets` / `dedupe_zendesk_images_against_jira` partition kept vs `ZendeskImageDedupeSkip` rows for audit. `image_context_extractor.collect_zendesk_image_dedupe_skips` runs on vision extract; skips land on `ImageContextExtractionResult.zendesk_skipped` and `ImageContextExtractedAuditEvent.zendesk_skipped`. Tests: `test_zendesk_image_dedupe.py`, `test_vision_extractor_records_zendesk_dedupe_skips_against_jira_attachments`, `test_parse_image_context_extracted_includes_zendesk_skipped`. **conftest:** Zendesk env keys added to autouse `_APP_ENV_KEYS` clear list to stop cross-test leakage (fixed flaky `test_fetch_image_bytes_raises_when_credentials_missing`).
+
+## 2026-05-29 (§8 Zendesk attachment byte fetch)
+
+- **§8 fetch Zendesk image bytes:** `ZendeskTicketFetcher.fetch_image_bytes(image_ref, run_id=…)` GETs `ZendeskImageRef.url` with the same Basic auth as ticket/comment fetch, `Accept: */*`, and `follow_redirects=True` for signed/token URLs that redirect to CDN. Raises `ZendeskTicketFetchError` on missing URL, missing credentials, or HTTP ≥400. Tests: `test_fetch_image_bytes_returns_binary_with_basic_auth`, `test_fetch_image_bytes_follows_redirect_to_signed_cdn_url`, `test_fetch_image_bytes_raises_on_http_error`, `test_fetch_image_bytes_raises_when_credentials_missing`.
+
+## 2026-05-29 (§8 Zendesk inline image discovery)
+
+- **§8 discover Zendesk images:** `ZendeskImageRef` model on `ZendeskCommentRef.image_refs` and `LinkedZendeskTicket.description_image_refs`. `extract_zendesk_inline_image_urls` parses markdown/HTML inline URLs; comment `attachments` from `comments.json` parsed for image MIME/extension only. Comments API requests `include_inline_images=true` (single fetch, no double-call). Tests: `test_zendesk_ticket_fetcher.py` (URL parsing, query param, comment attachments + inline body, description images).
+
+## 2026-05-29 (§8 Zendesk resolution signals render + handler wiring)
+
+- **§8 resolution signals in issue block:** `issue_text_block._format_zendesk_tickets` renders `Zendesk resolution signals` (initial impact / latest status / resolution hints / open risks) when `resolution_summary` is set; falls back to subject+description otherwise. Cross-ticket dedupe: repeated `resolution_hints` → `(same as above)`; identical summary fingerprint → omitted duplicate block. Tests: `test_issue_text_block.py`, `test_prompt_composer.py::test_issue_block_renders_zendesk_resolution_signals_when_summary_present`.
+- **§8 handler wiring:** `TriageHandler._enrich_with_zendesk` runs `ZendeskCommentSummarizer.summarize` after fetch (soft-fail on exception); `build_default_triage_handler` builds summarizer via `build_zendesk_comment_summarizer` when `TRIAGE_ZENDESK_COMMENT_SUMMARY_ENABLED`. Test: `test_handler_applies_zendesk_resolution_summary_from_summarizer`.
+- **§8 priority balance:** `core/policy/priority_definition.md` section on current impact vs historical peak; `priority_template` reinforces recovery/temporary-external guidance. Tests: `test_bundled_priority_definition_weighs_current_impact_over_historical_peak`, `test_priority_template_reinforces_recovery_over_historical_peak`.
+
+## 2026-05-29 (§8 Zendesk comment summarizer adapter)
+
+- **§8 ZendeskCommentSummarizer:** `adapters/zendesk_comment_summarizer.py` — `NoOpZendeskCommentSummarizer` when `TRIAGE_ZENDESK_COMMENT_SUMMARY_ENABLED=false`; `OpenRouterZendeskCommentSummarizer` uses `TRIAGE_ZENDESK_SUMMARY_MODEL` (defaults to text model), `TRIAGE_ZENDESK_SUMMARY_TIMEOUT_SECONDS`, and newest-first comment trim via `TRIAGE_ZENDESK_COMMENTS_CHAR_BUDGET`. Parses `INITIAL_IMPACT` / `LATEST_STATUS` / `RESOLUTION_HINTS` / `OPEN_RISKS` into `ZendeskResolutionSummary` on `LinkedZendeskTicket.resolution_summary`; inference/parse failures soft-fail per ticket (`None` summary). Prompts in `prompt_templates.json` + `core/zendesk_summary_prompt_composer.py` (Jira summary/description/repro as context; Langfuse names `triagebot/zendesk-summary-system|user`). Tests: `test_zendesk_comment_summarizer.py` (budget trim, parse, NoOp, OpenRouter invoke, soft-fail, recovery scenario).
+
+## 2026-05-29 (§8 Zendesk comment fetch)
+
+- **§8 fetch ticket comments:** `ZendeskTicketFetcher._fetch_comments` calls `GET /api/v2/tickets/{id}/comments.json` with the same Basic auth as ticket fetch. Comments land on `LinkedZendeskTicket.comments` as `ZendeskCommentRef` (id, body, public, created_at), sorted newest-first and capped by `TRIAGE_ZENDESK_MAX_COMMENTS_PER_TICKET` (default 20; `0` skips fetch). Public and internal notes are both included. Comment fetch failures soft-fail per ticket (warning log, empty `comments`, ticket still returned). Tests: `test_fetch_ticket_includes_comments_newest_first`, `test_fetch_ticket_comments_capped_by_max_comments_per_ticket`, `test_fetch_ticket_comment_fetch_soft_fails_leaves_empty_comments`, settings defaults/env override.
+
+## 2026-05-29 (§8 id union dedupe)
+
+- **§8 Zendesk id union dedupe:** `ZendeskTicketFetcher.collect_linked_ticket_ids` now unions Jira custom-field ids with body-parsed ids from summary/description/reproduction steps (deduped, custom-field ids first). `TRIAGE_ZENDESK_MAX_TICKETS` cap applies only when no custom-field ids are present. `scripts/fetch_jira_issue.py` always routes through `collect_linked_ticket_ids` instead of `issue.zendesk_ticket_ids or …`. Tests: `test_collect_linked_ticket_ids_unions_custom_fields_with_body_text_ids`, `test_collect_linked_ticket_ids_dedupes_ids_across_custom_fields_and_body`, updated fetch script mocks.
+
 ## 2026-05-29 (close)
 
 - **Phase close (`/close-phase`):** From `.venv`, `./scripts/run_tests.sh lint`, `mypy .` (89 files), and `./scripts/run_tests.sh fast` all passed (**416 passed**, **1 skipped** `OPENROUTER_LIVE_SMOKE`, **5 deselected**). **Confluence links in mismatch comments:** `jira_comment_templates.json` adds a `confluence` section; `JiraTriageActionExecutor._mismatch_comment_body` appends a "Helpful resources" ADF paragraph with a linked Confluence page — bug-requirements doc for Story recommendations, priority-definitions doc for Bug priority mismatches. **Comment budget edge cases:** `issue_text_block` renders `Comments:\n(omitted by comment budget)` when budget is zero or every comment exceeds the budget (distinct from `(none)` when there are no comments); contiguous newest-comment suffix selection documented in code. **Comment pagination guard:** `JiraIssueFetcher._fetch_comments` caps at `_MAX_COMMENT_PAGES` (20) and logs `comments_pagination_limit_reached` when Jira omits `total`. **Runtime logging:** `configure_runtime_logging` sets `stream=sys.stdout` explicitly on `basicConfig`. Tests: `test_jira_action_executor.py`, `test_issue_text_block.py`, `test_jira_issue_fetcher.py`, `test_runtime_logging.py`. Docs: `README.md` (mismatch comment Confluence links), `TODO.md` §10 Confluence item marked complete.

@@ -107,6 +107,16 @@ class AppSettings(BaseSettings):
         min_length=1,
         validation_alias="TRIAGE_LANGFUSE_VISION_USER_PROMPT_NAME",
     )
+    triage_langfuse_zendesk_summary_system_prompt_name: str = Field(
+        default="triagebot/zendesk-summary-system",
+        min_length=1,
+        validation_alias="TRIAGE_LANGFUSE_ZENDESK_SUMMARY_SYSTEM_PROMPT_NAME",
+    )
+    triage_langfuse_zendesk_summary_user_prompt_name: str = Field(
+        default="triagebot/zendesk-summary-user",
+        min_length=1,
+        validation_alias="TRIAGE_LANGFUSE_ZENDESK_SUMMARY_USER_PROMPT_NAME",
+    )
     audit_structured_log_enabled: bool = Field(
         default=True,
         validation_alias="TRIAGE_AUDIT_STRUCTURED_LOG_ENABLED",
@@ -131,6 +141,23 @@ class AppSettings(BaseSettings):
         description=(
             "Redact model output payloads before audit persistence "
             "(default false for internal debugging visibility)."
+        ),
+    )
+    triage_langfuse_truncate_payloads: bool = Field(
+        default=False,
+        validation_alias="TRIAGE_LANGFUSE_TRUNCATE_PAYLOADS",
+        description=(
+            "When true, clip Langfuse generation inputs/outputs and audit metadata "
+            "to TRIAGE_LANGFUSE_MAX_STRING_CHARS (default false: send full payloads)."
+        ),
+    )
+    triage_langfuse_max_string_chars: int = Field(
+        default=8192,
+        ge=0,
+        validation_alias="TRIAGE_LANGFUSE_MAX_STRING_CHARS",
+        description=(
+            "Max string length for Langfuse payloads when truncation is enabled; "
+            "0 means unlimited."
         ),
     )
 
@@ -265,6 +292,42 @@ class AppSettings(BaseSettings):
         le=20,
         validation_alias="TRIAGE_ZENDESK_MAX_TICKETS",
         description="Maximum linked Zendesk tickets to fetch per Jira issue.",
+    )
+    triage_zendesk_max_comments_per_ticket: int = Field(
+        default=20,
+        ge=0,
+        le=100,
+        validation_alias="TRIAGE_ZENDESK_MAX_COMMENTS_PER_TICKET",
+        description="Maximum Zendesk comments fetched per linked ticket (newest first).",
+    )
+    triage_zendesk_comment_summary_enabled: bool = Field(
+        default=False,
+        validation_alias="TRIAGE_ZENDESK_COMMENT_SUMMARY_ENABLED",
+        description=(
+            "Summarize linked Zendesk ticket comment threads into resolution-aware signals."
+        ),
+    )
+    triage_zendesk_summary_model: str | None = Field(
+        default=None,
+        validation_alias="TRIAGE_ZENDESK_SUMMARY_MODEL",
+        description="OpenRouter model for Zendesk comment summarization (defaults to text model).",
+    )
+    triage_zendesk_summary_timeout_seconds: float = Field(
+        default=60.0,
+        ge=1.0,
+        le=180.0,
+        validation_alias="TRIAGE_ZENDESK_SUMMARY_TIMEOUT_SECONDS",
+        description="Per-attempt HTTP timeout for Zendesk comment summarization calls.",
+    )
+    triage_zendesk_comments_char_budget: int = Field(
+        default=4000,
+        ge=0,
+        le=50000,
+        validation_alias="TRIAGE_ZENDESK_COMMENTS_CHAR_BUDGET",
+        description=(
+            "Max cumulative Zendesk comment body characters passed to summarization; "
+            "newest comments are kept first when budget is exceeded."
+        ),
     )
     triage_comments_char_budget: int = Field(
         default=6000,

@@ -14,6 +14,7 @@ from pydantic import ValidationError
 from tqdm import tqdm
 
 from triage_service.adapters.image_context_extractor import build_cli_image_context_summary
+from triage_service.adapters.zendesk_context_cli import build_cli_zendesk_context_summary
 from triage_service.adapters.jira_jql_search import (
     JiraJqlSearchError,
     JiraSearchIssueRef,
@@ -45,6 +46,7 @@ class BulkTriageIssueRow:
     priority: dict[str, Any] | None = None
     failure: dict[str, Any] | None = None
     image_context: dict[str, Any] | None = None
+    zendesk_context: dict[str, Any] | None = None
 
 
 def _issue_row_from_triage(
@@ -65,6 +67,11 @@ def _issue_row_from_triage(
             image_context=(
                 payload.get("image_context")
                 if isinstance(payload.get("image_context"), dict)
+                else None
+            ),
+            zendesk_context=(
+                payload.get("zendesk_context")
+                if isinstance(payload.get("zendesk_context"), dict)
                 else None
             ),
         )
@@ -88,6 +95,11 @@ def _issue_row_from_triage(
         image_context=(
             payload.get("image_context")
             if isinstance(payload.get("image_context"), dict)
+            else None
+        ),
+        zendesk_context=(
+            payload.get("zendesk_context")
+            if isinstance(payload.get("zendesk_context"), dict)
             else None
         ),
     )
@@ -138,17 +150,23 @@ def run_bulk_triage(
             enabled=settings.triage_image_context_enabled,
             extraction=result.image_extraction,
         )
+        zendesk_context = build_cli_zendesk_context_summary(
+            enabled=bool(getattr(settings, "triage_zendesk_context_enabled", False)),
+            enrichment=result.zendesk_context,
+        )
         outcome = result.outcome
         if isinstance(outcome, TriageFailure):
             payload: dict[str, Any] = {
                 "status": "failed",
                 "failure": outcome.model_dump(),
                 "image_context": image_context,
+                "zendesk_context": zendesk_context,
             }
         else:
             payload = build_triage_cli_result_payload(
                 result,
                 image_context=image_context,
+                zendesk_context=zendesk_context,
             )
         rows.append(_issue_row_from_triage(ref, project=project, payload=payload))
         if progress:

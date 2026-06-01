@@ -303,7 +303,12 @@ def test_tracer_truncates_oversized_generation_output_and_metadata() -> None:
 
     client = MagicMock()
     client.start_as_current_observation.side_effect = [root_ctx(), gen_ctx()]
-    tracer = LangfuseInferenceTracer(client, redact_model_input=False, redact_model_output=False)
+    tracer = LangfuseInferenceTracer(
+        client,
+        redact_model_input=False,
+        redact_model_output=False,
+        max_string_chars=8192,
+    )
     huge = "H" * 9000
     huge_reason = "R" * 9000
 
@@ -339,7 +344,12 @@ def test_tracer_marks_truncation_on_oversized_generation_input() -> None:
 
     client = MagicMock()
     client.start_as_current_observation.side_effect = [root_ctx(), gen_ctx()]
-    tracer = LangfuseInferenceTracer(client, redact_model_input=False, redact_model_output=False)
+    tracer = LangfuseInferenceTracer(
+        client,
+        redact_model_input=False,
+        redact_model_output=False,
+        max_string_chars=8192,
+    )
     long_content = "C" * 9000
 
     with tracer.triage_issue_trace(run_id=str(uuid.uuid4()), issue_key="A-1", project="A"):
@@ -355,6 +365,44 @@ def test_tracer_marks_truncation_on_oversized_generation_input() -> None:
     assert gen_call.kwargs["metadata"]["log_payload_truncated"] is True
     assert len(gen_call.kwargs["input"][0]["content"]) < len(long_content)
     assert "truncated" in gen_call.kwargs["input"][0]["content"]
+
+
+@pytest.mark.unit
+def test_tracer_preserves_full_generation_input_when_truncation_disabled() -> None:
+    gen_obs = MagicMock()
+
+    @contextmanager
+    def gen_ctx(**kwargs: Any) -> Any:
+        _ = kwargs
+        yield gen_obs
+
+    @contextmanager
+    def root_ctx(**kwargs: Any) -> Any:
+        _ = kwargs
+        yield MagicMock()
+
+    client = MagicMock()
+    client.start_as_current_observation.side_effect = [root_ctx(), gen_ctx()]
+    tracer = LangfuseInferenceTracer(
+        client,
+        redact_model_input=False,
+        redact_model_output=False,
+        max_string_chars=0,
+    )
+    long_content = "Z" * 12000
+
+    with tracer.triage_issue_trace(run_id=str(uuid.uuid4()), issue_key="A-1", project="A"):
+        with tracer.model_generation(
+            step="classification",
+            model="m",
+            messages=[{"role": "user", "content": long_content}],
+            model_parameters={"temperature": 0.1},
+        ) as finish:
+            finish("ok", {"parsed": {"recommended_issue_type": "Bug"}})
+
+    gen_call = client.start_as_current_observation.call_args_list[1]
+    assert gen_call.kwargs["metadata"].get("log_payload_truncated") is not True
+    assert gen_call.kwargs["input"][0]["content"] == long_content
 
 
 @pytest.mark.unit

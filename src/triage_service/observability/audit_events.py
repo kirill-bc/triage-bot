@@ -7,6 +7,8 @@ at lifecycle boundaries:
 - ``classification_completed`` — after inference step (1) parses successfully.
 - ``priority_completed`` — after inference step (2) parses successfully (Bug path only).
 - ``image_context_extracted`` — after vision preprocessing (when enabled) completes.
+- ``zendesk_context_fetched`` — after linked Zendesk ticket fetch completes (when enabled).
+- ``zendesk_context_summarized`` — after resolution-aware comment summarization (when enabled).
 - ``triage_completed`` — final merged recommendation before/after executor success.
 - ``triage_failed`` — pipeline returned :class:`~triage_service.core.triage_fallback.TriageFailure`.
 
@@ -88,6 +90,73 @@ class ImageAttachmentExtractionDetail(BaseModel):
     extraction_failure: str | None = None
 
 
+class ZendeskImageDedupeSkipDetail(BaseModel):
+    """Zendesk image skipped because Jira already has a matching attachment."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    ticket_id: str = Field(min_length=1)
+    url: str = Field(min_length=1)
+    filename: str | None = None
+    skip_reason: str = Field(min_length=1)
+    matched_jira_attachment_id: str | None = None
+
+
+class ZendeskTicketFetchFailureDetail(BaseModel):
+    """Per-ticket Zendesk fetch failure (soft-fail path)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    ticket_id: str = Field(min_length=1)
+    failure: str = Field(min_length=1)
+
+
+class ZendeskContextFetchedAuditEvent(_CorrelationMixin):
+    """Linked Zendesk ticket fetch finished (success and soft failures)."""
+
+    event_type: Literal["zendesk_context_fetched"]
+    ticket_ids_requested: list[str] = Field(default_factory=list)
+    tickets_fetched: int = Field(ge=0, default=0)
+    ticket_ids_deduped: int = Field(ge=0, default=0)
+    fetch_failed: bool = False
+    per_ticket_failures: list[ZendeskTicketFetchFailureDetail] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _fetched_not_greater_than_requested(self) -> ZendeskContextFetchedAuditEvent:
+        if self.tickets_fetched > len(self.ticket_ids_requested):
+            msg = "tickets_fetched cannot exceed ticket_ids_requested count"
+            raise ValueError(msg)
+        return self
+
+
+class ZendeskTicketSummaryDetail(BaseModel):
+    """Per-ticket Zendesk comment summarization outcome."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    ticket_id: str = Field(min_length=1)
+    summarized: bool
+    inference_cost: float | None = Field(default=None, ge=0.0)
+    failure: str | None = None
+
+
+class ZendeskContextSummarizedAuditEvent(_CorrelationMixin):
+    """Resolution-aware Zendesk summarization finished."""
+
+    event_type: Literal["zendesk_context_summarized"]
+    tickets_considered: int = Field(ge=0, default=0)
+    tickets_summarized: int = Field(ge=0, default=0)
+    total_summary_cost: float | None = Field(default=None, ge=0.0)
+    per_ticket: list[ZendeskTicketSummaryDetail] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _summarized_not_greater_than_considered(self) -> ZendeskContextSummarizedAuditEvent:
+        if self.tickets_summarized > self.tickets_considered:
+            msg = "tickets_summarized cannot exceed tickets_considered"
+            raise ValueError(msg)
+        return self
+
+
 class ImageContextExtractedAuditEvent(_CorrelationMixin):
     """Vision preprocessing finished (success and soft failures)."""
 
@@ -97,6 +166,7 @@ class ImageContextExtractedAuditEvent(_CorrelationMixin):
     total_bytes: int = Field(ge=0)
     total_vision_cost: float | None = Field(default=None, ge=0.0)
     per_attachment: list[ImageAttachmentExtractionDetail] = Field(default_factory=list)
+    zendesk_skipped: list[ZendeskImageDedupeSkipDetail] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _extracted_not_greater_than_considered(self) -> ImageContextExtractedAuditEvent:
@@ -203,6 +273,8 @@ TriageAuditEvent = Annotated[
         PriorityCompletedAuditEvent,
         TriageCompletedAuditEvent,
         TriageFailedAuditEvent,
+        ZendeskContextFetchedAuditEvent,
+        ZendeskContextSummarizedAuditEvent,
     ],
     Field(discriminator="event_type"),
 ]
