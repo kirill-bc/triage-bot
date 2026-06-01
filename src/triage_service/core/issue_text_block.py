@@ -20,8 +20,14 @@ from triage_service.core.zendesk_summary_dedupe import (
     resolution_summary_should_omit_as_duplicate,
 )
 
+
 if TYPE_CHECKING:
     from triage_service.adapters.image_context_extractor import ImageContext
+
+
+def is_zendesk_image_context(ctx: ImageContext) -> bool:
+    """Return True when image context belongs to a linked Zendesk ticket attachment."""
+    return _parse_zendesk_ticket_id_from_attachment_id(ctx.attachment_id) is not None
 
 
 def _normalize_dedupe_key(text: str) -> str:

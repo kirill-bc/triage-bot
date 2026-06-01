@@ -13,6 +13,7 @@ from triage_service.adapters.jira_issue_fetcher import (
 )
 from triage_service.adapters.openrouter_inference_client import (
     OpenRouterCompletionResult,
+    OpenRouterInferenceClient,
     OpenRouterInferenceError,
 )
 from triage_service.adapters.zendesk_comment_summarizer import (
@@ -59,6 +60,32 @@ def test_trim_zendesk_comments_newest_first_within_budget() -> None:
     trimmed = trim_zendesk_comments_for_budget(comments, char_budget=12)
     assert [comment.comment_id for comment in trimmed] == ["3", "2"]
     assert sum(len(comment.body) for comment in trimmed) <= 12
+
+
+@pytest.mark.unit
+def test_trim_zendesk_comments_sorts_unsorted_input_newest_first() -> None:
+    comments = [
+        ZendeskCommentRef(
+            comment_id="1",
+            body="oldest",
+            public=True,
+            created_at="2026-05-29T10:00:00Z",
+        ),
+        ZendeskCommentRef(
+            comment_id="3",
+            body="newest",
+            public=True,
+            created_at="2026-05-29T12:00:00Z",
+        ),
+        ZendeskCommentRef(
+            comment_id="2",
+            body="middle",
+            public=True,
+            created_at="2026-05-29T11:00:00Z",
+        ),
+    ]
+    trimmed = trim_zendesk_comments_for_budget(comments, char_budget=12)
+    assert [comment.comment_id for comment in trimmed] == ["3", "2"]
 
 
 @pytest.mark.unit
@@ -126,6 +153,38 @@ def test_build_zendesk_comment_summarizer_returns_openrouter_when_enabled(
     enabled = AppSettings()
     summarizer = build_zendesk_comment_summarizer(enabled)
     assert isinstance(summarizer, OpenRouterZendeskCommentSummarizer)
+
+
+@pytest.mark.unit
+def test_build_zendesk_comment_summarizer_uses_configured_summary_model(
+    settings: AppSettings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TRIAGE_ZENDESK_COMMENT_SUMMARY_ENABLED", "true")
+    monkeypatch.setenv("TRIAGE_TEXT_MODEL", "openai/gpt-4o-mini")
+    monkeypatch.setenv("TRIAGE_ZENDESK_SUMMARY_MODEL", "anthropic/claude-3-haiku")
+    enabled = AppSettings()
+    summarizer = build_zendesk_comment_summarizer(enabled)
+    assert isinstance(summarizer, OpenRouterZendeskCommentSummarizer)
+    assert summarizer._inference.effective_model_id == "anthropic/claude-3-haiku"
+
+
+@pytest.mark.unit
+def test_build_zendesk_comment_summarizer_shared_client_ignores_summary_model(
+    settings: AppSettings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TRIAGE_ZENDESK_COMMENT_SUMMARY_ENABLED", "true")
+    monkeypatch.setenv("TRIAGE_TEXT_MODEL", "openai/gpt-4o-mini")
+    monkeypatch.setenv("TRIAGE_ZENDESK_SUMMARY_MODEL", "anthropic/claude-3-haiku")
+    enabled = AppSettings()
+    shared_inference = OpenRouterInferenceClient(enabled)
+    summarizer = build_zendesk_comment_summarizer(
+        enabled,
+        inference_client=shared_inference,
+    )
+    assert isinstance(summarizer, OpenRouterZendeskCommentSummarizer)
+    assert summarizer._inference.effective_model_id == "openai/gpt-4o-mini"
 
 
 @pytest.mark.unit

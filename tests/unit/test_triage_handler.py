@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from triage_service.adapters.jira_issue_fetcher import (
     FetchedIssue,
@@ -16,7 +16,10 @@ from triage_service.adapters.jira_issue_fetcher import (
     ZendeskResolutionSummary,
 )
 from triage_service.adapters.openrouter_inference_client import OpenRouterInferenceClient
-from triage_service.adapters.zendesk_comment_summarizer import ZendeskSummarizationResult
+from triage_service.adapters.zendesk_comment_summarizer import (
+    NoOpZendeskCommentSummarizer,
+    ZendeskSummarizationResult,
+)
 from triage_service.adapters.zendesk_ticket_fetcher import (
     ZendeskTicketFetcher,
     ZendeskTicketsFetchResult,
@@ -1071,3 +1074,32 @@ def test_build_default_triage_handler_local_mock_mode_skips_external_calls(
     assert outcome.recommended_issue_type == "Story"
     assert outcome.recommended_priority is None
     assert "local mock mode" in outcome.reason.lower()
+
+
+@pytest.mark.unit
+def test_build_default_triage_handler_builds_dedicated_zendesk_summarizer_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
+    monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
+    monkeypatch.setenv("TRIAGE_ALLOWED_PROJECTS", "TJC")
+    monkeypatch.delenv("JIRA_CLOUD_ID", raising=False)
+    monkeypatch.delenv("JIRA_USER_EMAIL", raising=False)
+    captured_kwargs: dict[str, object] = {}
+
+    def _capture_summarizer(
+        _settings: AppSettings,
+        **kwargs: object,
+    ) -> NoOpZendeskCommentSummarizer:
+        captured_kwargs.update(kwargs)
+        return NoOpZendeskCommentSummarizer()
+
+    with patch(
+        "triage_service.core.triage_handler.build_zendesk_comment_summarizer",
+        side_effect=_capture_summarizer,
+    ):
+        build_default_triage_handler()
+
+    assert "inference_client" not in captured_kwargs
+    assert "inference_tracer" in captured_kwargs

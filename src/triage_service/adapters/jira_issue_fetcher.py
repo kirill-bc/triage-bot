@@ -15,6 +15,7 @@ from triage_service.adapters.jira_http_retry import (
     classify_transport_request_error,
     request_with_retries,
 )
+from triage_service.adapters.zendesk_id_patterns import ZENDESK_TICKET_ID_PATTERNS
 from triage_service.core.settings import AppSettings
 
 _ATLASSIAN_GATEWAY = "https://api.atlassian.com/ex/jira"
@@ -53,6 +54,16 @@ class ZendeskCommentRef(BaseModel):
     image_refs: list["ZendeskImageRef"] = Field(default_factory=list)
 
 
+def zendesk_comment_newest_first_sort_key(comment: ZendeskCommentRef) -> tuple[str, int]:
+    """Sort key for newest-first Zendesk comment ordering (created_at, then id)."""
+    created = comment.created_at or ""
+    try:
+        comment_id = int(comment.comment_id)
+    except ValueError:
+        comment_id = 0
+    return (created, comment_id)
+
+
 class ZendeskImageRef(BaseModel):
     """Image discovered from Zendesk ticket description or comment bodies/attachments."""
 
@@ -88,13 +99,6 @@ class LinkedZendeskTicket(BaseModel):
     resolution_summary: ZendeskResolutionSummary | None = None
 
 
-_ZENDESK_FIELD_URL_RE = re.compile(
-    r"https?://[A-Za-z0-9.-]*zendesk\.com/(?:agent/)?tickets/(\d+)",
-    re.IGNORECASE,
-)
-_ZENDESK_FIELD_SHORT_RE = re.compile(r"\bZD[-\s#:]*(\d+)\b", re.IGNORECASE)
-
-
 def _text_from_jira_custom_field(raw: Any) -> str:
     if isinstance(raw, dict):
         return _extract_text_from_adf(raw).strip()
@@ -112,7 +116,7 @@ def _append_digit_tokens(text: str, found: list[str], seen: set[str]) -> None:
 
 
 def _append_pattern_ticket_ids(text: str, found: list[str], seen: set[str]) -> None:
-    for pattern in (_ZENDESK_FIELD_URL_RE, _ZENDESK_FIELD_SHORT_RE):
+    for pattern in ZENDESK_TICKET_ID_PATTERNS:
         for match in pattern.finditer(text):
             ticket_id = str(match.group(1)).strip()
             if ticket_id and ticket_id not in seen:

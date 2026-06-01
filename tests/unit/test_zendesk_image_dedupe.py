@@ -172,6 +172,33 @@ def test_dedupe_partitions_kept_and_skipped_with_audit_rows() -> None:
 
 
 @pytest.mark.unit
+def test_collect_zendesk_image_refs_excludes_non_image_filenames_without_image_mime() -> None:
+    tickets = [
+        LinkedZendeskTicket(
+            ticket_id="99",
+            subject="S",
+            description_image_refs=[
+                ZendeskImageRef(url="https://z/report.pdf", filename="report.pdf"),
+                ZendeskImageRef(url="https://z/notes.txt", filename="notes.txt"),
+                ZendeskImageRef(url="https://z/archive.zip", filename="archive.zip"),
+            ],
+            comments=[
+                ZendeskCommentRef(
+                    comment_id="1",
+                    body="attached doc",
+                    public=True,
+                    image_refs=[
+                        ZendeskImageRef(url="https://z/log.csv", filename="log.csv"),
+                    ],
+                ),
+            ],
+        ),
+    ]
+    refs = collect_zendesk_image_refs_from_tickets(tickets)
+    assert refs == []
+
+
+@pytest.mark.unit
 def test_collect_zendesk_image_refs_includes_comment_images() -> None:
     tickets = [
         LinkedZendeskTicket(

@@ -19,6 +19,7 @@ def test_flake8_passes_on_src_and_tests() -> None:
             str(root / "src" / "triage_service" / "adapters" / "jira_action_executor.py"),
             str(root / "src" / "triage_service" / "adapters" / "jira_issue_fetcher.py"),
             str(root / "src" / "triage_service" / "adapters" / "zendesk_ticket_fetcher.py"),
+            str(root / "src" / "triage_service" / "adapters" / "zendesk_id_patterns.py"),
             str(root / "src" / "triage_service" / "adapters" / "zendesk_comment_summarizer.py"),
             str(root / "src" / "triage_service" / "adapters" / "zendesk_context_cli.py"),
             str(root / "src" / "triage_service" / "adapters" / "jira_jql_search.py"),

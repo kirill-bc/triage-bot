@@ -8,6 +8,7 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 
@@ -16,16 +17,13 @@ from triage_service.adapters.jira_issue_fetcher import (
     LinkedZendeskTicket,
     ZendeskCommentRef,
     ZendeskImageRef,
+    zendesk_comment_newest_first_sort_key,
 )
+from triage_service.adapters.zendesk_id_patterns import ZENDESK_TICKET_ID_PATTERNS
 from triage_service.core.settings import AppSettings
 
 LOGGER = logging.getLogger(__name__)
 
-_ZENDESK_URL_RE = re.compile(
-    r"https?://[A-Za-z0-9.-]*zendesk\.com/(?:agent/)?tickets/(\d+)",
-    re.IGNORECASE,
-)
-_ZENDESK_SHORT_RE = re.compile(r"\bZD[-\s#:]*(\d+)\b", re.IGNORECASE)
 _ZENDESK_MARKDOWN_IMAGE_RE = re.compile(
     r"!\[[^\]]*\]\((https?://[^)\s]+)\)",
     re.IGNORECASE,
@@ -36,6 +34,7 @@ _ZENDESK_HTML_IMAGE_RE = re.compile(
 )
 _IMAGE_MIME_PREFIX = "image/"
 _FILENAME_IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
+_MAX_TICKET_DESCRIPTION_CHARS = 2000
 
 
 def extract_zendesk_ticket_ids(texts: Iterable[str | None]) -> list[str]:
@@ -46,7 +45,7 @@ def extract_zendesk_ticket_ids(texts: Iterable[str | None]) -> list[str]:
         if raw is None:
             continue
         text = str(raw)
-        for pattern in (_ZENDESK_URL_RE, _ZENDESK_SHORT_RE):
+        for pattern in ZENDESK_TICKET_ID_PATTERNS:
             for match in pattern.finditer(text):
                 ticket_id = str(match.group(1)).strip()
                 if ticket_id and ticket_id not in seen:
@@ -71,8 +70,6 @@ def extract_zendesk_inline_image_urls(text: str) -> list[str]:
 
 
 def _filename_from_image_url(url: str) -> str | None:
-    from urllib.parse import parse_qs, urlparse
-
     parsed = urlparse(url)
     query = parse_qs(parsed.query)
     name_values = query.get("name")
@@ -380,7 +377,7 @@ class ZendeskTicketFetcher:
                 comment = self._parse_comment(item)
                 if comment is not None:
                     parsed.append(comment)
-            parsed.sort(key=_comment_sort_key, reverse=True)
+            parsed.sort(key=zendesk_comment_newest_first_sort_key, reverse=True)
             return parsed[:max_comments]
         except ZendeskTicketFetchError:
             LOGGER.warning(
@@ -437,7 +434,7 @@ class ZendeskTicketFetcher:
             if isinstance(description_raw, str) and description_raw.strip()
             else ""
         )
-        description = description_text[:2000] if description_text else None
+        description = description_text[:_MAX_TICKET_DESCRIPTION_CHARS] if description_text else None
         status_raw = raw.get("status")
         if isinstance(status_raw, str) and status_raw.strip():
             status = str(status_raw).strip()
@@ -494,12 +491,3 @@ class ZendeskTicketFetcher:
             )
         encoded = base64.b64encode(f"{email}/token:{token}".encode("utf-8")).decode("ascii")
         return f"Basic {encoded}"
-
-
-def _comment_sort_key(comment: ZendeskCommentRef) -> tuple[str, int]:
-    created = comment.created_at or ""
-    try:
-        comment_id = int(comment.comment_id)
-    except ValueError:
-        comment_id = 0
-    return (created, comment_id)

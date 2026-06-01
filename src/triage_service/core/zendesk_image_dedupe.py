@@ -59,7 +59,7 @@ def _is_image_zendesk_ref(ref: ZendeskImageRef) -> bool:
     if mime.startswith(_IMAGE_MIME_PREFIX):
         return True
     filename = (ref.filename or "").lower()
-    return any(filename.endswith(ext) for ext in _FILENAME_IMAGE_EXTENSIONS) or bool(filename)
+    return any(filename.endswith(ext) for ext in _FILENAME_IMAGE_EXTENSIONS)
 
 
 def _jira_image_attachments(attachments: list[AttachmentRef]) -> list[AttachmentRef]:

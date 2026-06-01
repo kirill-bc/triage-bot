@@ -12,6 +12,7 @@ from triage_service.adapters.jira_issue_fetcher import (
     LinkedZendeskTicket,
     ZendeskCommentRef,
     ZendeskResolutionSummary,
+    zendesk_comment_newest_first_sort_key,
 )
 from triage_service.adapters.openrouter_inference_client import (
     OpenRouterInferenceClient,
@@ -113,9 +114,14 @@ def trim_zendesk_comments_for_budget(
     """Keep a newest-first contiguous prefix within the character budget."""
     if not comments or char_budget <= 0:
         return []
+    ordered = sorted(
+        comments,
+        key=zendesk_comment_newest_first_sort_key,
+        reverse=True,
+    )
     selected: list[ZendeskCommentRef] = []
     used = 0
-    for comment in comments:
+    for comment in ordered:
         body_len = len(comment.body)
         if body_len == 0:
             selected.append(comment)

@@ -661,7 +661,10 @@ class TriageHandler:
         audit_source: TriageSourceLiteral,
     ) -> tuple[FetchedIssue, ZendeskContextEnrichmentResult]:
         summarizer = self._zendesk_summarizer
-        assert summarizer is not None
+        if summarizer is None:
+            raise RuntimeError(
+                "_summarize_zendesk_tickets called without a summarizer configured"
+            )
         summary_start = perf_counter()
         try:
             with self._inference_tracer.zendesk_context_summary() as finish_summary:
@@ -1215,7 +1218,6 @@ def build_default_triage_handler(
     inference = OpenRouterInferenceClient(settings)
     zendesk_summarizer = build_zendesk_comment_summarizer(
         settings,
-        inference_client=inference,
         inference_tracer=obs.inference_tracer,
     )
     cloud_id_configured = settings.jira_cloud_id and str(settings.jira_cloud_id).strip()

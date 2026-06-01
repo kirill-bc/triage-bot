@@ -18,7 +18,7 @@ from triage_service.adapters.image_context_extractor import ImageContext
 from triage_service.adapters.jira_issue_fetcher import AttachmentRef, FetchedIssue
 from triage_service.core.issue_text_block import (
     format_issue_text_block,
-    _parse_zendesk_ticket_id_from_attachment_id,
+    is_zendesk_image_context,
 )
 from triage_service.core.langfuse_prompt_config import fetch_langfuse_text_prompt
 from triage_service.core.policy_context import PolicyContext
@@ -104,7 +104,7 @@ def _jira_image_contexts(
     return [
         ctx
         for ctx in contexts
-        if _parse_zendesk_ticket_id_from_attachment_id(ctx.attachment_id) is None
+        if not is_zendesk_image_context(ctx)
     ]
 
 

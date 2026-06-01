@@ -11,7 +11,23 @@ from triage_service.adapters.jira_issue_fetcher import (
     LinkedZendeskTicket,
     ZendeskResolutionSummary,
 )
-from triage_service.core.issue_text_block import format_issue_text_block
+from triage_service.core.issue_text_block import format_issue_text_block, is_zendesk_image_context
+
+
+@pytest.mark.unit
+def test_is_zendesk_image_context_detects_synthetic_zendesk_attachment_ids() -> None:
+    assert is_zendesk_image_context(
+        ImageContext(
+            attachment_id="zendesk:47322:https://z/2",
+            filename="zendesk-only.png",
+        ),
+    )
+    assert not is_zendesk_image_context(
+        ImageContext(
+            attachment_id="10001",
+            filename="jira-inline.png",
+        ),
+    )
 
 
 @pytest.mark.unit
