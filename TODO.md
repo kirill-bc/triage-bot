@@ -149,6 +149,7 @@ This builds on the comment fetch already landed for summarization (`ZendeskTicke
 - [x] Emit `zendesk_context_fetched` audit event (ids requested vs returned, dedupe counts, fetch error breakdown).
 - [x] Extend `triage_completed` telemetry with `zendesk_tickets_considered` / `zendesk_tickets_fetched` (and `zendesk_tickets_summarized`).
 - [x] Document Zendesk enrichment flags in `README.md` and `.env.example`; update §10 “no Zendesk intake” limitation to reflect linked-ticket enrichment scope (id/summary/image dedupe implemented).
+- [x] **OAuth auth alternative:** `TRIAGE_ZENDESK_ENABLE_OAUTH=true` switches `ZendeskTicketFetcher` to Bearer tokens (`ZendeskOAuthClient`: authorization-code exchange, refresh, JSON token store). HTTP routes `GET /zendesk/oauth/redirect-uri`, `/authorize`, `/callback` for one-time operator connect; HMAC-signed `state` CSRF protection; `fetch_jira_issue.py` hints when OAuth is enabled but tokens are missing.
 
 **Remaining — evaluation:**
 - [ ] Benchmark / bulk-triage stratification: accuracy breakdown for issues with vs without linked Zendesk context (and with vs without Zendesk-only images once vision path lands).

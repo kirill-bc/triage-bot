@@ -20,6 +20,11 @@ from triage_service.adapters.jira_issue_fetcher import (
     zendesk_comment_newest_first_sort_key,
 )
 from triage_service.adapters.zendesk_id_patterns import ZENDESK_TICKET_ID_PATTERNS
+from triage_service.adapters.zendesk_oauth import (
+    ZendeskOAuthClient,
+    ZendeskOAuthError,
+    build_zendesk_oauth_client,
+)
 from triage_service.core.settings import AppSettings
 
 LOGGER = logging.getLogger(__name__)
@@ -205,14 +210,29 @@ def _failure_code_from_fetch_error(exc: ZendeskTicketFetchError) -> str:
 class ZendeskTicketFetcher:
     """Loads linked Zendesk ticket summaries when optional credentials are configured."""
 
-    def __init__(self, settings: AppSettings, *, client: httpx.Client | None = None) -> None:
+    def __init__(
+        self,
+        settings: AppSettings,
+        *,
+        client: httpx.Client | None = None,
+        oauth_client: ZendeskOAuthClient | None = None,
+    ) -> None:
         self._settings = settings
         self._client = client
+        self._oauth_client = oauth_client
+        if settings.triage_zendesk_enable_oauth and self._oauth_client is None:
+            self._oauth_client = build_zendesk_oauth_client(settings)
 
     @property
     def credentials_configured(self) -> bool:
+        if self._settings.triage_zendesk_enable_oauth:
+            return bool(
+                self._settings.zendesk_oauth_configured
+                and self._oauth_client is not None
+                and self._oauth_client.has_tokens(),
+            )
         return bool(
-            self._settings.zendesk_base_url
+            self._settings.resolve_zendesk_base_url()
             and self._settings.zendesk_user_email
             and self._settings.zendesk_api_token,
         )
@@ -469,7 +489,7 @@ class ZendeskTicketFetcher:
         )
 
     def _base_url(self) -> str:
-        base = str(self._settings.zendesk_base_url or "").strip().rstrip("/")
+        base = self._settings.resolve_zendesk_base_url()
         if not base:
             raise ZendeskTicketFetchError("ZENDESK_BASE_URL is required.")
         return base
@@ -482,6 +502,16 @@ class ZendeskTicketFetcher:
         return f"{base}?include_inline_images=true"
 
     def _auth_header(self) -> str:
+        if self._settings.triage_zendesk_enable_oauth:
+            if self._oauth_client is None:
+                raise ZendeskTicketFetchError(
+                    "Zendesk OAuth is enabled but the OAuth client is not configured.",
+                )
+            try:
+                access_token = self._oauth_client.get_access_token()
+            except ZendeskOAuthError as exc:
+                raise ZendeskTicketFetchError(str(exc)) from exc
+            return f"Bearer {access_token}"
         email = str(self._settings.zendesk_user_email or "").strip()
         token = str(self._settings.zendesk_api_token or "").strip()
         if not email or not token:

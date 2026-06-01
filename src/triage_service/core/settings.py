@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import urlparse
 
 from dotenv import find_dotenv, load_dotenv
 from pydantic import AliasChoices, Field, computed_field, field_validator, model_validator
@@ -279,6 +280,55 @@ class AppSettings(BaseSettings):
         validation_alias="ZENDESK_API_TOKEN",
         description="Zendesk API token for ticket enrichment.",
     )
+    triage_zendesk_enable_oauth: bool = Field(
+        default=False,
+        validation_alias="TRIAGE_ZENDESK_ENABLE_OAUTH",
+        description=(
+            "Use Zendesk OAuth (authorization code flow) instead of email/API token Basic auth."
+        ),
+    )
+    zendesk_subdomain: str | None = Field(
+        default=None,
+        validation_alias="ZENDESK_SUBDOMAIN",
+        description="Zendesk subdomain (optional when ZENDESK_BASE_URL is set).",
+    )
+    zendesk_identifier: str | None = Field(
+        default=None,
+        validation_alias="ZENDESK_IDENTIFIER",
+        description="Zendesk OAuth client unique identifier (client_id).",
+    )
+    zendesk_secret: str | None = Field(
+        default=None,
+        validation_alias="ZENDESK_SECRET",
+        description="Zendesk OAuth client secret.",
+    )
+    zendesk_redirect_uri: str | None = Field(
+        default=None,
+        validation_alias="ZENDESK_REDIRECT_URI",
+        description=(
+            "OAuth redirect URI registered in Zendesk Admin Center; "
+            "defaults to {TRIAGE_PUBLIC_BASE_URL}/zendesk/oauth/callback when unset."
+        ),
+    )
+    triage_public_base_url: str | None = Field(
+        default=None,
+        validation_alias="TRIAGE_PUBLIC_BASE_URL",
+        description=(
+            "Public HTTPS base URL for this service (no trailing path); "
+            "used to derive the OAuth callback when ZENDESK_REDIRECT_URI is unset."
+        ),
+    )
+    zendesk_oauth_scope: str = Field(
+        default="read",
+        min_length=1,
+        validation_alias="ZENDESK_OAUTH_SCOPE",
+        description="OAuth scopes requested from Zendesk (space-separated).",
+    )
+    zendesk_oauth_token_file: str | None = Field(
+        default=None,
+        validation_alias="ZENDESK_OAUTH_TOKEN_FILE",
+        description="Path to persist Zendesk OAuth access/refresh tokens (JSON file).",
+    )
     zendesk_http_timeout_seconds: float = Field(
         default=20.0,
         ge=1.0,
@@ -393,6 +443,60 @@ class AppSettings(BaseSettings):
         return bool(str(self.langfuse_public_key or "").strip()) and bool(
             str(self.langfuse_secret_key or "").strip(),
         )
+
+    def resolve_zendesk_subdomain(self) -> str | None:
+        """Return Zendesk subdomain from env or ``ZENDESK_BASE_URL`` hostname."""
+        explicit = str(self.zendesk_subdomain or "").strip()
+        if explicit:
+            return explicit
+        base = str(self.zendesk_base_url or "").strip().rstrip("/")
+        if not base:
+            return None
+        host = urlparse(base).hostname or ""
+        suffix = ".zendesk.com"
+        if host.endswith(suffix):
+            subdomain = host[: -len(suffix)]
+            return subdomain or None
+        return None
+
+    def resolve_zendesk_oauth_redirect_uri(self) -> str | None:
+        """Return OAuth callback URL for Zendesk Admin Center registration."""
+        explicit = str(self.zendesk_redirect_uri or "").strip()
+        if explicit:
+            return explicit
+        public_base = str(self.triage_public_base_url or "").strip().rstrip("/")
+        if public_base:
+            return f"{public_base}/zendesk/oauth/callback"
+        return None
+
+    def resolve_zendesk_oauth_token_path(self) -> Path:
+        """Filesystem path where OAuth tokens are persisted."""
+        configured = str(self.zendesk_oauth_token_file or "").strip()
+        if configured:
+            return Path(configured)
+        return Path(".zendesk_oauth_tokens.json")
+
+    @property
+    def zendesk_oauth_configured(self) -> bool:
+        """True when OAuth mode is on and client + redirect URI are present."""
+        if not self.triage_zendesk_enable_oauth:
+            return False
+        return bool(
+            self.resolve_zendesk_base_url()
+            and str(self.zendesk_identifier or "").strip()
+            and str(self.zendesk_secret or "").strip()
+            and self.resolve_zendesk_oauth_redirect_uri(),
+        )
+
+    def resolve_zendesk_base_url(self) -> str | None:
+        """Return Zendesk API base URL from env or subdomain."""
+        base = str(self.zendesk_base_url or "").strip().rstrip("/")
+        if base:
+            return base
+        subdomain = self.resolve_zendesk_subdomain()
+        if subdomain:
+            return f"https://{subdomain}.zendesk.com"
+        return None
 
     @field_validator("triage_langfuse_prompt_label", mode="before")
     @classmethod
