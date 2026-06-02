@@ -114,6 +114,7 @@ Schema this repo validates against).
 {
   "event_type": "triage_completed",
   "run_id": "uuid",                   // unique per triage run; primary idempotency key
+  "session_id": "uuid",               // Langfuse session id (may equal run_id)
   "issue_key": "TJC-123",
   "project": "TJC",
   "source": "bug_created",            // bug_created | priority_changed | manual_trigger
@@ -133,6 +134,7 @@ Schema this repo validates against).
 | Field | Required | Notes |
 | --- | --- | --- |
 | `run_id` | yes | Idempotency key; ingest upserts on it. |
+| `session_id` | no | Langfuse session identifier for trace replay/debug joins. |
 | `issue_key`, `project` | yes | Correlation / grouping. |
 | `source` | yes | One of `bug_created`, `priority_changed`, `manual_trigger`. |
 | `intake_issue_type`, `intake_priority` | yes | The "before" state powering promoted/demoted. `intake_priority` is null when intake type is `Story`. |
@@ -162,6 +164,7 @@ conforming event):
 -- One row per triage run (idempotent on run_id).
 CREATE TABLE triage_decision (
     run_id                  TEXT PRIMARY KEY,
+    session_id              TEXT,
     issue_key               TEXT NOT NULL,
     project                 TEXT NOT NULL,
     source                  TEXT NOT NULL,

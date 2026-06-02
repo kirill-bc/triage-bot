@@ -359,11 +359,21 @@ class ZendeskTicketFetcher:
             raise ZendeskTicketFetchError("Zendesk image URL is required for content fetch.")
         headers = self._image_fetch_headers(url)
         if self._client is not None:
-            response = self._client.get(url, headers=headers, follow_redirects=True)
+            response = self._get_with_oauth_401_retry(
+                self._client,
+                url,
+                headers,
+                follow_redirects=True,
+            )
             return self._image_bytes_from_response(response)
         timeout = httpx.Timeout(self._settings.zendesk_http_timeout_seconds)
         with httpx.Client(timeout=timeout, follow_redirects=True) as client:
-            response = client.get(url, headers=headers)
+            response = self._get_with_oauth_401_retry(
+                client,
+                url,
+                headers,
+                follow_redirects=True,
+            )
             return self._image_bytes_from_response(response)
 
     def _image_fetch_headers(self, url: str) -> dict[str, str]:
@@ -384,9 +394,10 @@ class ZendeskTicketFetcher:
         return response.content
 
     def _fetch_ticket(self, client: httpx.Client, ticket_id: str) -> LinkedZendeskTicket:
-        response = client.get(
+        response = self._get_with_oauth_401_retry(
+            client,
             self._ticket_url(ticket_id),
-            headers={
+            {
                 "Authorization": self._auth_header(),
                 "Accept": "application/json",
             },
@@ -409,9 +420,10 @@ class ZendeskTicketFetcher:
         if max_comments <= 0:
             return []
         try:
-            response = client.get(
+            response = self._get_with_oauth_401_retry(
+                client,
                 self._comments_url(ticket_id, per_page=max_comments),
-                headers={
+                {
                     "Authorization": self._auth_header(),
                     "Accept": "application/json",
                 },
@@ -557,3 +569,27 @@ class ZendeskTicketFetcher:
             )
         encoded = base64.b64encode(f"{email}/token:{token}".encode("utf-8")).decode("ascii")
         return f"Basic {encoded}"
+
+    def _get_with_oauth_401_retry(
+        self,
+        client: httpx.Client,
+        url: str,
+        headers: dict[str, str],
+        *,
+        follow_redirects: bool = False,
+    ) -> httpx.Response:
+        response = client.get(url, headers=headers, follow_redirects=follow_redirects)
+        if not self._should_retry_oauth_401(response.status_code):
+            return response
+        assert self._oauth_client is not None
+        self._oauth_client.clear_cached_token()
+        retry_headers = dict(headers)
+        retry_headers["Authorization"] = self._auth_header()
+        return client.get(url, headers=retry_headers, follow_redirects=follow_redirects)
+
+    def _should_retry_oauth_401(self, status_code: int) -> bool:
+        return (
+            status_code == 401
+            and self._settings.triage_zendesk_enable_oauth
+            and self._oauth_client is not None
+        )

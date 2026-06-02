@@ -12,8 +12,9 @@ Primary goal: keep triage reliable, observable, and easy to operate while preser
 - Sequential triage contract is implemented: classify `Bug|Story` first; run priority (`P0..P4`) only when classification is `Bug`.
 - Observability baseline is in place: structured audit logs, Langfuse tracing hooks, `run_id` correlation.
 - Image-context preprocessing for Jira inline description attachments is implemented (feature-flagged).
-- Zendesk linked-ticket enrichment is implemented end-to-end (fetch, resolution summarization, dedupe, Zendesk-only vision, observability); benchmark stratification for Zendesk context is still open in `TODO.md` §8.
-- Integration-test expansion and some polish/backlog items remain open in `TODO.md`.
+- Zendesk linked-ticket enrichment is implemented end-to-end (fetch, resolution summarization, dedupe, Zendesk-only vision, OAuth client_credentials with 401 retry, observability); benchmark stratification for Zendesk context is still open in `TODO.md` §11.
+- Triage analytics decision emission is implemented (`ANALYTICS_DASHBOARD_URL` fire-and-forget POST after successful triage); optional Langfuse backfill script for historical bootstrap.
+- Integration-test expansion remains deferred in `TODO.md` §12.
 
 ## Non-Negotiable Workflow
 
@@ -89,6 +90,7 @@ Commonly relevant optional flags:
 - `TRIAGE_JIRA_ZENDESK_TICKET_IDS_FIELD_ID`
 - `TRIAGE_JIRA_IMPORTED_ZENDESK_TICKET_IDS_FIELD_ID`
 - `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_BASE_URL`
+- `ANALYTICS_DASHBOARD_URL`, `ANALYTICS_TOKEN` (optional decision-event POST to dashboard service)
 
 Reference `.env.example` for the full set.
 
@@ -96,8 +98,8 @@ Reference `.env.example` for the full set.
 
 Highest-priority unfinished area in `TODO.md`:
 
-- **§8 evaluation:** benchmark / bulk-triage stratification for issues with vs without linked Zendesk context (and Zendesk-only images).
-- **§9:** integration tests (deferred until post-deploy stabilization).
+- **§11 Post-MVP:** benchmark / bulk-triage stratification for issues with vs without linked Zendesk context (and Zendesk-only images); Langfuse root trace cost display; optional image-context inline placement and post-triage formatting advisory.
+- **§12:** integration tests (deferred until post-deploy stabilization).
 
 Zendesk enrichment remains soft-fail-safe: fetch/summary/vision failures must not abort triage.
 

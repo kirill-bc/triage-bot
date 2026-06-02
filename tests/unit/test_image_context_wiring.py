@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 from unittest.mock import MagicMock
 
 import httpx
@@ -23,6 +24,7 @@ from triage_service.adapters.jira_issue_fetcher import (
 )
 from triage_service.adapters.openrouter_inference_client import OpenRouterInferenceClient
 from triage_service.core.settings import AppSettings
+from triage_service.core.triage_action_applied import TriageActionAppliedFlags
 from triage_service.core.triage_handler import TriageHandler
 from triage_service.core.policy_context import PolicyContext
 
@@ -108,8 +110,18 @@ def test_build_image_context_extractor_uses_configured_max_attachments(
 
 
 class _NoOpExecutor:
-    def apply_triage_outcome(self, **kwargs: object) -> None:
-        _ = kwargs
+    def apply_triage_outcome(
+        self,
+        *,
+        issue: FetchedIssue | None,
+        issue_key: str,
+        project: str,
+        source: str,
+        outcome: Any,
+        run_id: str,
+    ) -> TriageActionAppliedFlags:
+        _ = (issue, issue_key, project, source, outcome, run_id)
+        return TriageActionAppliedFlags()
 
 
 def _jira_payload_for(issue: FetchedIssue) -> dict[str, object]:

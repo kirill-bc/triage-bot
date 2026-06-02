@@ -54,9 +54,12 @@ class _RecordingExecutor(TriageActionExecutor):
         source: str,
         outcome: TriageRecommendation | TriageFailure,
         run_id: str,
-    ) -> None:
+    ) -> Any:
+        from triage_service.core.triage_action_applied import TriageActionAppliedFlags
+
         _ = (issue_key, project, source)
         self.calls.append((issue, outcome, run_id))
+        return TriageActionAppliedFlags()
 
 
 class _RecordingAuditStore:
@@ -694,6 +697,8 @@ def test_handler_bug_path_emits_classification_priority_and_triage_completed_aud
     assert e0.recommended_issue_type == "Bug"
     e2 = audit.events[2]
     assert e2.telemetry == {
+        "intake_issue_type": "Bug",
+        "intake_priority": "P2",
         "image_context_attachments_considered": 0,
         "image_context_attachments_extracted": 0,
         "auto_apply_deescalation_enabled": False,
@@ -760,6 +765,8 @@ def test_handler_story_path_emits_classification_and_triage_completed_without_pr
     assert audit.events[1].recommended_issue_type == "Story"
     assert audit.events[1].recommended_priority is None
     assert audit.events[1].telemetry == {
+        "intake_issue_type": "Bug",
+        "intake_priority": None,
         "image_context_attachments_considered": 0,
         "image_context_attachments_extracted": 0,
         "auto_apply_deescalation_enabled": False,
@@ -1103,3 +1110,153 @@ def test_build_default_triage_handler_builds_dedicated_zendesk_summarizer_client
 
     assert "inference_client" not in captured_kwargs
     assert "inference_tracer" in captured_kwargs
+
+
+@pytest.mark.unit
+def test_triage_completed_telemetry_includes_intake_issue_type_and_priority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from triage_service.core.triage_handler import _triage_completed_telemetry
+
+    settings = _app_settings(monkeypatch)
+    issue = FetchedIssue(
+        issue_key="TJC-55",
+        summary="s",
+        description=None,
+        issue_type="Bug",
+        priority="P3",
+        reporter="r",
+    )
+    recommendation = TriageRecommendation(
+        recommended_issue_type="Bug",
+        recommended_priority="P2",
+        confidence=0.9,
+        reason="Escalate.",
+    )
+    telemetry = _triage_completed_telemetry(
+        issue=issue,
+        recommendation=recommendation,
+        settings=settings,
+    )
+    assert telemetry is not None
+    assert telemetry["intake_issue_type"] == "Bug"
+    assert telemetry["intake_priority"] == "P3"
+
+
+@pytest.mark.unit
+def test_triage_completed_telemetry_nulls_intake_priority_for_story_intake(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from triage_service.core.triage_handler import _triage_completed_telemetry
+
+    settings = _app_settings(monkeypatch)
+    issue = FetchedIssue(
+        issue_key="TJC-56",
+        summary="s",
+        description=None,
+        issue_type="Story",
+        priority="Medium",
+        reporter="r",
+    )
+    recommendation = TriageRecommendation(
+        recommended_issue_type="Story",
+        recommended_priority=None,
+        confidence=0.7,
+        reason="Still a story.",
+    )
+    telemetry = _triage_completed_telemetry(
+        issue=issue,
+        recommendation=recommendation,
+        settings=settings,
+    )
+    assert telemetry is not None
+    assert telemetry["intake_issue_type"] == "Story"
+    assert telemetry["intake_priority"] is None
+
+
+class _RecordingAnalyticsClient:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def emit_completed_decision(
+        self,
+        event: TriageCompletedAuditEvent,
+        *,
+        applied_type_change: bool,
+        applied_priority_change: bool,
+        inference_cost_usd: float | None,
+        occurred_at: object = None,
+    ) -> None:
+        _ = occurred_at
+        self.calls.append(
+            {
+                "event": event,
+                "applied_type_change": applied_type_change,
+                "applied_priority_change": applied_priority_change,
+                "inference_cost_usd": inference_cost_usd,
+            },
+        )
+
+
+@pytest.mark.unit
+def test_handler_emits_analytics_decision_after_successful_triage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _app_settings(monkeypatch)
+    issue = FetchedIssue(
+        issue_key="TJC-57",
+        summary="crash",
+        description="segfault",
+        issue_type="Bug",
+        priority="P2",
+        reporter="bob",
+    )
+
+    def jira_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_jira_payload_for(issue))
+
+    cls_json = '{"recommended_issue_type":"Bug","confidence":0.55,"reason":"Defect."}'
+    pri_json = '{"recommended_priority":"P1","confidence":0.88,"reason":"Data loss risk."}'
+    responses = [cls_json, pri_json]
+    idx = {"i": 0}
+
+    def openrouter_handler(request: httpx.Request) -> httpx.Response:
+        i = idx["i"]
+        idx["i"] = i + 1
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"role": "assistant", "content": responses[i]}}],
+                "usage": {"total_cost": 0.012},
+            },
+        )
+
+    analytics = _RecordingAnalyticsClient()
+    with httpx.Client(transport=httpx.MockTransport(jira_handler)) as j_client:
+        with httpx.Client(transport=httpx.MockTransport(openrouter_handler)) as o_client:
+            fetcher = JiraIssueFetcher(settings, client=j_client)
+            inference = OpenRouterInferenceClient(settings, client=o_client)
+            handler = TriageHandler(
+                allowed_projects=("TJC",),
+                fetcher=fetcher,
+                inference=inference,
+                policy=_policy(),
+                executor=_RecordingExecutor(),
+                settings=settings,
+                analytics_client=analytics,
+            )
+            handler.run_sync(
+                issue_key="TJC-57",
+                project="TJC",
+                source="manual_trigger",
+                run_id="run-analytics",
+            )
+
+    assert len(analytics.calls) == 1
+    call = analytics.calls[0]
+    event = call["event"]
+    assert isinstance(event, TriageCompletedAuditEvent)
+    assert event.run_id == "run-analytics"
+    assert call["applied_type_change"] is False
+    assert call["applied_priority_change"] is False
+    assert call["inference_cost_usd"] == pytest.approx(0.024)

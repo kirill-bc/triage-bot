@@ -42,6 +42,7 @@ See `TODO.md` for the active implementation backlog.
 - `scripts/benchmark/summarize_benchmark_rows.py`: offline aggregator over any folder of `rows_*.jsonl` benchmark outputs — per-bucket and overall accuracy, latency stats, issue-type confusion matrix, and failure breakdown; optional folder-level JSON dump
 - `scripts/benchmark/classification_benchmark.py`: CSV loader and bucket-aware scoring (stable bugs vs human-corrected type/priority)
 - `scripts/benchmark/benchmark_summary.py`: pure-logic helpers used by `summarize_benchmark_rows.py` (JSONL parsing, latency/failure aggregation, summary serialization)
+- `scripts/backfill_langfuse_decisions.py`: one-shot export of historical decision rows from Langfuse traces for analytics dashboard bootstrap (writes JSON; `source=backfill`)
 - `scripts/run_dev_tunnel.py`: uvicorn + tunnel helper (uses `dev_tunnel.main`)
 - `scripts/run_container_tunnel.sh`: build/run container with `.env` secrets, post a live `/triage` payload, then expose the container via `cloudflared` (or `ngrok`) for Jira Automation testing
 - `scripts/run_tests.sh`: local entrypoint for the standard test workflow
@@ -79,6 +80,7 @@ From repository root:
   - optional: `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, and `LANGFUSE_BASE_URL` (when the first two are set, OpenRouter steps are traced in Langfuse: each triage `run_id` is the Langfuse **session** id (Sessions UI replay), with root span `triage_issue_pipeline` and nested `inference_*` generations; token usage and any cost fields returned by OpenRouter are forwarded onto those generation observations when present. Lifecycle audit events attach under that span when emitted during triage. Use `run_id` from the API or CLI response and the span metadata to correlate with logs. `POST /triage` and the manual CLI call `flush_inference_telemetry()` after each run so buffers are not stuck in short-lived processes)
   - optional Langfuse prompt management (defaults shown; Langfuse project `triagebot`): `TRIAGE_LANGFUSE_PROMPTS_ENABLED=true`, user prompts `TRIAGE_LANGFUSE_CLASSIFICATION_PROMPT_NAME=triagebot/classification-user` and `TRIAGE_LANGFUSE_PRIORITY_PROMPT_NAME=triagebot/priority-user` (policies and reason guidance are embedded in Langfuse; only `{{issue_block}}` is compiled at runtime), system prompts `TRIAGE_LANGFUSE_CLASSIFICATION_SYSTEM_PROMPT_NAME=triagebot/classification-system` / `TRIAGE_LANGFUSE_PRIORITY_SYSTEM_PROMPT_NAME=triagebot/priority-system`, optional `TRIAGE_LANGFUSE_REASON_FOR_HUMANS_PROMPT_NAME=triagebot/reason-for-humans` (local fallback only), shared `TRIAGE_LANGFUSE_PROMPT_LABEL=production`, `TRIAGE_LANGFUSE_PROMPT_CACHE_TTL_SECONDS` (unset uses SDK default). When Langfuse is unavailable, `prompt_templates.json` and `src/triage_service/core/policy/*.md` (`load_policy_context`) are composed locally.
    - optional audit routing and redaction (defaults: structured JSON logs **on**, Langfuse audit mirror **on** when Langfuse keys exist, model input redaction **off**, model output redaction **off**): `TRIAGE_AUDIT_STRUCTURED_LOG_ENABLED`, `TRIAGE_AUDIT_LANGFUSE_ENABLED`, `TRIAGE_AUDIT_REDACT_MODEL_INPUT`, `TRIAGE_AUDIT_REDACT_MODEL_OUTPUT`. Filter JSON log lines by `run_id` (API response field or CLI-generated UUID); in Langfuse, open **Sessions** and search by `run_id` (session id) or use `run_id` on the root span metadata to align traces, generations, and audit events.
+   - optional analytics dashboard (default **off**): when `ANALYTICS_DASHBOARD_URL` is set (base URL including `/api/v1`), each successful triage run fire-and-forgets a `POST` to `{ANALYTICS_DASHBOARD_URL}/decisions` with the decision payload (`run_id`, intake/recommended state, applied flags, confidence, optional `inference_cost_usd`). Send `ANALYTICS_TOKEN` as header `X-Analytics-Token`. Uses `ANALYTICS_HTTP_TIMEOUT_SECONDS` (default `2`); transport failures are logged at warning and never fail triage.
    - optional local smoke mode: `TRIAGE_LOCAL_MOCK_MODE` (`1`, `true`, `yes`, or `on`) switches triage into a deterministic local runner that skips Jira/OpenRouter calls. Intended only for local container smoke checks.
   - optional image attachment preprocessing (default **off**): `TRIAGE_IMAGE_CONTEXT_ENABLED` runs description-inline images first, then comment-referenced images (if slots remain) through a dedicated vision model before classification and priority. Uses `TRIAGE_VISION_MODEL` (independent from `TRIAGE_TEXT_MODEL`), `TRIAGE_IMAGE_CONTEXT_MAX_ATTACHMENTS` (default `5`), `TRIAGE_IMAGE_CONTEXT_MAX_BYTES_PER_IMAGE` (default 5 MiB), `TRIAGE_IMAGE_CONTEXT_TIMEOUT_SECONDS` (default `90`). Audit logs redact vision transcripts by default (`TRIAGE_AUDIT_REDACT_IMAGE_TRANSCRIPT=true`) because screenshots often contain PII. Each processed image is one billed OpenRouter vision call; failures degrade to placeholders and never abort triage.
   - optional issue comment context budget: `TRIAGE_COMMENTS_CHAR_BUDGET` (default `6000`) controls total Jira comment body characters included in `issue_block`; oldest comments are dropped first when over budget.
@@ -193,6 +195,21 @@ Run the same inference pipeline for every issue returned by a JQL query and writ
 
 Exit code `0` when every issue completed, `1` when any issue failed or the JQL matched nothing, `2` on settings/JQL errors.
 
+## Analytics dashboard (optional)
+
+When `ANALYTICS_DASHBOARD_URL` is set, each **successful** triage run POSTs a decision row to `{ANALYTICS_DASHBOARD_URL}/decisions` (see `docs/specification.md`). Transport errors are logged and never fail triage.
+
+To bootstrap historical rows from Langfuse before live emission is wired in production:
+
+```bash
+.venv/bin/python scripts/backfill_langfuse_decisions.py \
+  -o /tmp/backfill_decisions.json \
+  --latest-only \
+  --max-records 500
+```
+
+Requires `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, and `LANGFUSE_BASE_URL` in `.env`. Exported rows use `source=backfill` and `applied_*=false` (no Jira mutation history in traces). Import the JSON into the separate dashboard service per its runbook.
+
 ## Jira Automation recipe (scheduled scan)
 
 The production integration model is Jira Cloud Automation running on a schedule and calling
@@ -241,6 +258,36 @@ Requests missing this header (or with the wrong value) receive `401 Unauthorized
 - Confidence is metadata for operators and API/audit output; it is not used as a direct
   mutation threshold.
 - Retry/dedupe behavior is owned by Jira Automation JQL and labels, not by an internal queue.
+
+### Default model selection and confidence calibration
+
+`TRIAGE_TEXT_MODEL` defaults to `openai/gpt-4o-mini` when unset.
+
+- **Why this default for MVP:** it gives a stable quality/latency/cost baseline for
+  sequential classify->priority triage, keeps per-issue spend low enough for scheduled
+  Jira Automation scans, and is widely available in OpenRouter project setups.
+- **When to override:** use a different model id when benchmark results on your
+  issue mix show a clear accuracy lift that justifies latency and cost, or when org
+  policy requires a specific provider/model family.
+
+#### Confidence calibration strategy (next phase tuning)
+
+Confidence remains advisory until calibrated against labeled outcomes. The planned
+tuning loop is:
+
+1. Run `scripts/benchmark/run_classification_benchmark.py` for candidate models and
+   compare by bucket (not only overall accuracy).
+2. Join benchmark + production decision data (`confidence`, mismatch labels,
+   recommendation type) from analytics exports to measure calibration quality by
+   confidence bands.
+3. Track at least two operating points before enabling any confidence-based policy:
+   - **high-precision band** for safe auto-apply candidates,
+   - **review band** where recommendations remain advisory and are routed for human check.
+4. Refit thresholds after meaningful prompt/model changes and keep the selected bands
+   documented with run artifacts so changes are reproducible.
+
+Until that loop is complete, confidence should be treated as observability metadata,
+not as an automation gate.
 
 ## Local HTTP server and tunnel (Jira Automation → your laptop)
 

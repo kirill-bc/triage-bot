@@ -15,6 +15,7 @@ from triage_service.adapters.jira_http_retry import (
 )
 from triage_service.core.settings import AppSettings
 from triage_service.adapters.jira_issue_fetcher import FetchedIssue
+from triage_service.core.triage_action_applied import TriageActionAppliedFlags
 from triage_service.core.triage_fallback import TriageFailure
 from triage_service.core.triage_mismatch import compute_mismatch_flags
 from triage_service.core.triage_recommendation_parser import TriageRecommendation
@@ -365,12 +366,12 @@ class JiraTriageActionExecutor:
         source: str,
         outcome: TriageRecommendation | TriageFailure,
         run_id: str,
-    ) -> None:
+    ) -> TriageActionAppliedFlags:
         _ = (project, source, run_id)
         if isinstance(outcome, TriageFailure):
-            return
+            return TriageActionAppliedFlags()
         if issue is None:
-            return
+            return TriageActionAppliedFlags()
         labels = _labels_for_outcome(outcome, issue)
         base_url, headers = _jira_base_and_headers(self._settings)
         self._apply_labels(base_url, issue_key, labels, headers)
@@ -378,10 +379,10 @@ class JiraTriageActionExecutor:
             issue=issue,
             recommendation=outcome,
         )
-        mutations_applied = False
+        applied = TriageActionAppliedFlags()
         mutation_error: JiraActionExecutorError | None = None
         try:
-            mutations_applied = self._maybe_apply_recommended_mutations(
+            applied = self._maybe_apply_recommended_mutations(
                 base_url=base_url,
                 issue_key=issue_key,
                 issue=issue,
@@ -390,7 +391,7 @@ class JiraTriageActionExecutor:
             )
         except JiraActionExecutorError as exc:
             mutation_error = exc
-            mutations_applied = False
+            applied = TriageActionAppliedFlags()
         if self._post_mismatch_comments and should_post_comment:
             self._post_comment(
                 base_url,
@@ -398,11 +399,14 @@ class JiraTriageActionExecutor:
                 issue,
                 outcome,
                 headers,
-                mutations_applied=mutations_applied,
+                mutations_applied=(
+                    applied.applied_type_change or applied.applied_priority_change
+                ),
             )
-            return
+            return applied
         if mutation_error is not None:
             raise mutation_error
+        return applied
 
     def _apply_labels(
         self,
@@ -457,9 +461,10 @@ class JiraTriageActionExecutor:
         issue: FetchedIssue,
         recommendation: TriageRecommendation,
         headers: dict[str, str],
-    ) -> bool:
+    ) -> TriageActionAppliedFlags:
         flags = compute_mismatch_flags(issue, recommendation)
-        applied = False
+        applied_type_change = False
+        applied_priority_change = False
         if (
             self._auto_apply_bug_to_story
             and flags.type_mismatch
@@ -472,7 +477,7 @@ class JiraTriageActionExecutor:
                 {"issuetype": {"name": "Story"}},
                 headers,
             )
-            applied = True
+            applied_type_change = True
         if (
             self._auto_apply_deescalation
             and flags.priority_mismatch
@@ -486,8 +491,11 @@ class JiraTriageActionExecutor:
                     {"priority": {"name": str(rec_priority).strip()}},
                     headers,
                 )
-                applied = True
-        return applied
+                applied_priority_change = True
+        return TriageActionAppliedFlags(
+            applied_type_change=applied_type_change,
+            applied_priority_change=applied_priority_change,
+        )
 
     def _update_issue_fields(
         self,

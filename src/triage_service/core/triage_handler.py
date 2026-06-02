@@ -28,6 +28,11 @@ from triage_service.adapters.zendesk_comment_summarizer import (
 )
 from triage_service.adapters.zendesk_context_cli import ZendeskContextEnrichmentResult
 from triage_service.adapters.zendesk_ticket_fetcher import ZendeskTicketFetcher
+from triage_service.adapters.analytics_decision_client import (
+    AnalyticsDecisionClient,
+    NoOpAnalyticsDecisionClient,
+    build_analytics_decision_client,
+)
 from triage_service.adapters.openrouter_inference_client import (
     OpenRouterInferenceClient,
     OpenRouterInferenceError,
@@ -40,6 +45,7 @@ from triage_service.core.prompt_composer import (
     compose_priority_prompt,
     compose_priority_system_prompt,
 )
+from triage_service.core.triage_action_applied import TriageActionAppliedFlags
 from triage_service.core.triage_fallback import (
     ProjectNotAllowedError,
     TriageFailure,
@@ -182,6 +188,47 @@ def _merge_telemetry(*parts: dict[str, object] | None) -> dict[str, object] | No
     return merged or None
 
 
+_INTAKE_PRIORITIES = frozenset({"P0", "P1", "P2", "P3", "P4"})
+
+
+def _normalized_intake_issue_type(issue: FetchedIssue) -> str:
+    if str(issue.issue_type).strip().upper() == "STORY":
+        return "Story"
+    return "Bug"
+
+
+def _normalized_intake_priority(issue: FetchedIssue) -> str | None:
+    if _normalized_intake_issue_type(issue) == "Story":
+        return None
+    if issue.priority is None:
+        return None
+    pri = str(issue.priority).strip().upper()
+    if pri in _INTAKE_PRIORITIES:
+        return pri
+    return None
+
+
+def _intake_telemetry(issue: FetchedIssue) -> dict[str, object]:
+    return {
+        "intake_issue_type": _normalized_intake_issue_type(issue),
+        "intake_priority": _normalized_intake_priority(issue),
+    }
+
+
+def _inference_cost_from_details(cost_details: dict[str, float] | None) -> float | None:
+    if not cost_details:
+        return None
+    total = cost_details.get("total")
+    if isinstance(total, (int, float)) and not isinstance(total, bool):
+        return float(total)
+    return None
+
+
+def _sum_optional_costs(*parts: float | None) -> float | None:
+    values = [part for part in parts if part is not None]
+    return sum(values) if values else None
+
+
 def _triage_completed_telemetry(
     *,
     issue: FetchedIssue,
@@ -196,6 +243,7 @@ def _triage_completed_telemetry(
     }
     image_telemetry = _image_context_telemetry(image_extraction)
     zendesk_telemetry = _zendesk_context_telemetry(zendesk_context)
+    intake_fields = _intake_telemetry(issue)
     if recommendation.recommended_issue_type != "Bug":
         flags = compute_mismatch_flags(issue, recommendation)
         story_mismatch = (
@@ -210,6 +258,7 @@ def _triage_completed_telemetry(
             ),
         }
         return _merge_telemetry(
+            intake_fields,
             image_telemetry,
             zendesk_telemetry,
             auto_apply_flags,
@@ -217,11 +266,11 @@ def _triage_completed_telemetry(
         )
     rec_pri = recommendation.recommended_priority
     if rec_pri is None:
-        return _merge_telemetry(image_telemetry, zendesk_telemetry, auto_apply_flags)
+        return _merge_telemetry(intake_fields, image_telemetry, zendesk_telemetry, auto_apply_flags)
     orig_rank = _p0_p4_rank(issue.priority)
     rec_rank = _p0_p4_rank(str(rec_pri))
     if orig_rank is None or rec_rank is None:
-        return _merge_telemetry(image_telemetry, zendesk_telemetry, auto_apply_flags)
+        return _merge_telemetry(intake_fields, image_telemetry, zendesk_telemetry, auto_apply_flags)
     if rec_rank < orig_rank:
         signal = "prioritize"
     elif rec_rank > orig_rank:
@@ -237,6 +286,7 @@ def _triage_completed_telemetry(
         ),
     }
     return _merge_telemetry(
+        intake_fields,
         image_telemetry,
         zendesk_telemetry,
         auto_apply_flags,
@@ -256,6 +306,21 @@ class _TriageInferenceSteps:
     classification: ClassificationStepOutput
     priority: PriorityStepOutput | None
     recommendation: TriageRecommendation
+    completed_event: TriageCompletedAuditEvent
+    inference_cost_usd: float | None = None
+
+
+def _aggregate_run_inference_cost_usd(
+    steps: _TriageInferenceSteps,
+    image_extraction: ImageContextExtractionResult | None,
+    zendesk_context: ZendeskContextEnrichmentResult | None,
+) -> float | None:
+    parts: list[float | None] = [steps.inference_cost_usd]
+    if image_extraction is not None:
+        parts.append(image_extraction.total_vision_cost)
+    if zendesk_context is not None:
+        parts.append(zendesk_context.total_summary_cost)
+    return _sum_optional_costs(*parts)
 
 
 @dataclass(frozen=True, slots=True)
@@ -295,7 +360,7 @@ class TriageActionExecutor(Protocol):
         source: str,
         outcome: TriageRecommendation | TriageFailure,
         run_id: str,
-    ) -> None:
+    ) -> TriageActionAppliedFlags:
         """``issue`` is None when triage failed before fetch or fetch failed."""
 
 
@@ -311,9 +376,9 @@ class NoOpTriageActionExecutor:
         source: str,
         outcome: TriageRecommendation | TriageFailure,
         run_id: str,
-    ) -> None:
-        _ = run_id
-        return None
+    ) -> TriageActionAppliedFlags:
+        _ = (issue, issue_key, project, source, outcome, run_id)
+        return TriageActionAppliedFlags()
 
 
 def _env_truthy(name: str) -> bool:
@@ -368,6 +433,7 @@ class TriageHandler:
         image_context_extractor: ImageContextExtractor | None = None,
         zendesk_fetcher: ZendeskTicketFetcher | None = None,
         zendesk_summarizer: ZendeskCommentSummarizer | None = None,
+        analytics_client: AnalyticsDecisionClient | None = None,
         settings: AppSettings,
     ) -> None:
         self._allowed = frozenset(allowed_projects)
@@ -385,6 +451,7 @@ class TriageHandler:
         )
         self._zendesk_fetcher = zendesk_fetcher
         self._zendesk_summarizer = zendesk_summarizer
+        self._analytics_client = analytics_client or NoOpAnalyticsDecisionClient()
 
     def flush_inference_telemetry(self) -> None:
         """Flush Langfuse buffers for inference traces and Langfuse-backed audit sinks."""
@@ -481,8 +548,9 @@ class TriageHandler:
                     zendesk_context=zendesk_context,
                 )
             action_start = perf_counter()
+            applied = TriageActionAppliedFlags()
             try:
-                self._executor.apply_triage_outcome(
+                applied = self._executor.apply_triage_outcome(
                     issue=issue,
                     issue_key=issue_key,
                     project=project,
@@ -499,6 +567,12 @@ class TriageHandler:
                     source=source,
                     started_at=action_start,
                 )
+            self._emit_analytics_decision(
+                steps=steps,
+                applied=applied,
+                image_extraction=image_extraction,
+                zendesk_context=zendesk_context,
+            )
             return TriageSyncResult(
                 outcome=steps.recommendation,
                 image_extraction=image_extraction,
@@ -853,8 +927,9 @@ class TriageHandler:
                     image_extraction=image_extraction,
                 )
             action_start = perf_counter()
+            applied = TriageActionAppliedFlags()
             try:
-                self._executor.apply_triage_outcome(
+                applied = self._executor.apply_triage_outcome(
                     issue=issue,
                     issue_key=issue.issue_key,
                     project=project,
@@ -871,6 +946,12 @@ class TriageHandler:
                     source=source,
                     started_at=action_start,
                 )
+            self._emit_analytics_decision(
+                steps=steps,
+                applied=applied,
+                image_extraction=image_extraction,
+                zendesk_context=None,
+            )
             return TriageSyncResult(
                 outcome=steps.recommendation,
                 image_extraction=image_extraction,
@@ -1065,30 +1146,31 @@ class TriageHandler:
         )
         if classification.recommended_issue_type == "Story":
             final_rec = classification_story_to_final(classification)
-            self._audit_store.record(
-                TriageCompletedAuditEvent(
-                    event_type="triage_completed",
-                    run_id=run_id,
-                    issue_key=issue.issue_key,
-                    project=project,
-                    source=audit_source,
-                    recommended_issue_type=final_rec.recommended_issue_type,
-                    recommended_priority=final_rec.recommended_priority,
-                    confidence=final_rec.confidence,
-                    reason=final_rec.reason,
-                    telemetry=_triage_completed_telemetry(
-                        issue=issue,
-                        recommendation=final_rec,
-                        settings=self._settings,
-                        image_extraction=image_extraction,
-                        zendesk_context=zendesk_context,
-                    ),
+            completed_event = TriageCompletedAuditEvent(
+                event_type="triage_completed",
+                run_id=run_id,
+                issue_key=issue.issue_key,
+                project=project,
+                source=audit_source,
+                recommended_issue_type=final_rec.recommended_issue_type,
+                recommended_priority=final_rec.recommended_priority,
+                confidence=final_rec.confidence,
+                reason=final_rec.reason,
+                telemetry=_triage_completed_telemetry(
+                    issue=issue,
+                    recommendation=final_rec,
+                    settings=self._settings,
+                    image_extraction=image_extraction,
+                    zendesk_context=zendesk_context,
                 ),
             )
+            self._audit_store.record(completed_event)
             return _TriageInferenceSteps(
                 classification=classification,
                 priority=None,
                 recommendation=final_rec,
+                completed_event=completed_event,
+                inference_cost_usd=_inference_cost_from_details(cls_result.cost_details),
             )
         pri_messages = _priority_messages(
             issue,
@@ -1138,30 +1220,54 @@ class TriageHandler:
             ),
         )
         merged = merge_bug_classification_with_priority(classification, priority)
-        self._audit_store.record(
-            TriageCompletedAuditEvent(
-                event_type="triage_completed",
-                run_id=run_id,
-                issue_key=issue.issue_key,
-                project=project,
-                source=audit_source,
-                recommended_issue_type=merged.recommended_issue_type,
-                recommended_priority=merged.recommended_priority,
-                confidence=merged.confidence,
-                reason=merged.reason,
-                telemetry=_triage_completed_telemetry(
-                    issue=issue,
-                    recommendation=merged,
-                    settings=self._settings,
-                    image_extraction=image_extraction,
-                    zendesk_context=zendesk_context,
-                ),
+        completed_event = TriageCompletedAuditEvent(
+            event_type="triage_completed",
+            run_id=run_id,
+            issue_key=issue.issue_key,
+            project=project,
+            source=audit_source,
+            recommended_issue_type=merged.recommended_issue_type,
+            recommended_priority=merged.recommended_priority,
+            confidence=merged.confidence,
+            reason=merged.reason,
+            telemetry=_triage_completed_telemetry(
+                issue=issue,
+                recommendation=merged,
+                settings=self._settings,
+                image_extraction=image_extraction,
+                zendesk_context=zendesk_context,
             ),
         )
+        self._audit_store.record(completed_event)
         return _TriageInferenceSteps(
             classification=classification,
             priority=priority,
             recommendation=merged,
+            completed_event=completed_event,
+            inference_cost_usd=_sum_optional_costs(
+                _inference_cost_from_details(cls_result.cost_details),
+                _inference_cost_from_details(pri_result.cost_details),
+            ),
+        )
+
+    def _emit_analytics_decision(
+        self,
+        *,
+        steps: _TriageInferenceSteps,
+        applied: TriageActionAppliedFlags,
+        image_extraction: ImageContextExtractionResult | None,
+        zendesk_context: ZendeskContextEnrichmentResult | None,
+    ) -> None:
+        inference_cost = _aggregate_run_inference_cost_usd(
+            steps,
+            image_extraction,
+            zendesk_context,
+        )
+        self._analytics_client.emit_completed_decision(
+            steps.completed_event,
+            applied_type_change=applied.applied_type_change,
+            applied_priority_change=applied.applied_priority_change,
+            inference_cost_usd=inference_cost,
         )
 
     def _log_stage_timing(
@@ -1220,6 +1326,7 @@ def build_default_triage_handler(
         settings,
         inference_tracer=obs.inference_tracer,
     )
+    analytics_client = build_analytics_decision_client(settings)
     cloud_id_configured = settings.jira_cloud_id and str(settings.jira_cloud_id).strip()
     if (
         apply_to_jira
@@ -1246,6 +1353,7 @@ def build_default_triage_handler(
         image_context_extractor=image_extractor,
         zendesk_fetcher=zendesk_fetcher,
         zendesk_summarizer=zendesk_summarizer,
+        analytics_client=analytics_client,
         settings=settings,
     )
 

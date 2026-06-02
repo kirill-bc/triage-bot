@@ -185,8 +185,11 @@ class _RecordingAuditStore:
 
 
 class _NoOpExecutor:
-    def apply_triage_outcome(self, **kwargs: Any) -> None:
+    def apply_triage_outcome(self, **kwargs: Any) -> Any:
+        from triage_service.core.triage_action_applied import TriageActionAppliedFlags
+
         _ = kwargs
+        return TriageActionAppliedFlags()
 
 
 def _app_settings(monkeypatch: pytest.MonkeyPatch) -> Any:

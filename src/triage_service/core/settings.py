@@ -392,6 +392,25 @@ class AppSettings(BaseSettings):
             "mismatches current issue type."
         ),
     )
+    analytics_dashboard_url: str | None = Field(
+        default=None,
+        validation_alias="ANALYTICS_DASHBOARD_URL",
+        description=(
+            "Base URL of the triage analytics dashboard API (e.g. http://host/api/v1). "
+            "When unset, decision-event POST is disabled."
+        ),
+    )
+    analytics_token: str | None = Field(
+        default=None,
+        validation_alias="ANALYTICS_TOKEN",
+        description="Token sent as X-Analytics-Token when posting analytics decisions.",
+    )
+    analytics_http_timeout_seconds: float = Field(
+        default=2.0,
+        gt=0,
+        validation_alias="ANALYTICS_HTTP_TIMEOUT_SECONDS",
+        description="Timeout for fire-and-forget analytics decision POST.",
+    )
 
     log_level: str = Field(default="INFO", description="Standard library log level name.")
     logging_api_key: str | None = Field(

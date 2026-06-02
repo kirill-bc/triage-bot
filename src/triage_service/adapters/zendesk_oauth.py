@@ -48,6 +48,10 @@ class ZendeskOAuthClient:
         self._cached_token = tokens
         return tokens.access_token
 
+    def clear_cached_token(self) -> None:
+        """Drop the in-memory token so the next request remints."""
+        self._cached_token = None
+
     def _mint_tokens(self) -> ZendeskOAuthTokens:
         self._require_oauth_config()
         payload = {

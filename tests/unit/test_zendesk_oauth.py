@@ -225,3 +225,130 @@ def test_fetcher_uses_bearer_auth_when_oauth_enabled(
     assert token_calls == 1
     assert auth_headers
     assert auth_headers[0] == "Bearer oauth-access-token"
+
+
+@pytest.mark.unit
+def test_oauth_client_clear_cached_token_forces_remint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _oauth_env(monkeypatch)
+    settings = AppSettings()
+    token_calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal token_calls
+        token_calls += 1
+        return httpx.Response(
+            200,
+            json={
+                "access_token": f"access-{token_calls}",
+                "expires_in": 3600,
+                "token_type": "bearer",
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        oauth = ZendeskOAuthClient(settings, client=client)
+        first = oauth.get_access_token()
+        oauth.clear_cached_token()
+        second = oauth.get_access_token()
+
+    assert first == "access-1"
+    assert second == "access-2"
+    assert token_calls == 2
+
+
+@pytest.mark.unit
+def test_fetcher_retries_ticket_fetch_after_oauth_401(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _oauth_env(monkeypatch)
+    monkeypatch.setenv("TRIAGE_ZENDESK_CONTEXT_ENABLED", "true")
+    settings = AppSettings()
+    token_calls = 0
+    ticket_calls = 0
+    auth_headers: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal token_calls, ticket_calls
+        if request.url.path == "/oauth/tokens":
+            token_calls += 1
+            return httpx.Response(
+                200,
+                json={
+                    "access_token": f"oauth-access-{token_calls}",
+                    "expires_in": 3600,
+                    "token_type": "bearer",
+                },
+            )
+        if request.url.path == "/api/v2/tickets/42.json":
+            ticket_calls += 1
+            auth_headers.append(request.headers.get("Authorization", ""))
+            if ticket_calls == 1:
+                return httpx.Response(401, text="Unauthorized")
+            return httpx.Response(
+                200,
+                json={
+                    "ticket": {
+                        "id": 42,
+                        "subject": "Subject",
+                        "description": "Body",
+                        "status": "open",
+                        "priority": "normal",
+                    },
+                },
+            )
+        if request.url.path == "/api/v2/tickets/42/comments.json":
+            auth_headers.append(request.headers.get("Authorization", ""))
+            return httpx.Response(200, json={"comments": []})
+        raise AssertionError(f"Unexpected request: {request.url.path}")
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        oauth = ZendeskOAuthClient(settings, client=client)
+        fetcher = ZendeskTicketFetcher(settings, client=client, oauth_client=oauth)
+        tickets = fetcher.fetch_tickets_by_ids(["42"])
+
+    assert len(tickets) == 1
+    assert ticket_calls == 2
+    assert token_calls == 2
+    assert auth_headers[0] == "Bearer oauth-access-1"
+    assert auth_headers[1] == "Bearer oauth-access-2"
+
+
+@pytest.mark.unit
+def test_fetcher_does_not_retry_more_than_once_on_persistent_oauth_401(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _oauth_env(monkeypatch)
+    monkeypatch.setenv("TRIAGE_ZENDESK_CONTEXT_ENABLED", "true")
+    settings = AppSettings()
+    ticket_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal ticket_calls
+        if request.url.path == "/oauth/tokens":
+            return httpx.Response(
+                200,
+                json={
+                    "access_token": "oauth-access",
+                    "expires_in": 3600,
+                    "token_type": "bearer",
+                },
+            )
+        if request.url.path == "/api/v2/tickets/42.json":
+            ticket_calls += 1
+            return httpx.Response(401, text="Unauthorized")
+        raise AssertionError(f"Unexpected request: {request.url.path}")
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        oauth = ZendeskOAuthClient(settings, client=client)
+        fetcher = ZendeskTicketFetcher(settings, client=client, oauth_client=oauth)
+        result = fetcher.fetch_tickets_by_ids_with_failures(["42"])
+
+    assert result.tickets == []
+    assert len(result.failures) == 1
+    assert result.failures[0].failure == "http_401"
+    assert ticket_calls == 2

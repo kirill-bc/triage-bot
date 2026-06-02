@@ -151,34 +151,36 @@ This builds on the comment fetch already landed for summarization (`ZendeskTicke
 - [x] Document Zendesk enrichment flags in `README.md` and `.env.example`; update §10 “no Zendesk intake” limitation to reflect linked-ticket enrichment scope (id/summary/image dedupe implemented).
 - [x] **OAuth auth alternative:** `TRIAGE_ZENDESK_ENABLE_OAUTH=true` switches `ZendeskTicketFetcher` to Bearer tokens via confidential `client_credentials` (`ZendeskOAuthClient`: in-memory mint/cache on demand). Requires `ZENDESK_IDENTIFIER`, `ZENDESK_SECRET`, and `ZENDESK_BASE_URL` or `ZENDESK_SUBDOMAIN`; no redirect URI, callback routes, or token file persistence.
 
-**Remaining — evaluation:**
-- [ ] Benchmark / bulk-triage stratification: accuracy breakdown for issues with vs without linked Zendesk context (and with vs without Zendesk-only images once vision path lands).
+**OAuth access token expiry (Zendesk; long-lived tokens expire from 28 Jul 2026):**
+Zendesk is moving integrations to **client credentials** (no refresh tokens). When a short-lived access token expires, the client must request a new one with the client secret — same model Adam flagged for the triage bot.
 
-Out of scope (do not pull in):
-- Full Zendesk intake / ticket creation from triage.
-- Verbatim Zendesk comment thread replay into `_issue_block` — comments are condensed into a bounded resolution summary, never dumped raw.
-- True multimodal classification — Zendesk images flow through the same text-only vision preprocessor as §7.
+- [x] **Auto remint on expiry:** `ZendeskOAuthClient` (`adapters/zendesk_oauth.py`) POSTs `grant_type=client_credentials` to `/oauth/tokens`, caches `access_token` + `expires_at` in memory, and remints when within 60s of expiry (`_TOKEN_REFRESH_BUFFER_SECONDS`). `ZendeskTicketFetcher._auth_header()` calls `get_access_token()` per request so a token expiring mid-triage is refreshed on the next call. Unit tests: `test_oauth_client_reuses_cached_access_token`, `test_oauth_client_remints_expired_access_token`.
+- [x] **Prod cutover before Jul 2026:** confirm deployment has `TRIAGE_ZENDESK_ENABLE_OAUTH=true` and confidential-client env (`ZENDESK_IDENTIFIER`, `ZENDESK_SECRET`, base URL/subdomain). Default **API token + Basic auth** is unaffected by OAuth access-token expiry but does not satisfy the client-credentials migration if Zendesk retires the old token model for this integration.
+- [x] **Optional hardening:** on Zendesk API `401`, clear cached token and retry once (covers clock skew or early revocation; proactive `expires_in` refresh should suffice for normal runs). `ZendeskOAuthClient.clear_cached_token()`; `ZendeskTicketFetcher._get_with_oauth_401_retry()` on ticket, comments, and image GETs. Unit tests: `test_oauth_client_clear_cached_token_forces_remint`, `test_fetcher_retries_ticket_fetch_after_oauth_401`, `test_fetcher_does_not_retry_more_than_once_on_persistent_oauth_401`.
 
-Done when: linked Zendesk tickets enrich triage without duplicate ticket prose or duplicate screenshot vision calls; comment threads are condensed into recency/resolution-aware summaries so end-of-thread recovery context balances (not reinforces) priority; Zendesk-only images improve classification on benchmark cases where Jira text is sparse; dedupe, fetch, and summarization metrics are visible in audit/Langfuse; all gates pass.
-
-## 9. Integration tests (deferred until post-deploy stabilization)
-- [ ] Add API contract tests for `POST /triage` request/response shape and validation errors.
-- [ ] Add integration tests for Jira webhook adapter invoking synchronous triage pipeline.
-- [ ] Add integration tests for Jira action executor against mocked Jira API.
-- [ ] Add integration tests for policy retrieval adapter using mocked content source.
-- [ ] Add integration tests for mismatch/no-mismatch behavior including label combinations and sequential flow (Story outcome skips priority inference; Bug outcome invokes it).
-- [ ] Add integration coverage for audit emission on success/failure paths (including model-output capture and confidence persistence).
-- Done when: `pytest -m integration` passes deterministically and covers service boundaries + observability surfaces.
-
-## 10. Polish & Docs
+## 9. Polish & Docs
 - [x] Document architecture and module responsibilities after refactor (`api`, `core`, `adapters`, `observability`).
 - [x] Add runbook for local development, env setup, and test execution commands.
 - [x] Add Jira Automation setup recipe: scheduled rule cadence (every 5 min <= JQL window), reference JQL (`project = ... AND issuetype = Bug AND labels not in (triagebot-reviewed) AND created >= -30m AND created <= -5m`), and body template (`issue_key`, `project`, `source: bug_created|priority_changed`).
 - [x] Document `triagebot-reviewed` lifecycle: always applied on success, remove to force re-triage, absent on >30m-old issues indicates manual-QA fallback case.
 - [x] Document observability usage: where to inspect raw model output/confidence, and how to trace a run by `run_id`.
 - [x] Document known MVP limitations and out-of-scope items (auto-apply is opt-in and escalation remains advisory-only, no full Zendesk intake / ticket creation, no full RAG). Linked-ticket enrichment is tracked in **§8**.
-- [ ] Record default model-selection rationale and confidence calibration strategy for next phase tuning.
+- [x] Record default model-selection rationale and confidence calibration strategy for next phase tuning.
 - Done when: a new engineer can run, operate, observe, and troubleshoot the service using repo docs only.
+
+## 10. Triage analytics integration (decision-event emission)
+Upstream work in **this repo** required to feed the separate dashboard service
+defined in `docs/specification.md` (`jira-triage-dashboard`). This repo emits a
+single fire-and-forget decision POST after each completed triage run; the
+dashboard service owns persistence, SQL views, and Grafana. Scope here is emit
+only — no DB, no outcome / revert tracking, and no triage hot-path blocking.
+
+- [x] **Telemetry enrichment (no audit model expansion):** add `intake_issue_type` and `intake_priority` to `TriageCompletedAuditEvent.telemetry` in `src/triage_service/core/triage_handler.py` (Story intake keeps priority null). Keep `TriageCompletedAuditEvent` schema unchanged per `docs/specification.md` assumptions.
+- [x] **Add analytics HTTP client + config:** after recording `triage_completed`, POST a decision payload to `ANALYTICS_DASHBOARD_URL` with `X-Analytics-Token: ANALYTICS_TOKEN`. If URL is unset, skip. Use short timeout and swallow/log all errors (warning level) so triage never fails on analytics transport.
+- [x] **Build payload from existing event + telemetry:** emit the contract fields from `docs/specification.md` (`event_type`, `run_id`, `issue_key`, `project`, `source`, intake/recommended state, `applied_*`, `confidence`, `inference_cost_usd`, `reason`, `occurred_at`) without introducing new persistence concerns in this service.
+- [x] **Tests (TDD first):** unit coverage for URL-unset no-op, payload mapping (including Story null-priority handling), auth header, and failure swallowing; integration coverage for successful POST and timeout/error paths.
+- [x] **Ops wiring + docs:** add `ANALYTICS_DASHBOARD_URL` and `ANALYTICS_TOKEN` to `.env.example` / `README.md` with explicit failure-safe semantics and endpoint expectations (`/api/v1/decisions` on dashboard service).
+- Done when: completed triage runs attempt a non-blocking POST to the dashboard when configured; URL-unset behavior is a no-op; failures are observable in logs but never fail triage; emitted payload matches `docs/specification.md`; and `pytest -m lint`, `mypy .`, and `pytest -m "unit or integration"` pass.
 
 ## 11. Post-MVP
 - [x] **Classification benchmark harness (in-repo):** `scripts/benchmark/classification_benchmark.py` / `scripts/benchmark/benchmark_summary.py`, `scripts/benchmark/run_classification_benchmark.py` (multi-model JSONL + `summary.json`), `scripts/benchmark/summarize_benchmark_rows.py` (offline re-aggregation), unit tests under `tests/unit/test_classification_benchmark.py` and `tests/unit/test_benchmark_summary.py`. Curated rows live under `data/` (combined `issue_benchmark_dataset.csv` plus bucket CSVs). **Jira sampler:** `scripts/benchmark/build_benchmark_dataset.py` (changelog-derived keys; uses `GET /rest/api/3/search/jql` with `nextPageToken` because Cloud removed legacy search). **Composition:** keep the CSV Bug-centric; no requirement to rebalance toward equal Story buckets while Story outcomes stay out of scope—add rows when they help Bug-path / priority signal, and keep human ground truth vs Jira fields explicit where rows encode corrections.
@@ -188,21 +190,20 @@ Done when: linked Zendesk tickets enrich triage without duplicate ticket prose o
 - Done when: at least one baseline model is scored on the current curated set and swapping `TRIAGE_TEXT_MODEL` (or passing alternate model ids to the benchmark runner) reproduces comparable runs with saved result artifacts for A/B comparison (local `benchmark_runs/` is gitignored; operators keep artifacts outside git or attach as CI artifacts).
 - [ ] Inject image context INSIDE description/comment body at the place where they were inserted, not as bulk attachments by the end.
 - [ ] Add advisory step post triage to add to reasoning / additional comment when ticket formatting / description could be improved.
+- [ ] Benchmark / bulk-triage stratification: accuracy breakdown for issues with vs without linked Zendesk context (and with vs without Zendesk-only images once vision path lands).
 
-## 12. Triage analytics integration (decision-event emission)
-Upstream work in **this repo** required to feed the separate `triage-analytics`
-repo (see `docs/triage_analytics_repo_plan.md`). That repo persists decision data
-and renders Grafana dashboards (promoted / demoted / Story-routed counts, hours /
-money saved). This repo's only responsibility is **emitting an authoritative
-decision event per run** that conforms to the analytics decision-event contract
-(§4 of the plan). Scope is decision events only — no outcome / revert tracking.
-Keep the service stateless — emit only; do not add a DB here.
+Out of scope (do not pull in):
+- Full Zendesk intake / ticket creation from triage.
+- Verbatim Zendesk comment thread replay into `_issue_block` — comments are condensed into a bounded resolution summary, never dumped raw.
+- True multimodal classification — Zendesk images flow through the same text-only vision preprocessor as §7.
 
-- [ ] **Extend the decision audit event** in `src/triage_service/observability/audit_events.py`: add `intake_issue_type`, `intake_priority` (null when intake type is Story), `applied_type_change`, `applied_priority_change`, and `occurred_at` to `TriageCompletedAuditEvent`. Forward `inference_cost_usd` when OpenRouter returns it. These are the "before" state and advisory-vs-applied flags the analytics repo cannot derive from Jira alone.
-- [ ] **Populate the new fields** at both `TriageCompletedAuditEvent` construction sites in `src/triage_service/core/triage_handler.py` (Story path and Bug path). Intake type/priority are already in scope on the fetched `issue`; `applied_*` reflect whether the executor mutated Jira (auto-apply flags / read-only).
-- [ ] **Choose and implement the decision-event transport** (analytics-plan §4):
-  - Default (no hot-path change): keep emitting via `StructuredLoggerAuditStore` JSON log lines and let the analytics repo log-ship them — verify the line carries every contract field.
-  - Or add a new `AuditStore` implementation (HTTP push / queue) and wire it into `build_triage_observability` in `src/triage_service/observability/observability_wiring.py` alongside the structured-log and Langfuse stores. Must be failure-safe (never block or fail triage on emit errors).
-- [ ] **Update audit-schema tests**: extend the `TriageCompletedAuditEvent` validation tests and the failure-category alignment test for the new fields; add a test asserting `intake_priority` is null on the Story path and present on the Bug path.
-- [ ] **Document the contract** in `README.md` (decision-event fields emitted per run and where to find them) and keep it in sync with `docs/triage_analytics_repo_plan.md` §4.
-- Done when: every completed triage run emits a decision event containing intake state, recommendation, applied flags, confidence, and timestamp via the chosen transport; emission is failure-safe; `pytest -m lint`, `mypy .`, and `pytest -m "unit or integration"` pass; and the emitted shape matches the analytics decision-event contract.
+Done when: linked Zendesk tickets enrich triage without duplicate ticket prose or duplicate screenshot vision calls; comment threads are condensed into recency/resolution-aware summaries so end-of-thread recovery context balances (not reinforces) priority; Zendesk-only images improve classification on benchmark cases where Jira text is sparse; dedupe, fetch, and summarization metrics are visible in audit/Langfuse; all gates pass.
+
+## 12. Integration tests (deferred until post-deploy stabilization)
+- [ ] Add API contract tests for `POST /triage` request/response shape and validation errors.
+- [ ] Add integration tests for Jira webhook adapter invoking synchronous triage pipeline.
+- [ ] Add integration tests for Jira action executor against mocked Jira API.
+- [ ] Add integration tests for policy retrieval adapter using mocked content source.
+- [ ] Add integration tests for mismatch/no-mismatch behavior including label combinations and sequential flow (Story outcome skips priority inference; Bug outcome invokes it).
+- [ ] Add integration coverage for audit emission on success/failure paths (including model-output capture and confidence persistence).
+- Done when: `pytest -m integration` passes deterministically and covers service boundaries + observability surfaces.

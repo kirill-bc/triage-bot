@@ -146,6 +146,9 @@ def test_load_settings_optional_fields_default_when_omitted(
     assert settings.triage_comments_char_budget == 6000
     assert settings.triage_auto_apply_deescalation is False
     assert settings.triage_auto_apply_bug_to_story is False
+    assert settings.analytics_dashboard_url is None
+    assert settings.analytics_token is None
+    assert settings.analytics_http_timeout_seconds == 2.0
     assert settings.triage_langfuse_truncate_payloads is False
     assert settings.triage_langfuse_max_string_chars == 8192
 
