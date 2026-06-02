@@ -758,6 +758,7 @@ def test_fetch_image_bytes_raises_when_credentials_missing(
     monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
     monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
     monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
+    monkeypatch.setenv("ZENDESK_BASE_URL", "https://acme.zendesk.com")
     settings = AppSettings()
     fetcher = ZendeskTicketFetcher(settings)
     image_ref = ZendeskImageRef(
@@ -776,6 +777,7 @@ def test_fetch_image_bytes_raises_when_credentials_missing(
         ("https://acme.zendesk.com/attachments/token/abc/", True),
         ("https://cdn.zendesk.com/images/screenshot.png", True),
         ("https://static.zdassets.com/hc/assets/photo.png", True),
+        ("https://other-tenant.zendesk.com/attachments/token/steal/", False),
         ("https://evil.example.com/steal-token.png", False),
         ("https://attacker.io/fake-zendesk.png", False),
     ],
@@ -791,6 +793,43 @@ def test_is_trusted_zendesk_image_url_recognizes_configured_and_cdn_hosts(
         )
         is expected
     )
+
+
+@pytest.mark.unit
+def test_is_trusted_zendesk_image_url_rejects_tenant_hosts_without_config() -> None:
+    assert not is_trusted_zendesk_image_url(
+        "https://acme.zendesk.com/attachments/token/abc/",
+        zendesk_base_url=None,
+    )
+    assert not is_trusted_zendesk_image_url(
+        "https://cdn.zendesk.com/images/screenshot.png",
+        zendesk_base_url=None,
+    )
+
+
+@pytest.mark.unit
+def test_fetch_image_bytes_omits_auth_for_other_zendesk_tenant_url(
+    settings: AppSettings,
+) -> None:
+    other_tenant_url = "https://other-tenant.zendesk.com/attachments/token/steal.png"
+    image_ref = ZendeskImageRef(
+        url=other_tenant_url,
+        filename="steal.png",
+        source="inline_body",
+    )
+    png_bytes = b"\x89PNG\r\n\x1a\n"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == other_tenant_url
+        assert "Authorization" not in request.headers
+        return httpx.Response(200, content=png_bytes)
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        fetcher = ZendeskTicketFetcher(settings, client=client)
+        data = fetcher.fetch_image_bytes(image_ref, run_id="run-zd-other-tenant")
+
+    assert data == png_bytes
 
 
 @pytest.mark.unit

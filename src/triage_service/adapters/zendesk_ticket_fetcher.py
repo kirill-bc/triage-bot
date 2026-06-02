@@ -40,26 +40,34 @@ _ZENDESK_HTML_IMAGE_RE = re.compile(
 _IMAGE_MIME_PREFIX = "image/"
 _FILENAME_IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
 _MAX_TICKET_DESCRIPTION_CHARS = 2000
-_TRUSTED_ZENDESK_IMAGE_HOST_SUFFIXES = (
-    ".zendesk.com",
-    ".zdassets.com",
+# Shared Zendesk CDNs (exact host match only — never *.zendesk.com suffixes).
+_ZENDESK_IMAGE_CDN_HOSTS = frozenset(
+    {
+        "cdn.zendesk.com",
+        "static.zdassets.com",
+    },
 )
 
 
 def is_trusted_zendesk_image_url(url: str, *, zendesk_base_url: str | None) -> bool:
-    """Return True when a discovered image URL belongs to Zendesk-controlled hosts."""
+    """Return True when auth may be sent for this Zendesk image URL.
+
+    Only the configured tenant host and explicit Zendesk CDN hosts are trusted.
+    Other ``*.zendesk.com`` tenants must not receive credentials from inline URLs.
+    """
     parsed = urlparse(url.strip())
     if parsed.scheme not in {"http", "https"}:
         return False
     host = (parsed.hostname or "").lower()
     if not host:
         return False
-    configured_base = str(zendesk_base_url or "").strip()
-    if configured_base:
-        configured_host = (urlparse(configured_base).hostname or "").lower()
-        if configured_host and host == configured_host:
-            return True
-    return any(host.endswith(suffix) for suffix in _TRUSTED_ZENDESK_IMAGE_HOST_SUFFIXES)
+    configured_base = str(zendesk_base_url or "").strip().rstrip("/")
+    if not configured_base:
+        return False
+    configured_host = (urlparse(configured_base).hostname or "").lower()
+    if configured_host and host == configured_host:
+        return True
+    return host in _ZENDESK_IMAGE_CDN_HOSTS
 
 
 def extract_zendesk_ticket_ids(texts: Iterable[str | None]) -> list[str]:
@@ -248,8 +256,7 @@ class ZendeskTicketFetcher:
         if self._settings.triage_zendesk_enable_oauth:
             return bool(
                 self._settings.zendesk_oauth_configured
-                and self._oauth_client is not None
-                and self._oauth_client.has_tokens(),
+                and self._oauth_client is not None,
             )
         return bool(
             self._settings.resolve_zendesk_base_url()

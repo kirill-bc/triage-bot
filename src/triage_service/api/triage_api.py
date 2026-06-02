@@ -27,7 +27,6 @@ from triage_service.core.settings import load_settings
 from triage_service.core.triage_fallback import TriageFailure
 from triage_service.core.triage_handler import TriageRunner, build_default_triage_handler
 from triage_service.core.triage_recommendation_parser import TriageRecommendation
-from triage_service.api import zendesk_oauth_routes
 from triage_service.observability.log_payload_guard import preview_bytes_for_log
 from triage_service.observability.observability_wiring import observability_status_summary
 from triage_service.observability.runtime_logging import (
@@ -194,7 +193,6 @@ def create_app(*, triage_handler_factory: Callable[[], TriageRunner] | None = No
             )
 
     app = FastAPI(title="Jira Triage", version="0.1.0", lifespan=lifespan)
-    app.include_router(zendesk_oauth_routes.router)
 
     @app.get("/health", response_model=None)
     def health() -> HealthResponse | JSONResponse:

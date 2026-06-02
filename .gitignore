@@ -1,5 +1,4 @@
 .env
-.zendesk_oauth_tokens.json
 .venv/
 venv/
 __pycache__/

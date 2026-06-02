@@ -1,5 +1,10 @@
 # Project memory
 
+## 2026-06-02 (close — §8 Zendesk OAuth: client_credentials only)
+
+- **Phase close (`/close-phase`):** From `.venv`, `pytest -m lint` (5 passed), `mypy .` (108 files), `pytest -m "unit or integration"` (**545 passed**, **1 skipped** `OPENROUTER_LIVE_SMOKE`, **6 deselected**). **§8 OAuth simplification:** replaced authorization-code flow (browser `/zendesk/oauth/*` routes, JSON token file, refresh) with confidential **`client_credentials`** and in-memory token cache in `adapters/zendesk_oauth.py` (`ZendeskOAuthClient.get_access_token`). Removed `api/zendesk_oauth_routes.py`; dropped settings `ZENDESK_REDIRECT_URI`, `TRIAGE_PUBLIC_BASE_URL` (OAuth-only), `ZENDESK_OAUTH_TOKEN_FILE`; removed `.zendesk_oauth_tokens.json` from `.gitignore`. `ZendeskTicketFetcher` still uses Bearer when `TRIAGE_ZENDESK_ENABLE_OAUTH=true` and `zendesk_oauth_configured`; `fetch_jira_issue.py` error text points at identifier/secret/base URL. Tests rewritten in `test_zendesk_oauth.py` (mint, cache, expiry refresh, config guards); fetcher OAuth wiring tests in `test_zendesk_ticket_fetcher.py`. Docs: `README.md`, `.env.example`, `AGENTS.md`, `TODO.md` §8 OAuth item.
+- **§8 still open:** benchmark / bulk-triage stratification (evaluation). **Next backlog:** §9 integration tests (deferred), §10 model-selection rationale doc, §12 triage-analytics decision events.
+
 ## 2026-06-02 (close — §8 Zendesk hardening: ADF parsing, image-URL trust, token perms)
 
 - **Phase close (`/close-phase`):** From `.venv`, `pytest -m lint` (5 passed), `mypy .` (109 files), `pytest -m "unit or integration"` (**547 passed**, **1 skipped** `OPENROUTER_LIVE_SMOKE`, **6 deselected**). Security/correctness hardening pass on Zendesk enrichment (no new TODO features; §8 evaluation item still open):

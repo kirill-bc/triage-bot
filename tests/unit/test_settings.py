@@ -99,10 +99,7 @@ def _clear_zendesk_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "ZENDESK_SUBDOMAIN",
         "ZENDESK_IDENTIFIER",
         "ZENDESK_SECRET",
-        "ZENDESK_REDIRECT_URI",
-        "TRIAGE_PUBLIC_BASE_URL",
         "ZENDESK_OAUTH_SCOPE",
-        "ZENDESK_OAUTH_TOKEN_FILE",
     ):
         monkeypatch.delenv(name, raising=False)
 

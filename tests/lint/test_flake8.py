@@ -34,7 +34,6 @@ def test_flake8_passes_on_src_and_tests() -> None:
             str(root / "src" / "triage_service" / "core" / "zendesk_summary_prompt_composer.py"),
             str(root / "src" / "triage_service" / "core" / "zendesk_jira_text_dedupe.py"),
             str(root / "src" / "triage_service" / "api" / "triage_api.py"),
-            str(root / "src" / "triage_service" / "api" / "zendesk_oauth_routes.py"),
             str(root / "src" / "triage_service" / "core" / "triage_fallback.py"),
             str(root / "src" / "triage_service" / "core" / "triage_handler.py"),
             str(root / "src" / "triage_service" / "core" / "triage_mismatch.py"),
