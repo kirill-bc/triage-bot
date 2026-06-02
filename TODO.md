@@ -133,3 +133,21 @@ Done when: issues with sparse text and load-bearing screenshots produce measurab
 - [x] Add link to relevant confluence documents in bug vs comment
 - [ ] **Langfuse root trace cost in trace list:** OpenRouter token usage and cost fields (when returned) are forwarded to nested `inference_*` Langfuse generations; nested views and cost dashboards can reflect that. The top-level trace row / trace menu may still show `$0.00` for `triage_issue_pipeline`. Revisit later (SDK trace vs span model, trace-level aggregates vs UI, or Langfuse product behavior). Good enough for MVP observability.
 - Done when: at least one baseline model is scored on the current curated set and swapping `TRIAGE_TEXT_MODEL` (or passing alternate model ids to the benchmark runner) reproduces comparable runs with saved result artifacts for A/B comparison (local `benchmark_runs/` is gitignored; operators keep artifacts outside git or attach as CI artifacts).
+
+## 11. Triage analytics integration (decision-event emission)
+Upstream work in **this repo** required to feed the separate `triage-analytics`
+repo (see `docs/triage_analytics_repo_plan.md`). That repo persists decision data
+and renders Grafana dashboards (promoted / demoted / Story-routed counts, hours /
+money saved). This repo's only responsibility is **emitting an authoritative
+decision event per run** that conforms to the analytics decision-event contract
+(§4 of the plan). Scope is decision events only — no outcome / revert tracking.
+Keep the service stateless — emit only; do not add a DB here.
+
+- [ ] **Extend the decision audit event** in `src/triage_service/observability/audit_events.py`: add `intake_issue_type`, `intake_priority` (null when intake type is Story), `applied_type_change`, `applied_priority_change`, and `occurred_at` to `TriageCompletedAuditEvent`. Forward `inference_cost_usd` when OpenRouter returns it. These are the "before" state and advisory-vs-applied flags the analytics repo cannot derive from Jira alone.
+- [ ] **Populate the new fields** at both `TriageCompletedAuditEvent` construction sites in `src/triage_service/core/triage_handler.py` (Story path and Bug path). Intake type/priority are already in scope on the fetched `issue`; `applied_*` reflect whether the executor mutated Jira (auto-apply flags / read-only).
+- [ ] **Choose and implement the decision-event transport** (analytics-plan §4):
+  - Default (no hot-path change): keep emitting via `StructuredLoggerAuditStore` JSON log lines and let the analytics repo log-ship them — verify the line carries every contract field.
+  - Or add a new `AuditStore` implementation (HTTP push / queue) and wire it into `build_triage_observability` in `src/triage_service/observability/observability_wiring.py` alongside the structured-log and Langfuse stores. Must be failure-safe (never block or fail triage on emit errors).
+- [ ] **Update audit-schema tests**: extend the `TriageCompletedAuditEvent` validation tests and the failure-category alignment test for the new fields; add a test asserting `intake_priority` is null on the Story path and present on the Bug path.
+- [ ] **Document the contract** in `README.md` (decision-event fields emitted per run and where to find them) and keep it in sync with `docs/triage_analytics_repo_plan.md` §4.
+- Done when: every completed triage run emits a decision event containing intake state, recommendation, applied flags, confidence, and timestamp via the chosen transport; emission is failure-safe; `pytest -m lint`, `mypy .`, and `pytest -m "unit or integration"` pass; and the emitted shape matches the analytics decision-event contract.
