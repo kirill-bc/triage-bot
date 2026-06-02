@@ -97,6 +97,17 @@ def test_token_store_persists_and_loads_tokens(tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
+def test_token_store_save_restricts_file_permissions_to_owner_only(tmp_path: Path) -> None:
+    store = ZendeskOAuthTokenStore(tmp_path / "tokens.json")
+    store.save(
+        access_token="access-1",
+        refresh_token="refresh-1",
+        expires_at=time.time() + 3600.0,
+    )
+    assert (store.path.stat().st_mode & 0o777) == 0o600
+
+
+@pytest.mark.unit
 def test_oauth_client_exchanges_authorization_code(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

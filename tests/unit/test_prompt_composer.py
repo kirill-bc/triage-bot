@@ -204,7 +204,7 @@ def test_issue_block_keeps_jira_images_in_attached_section_excludes_zendesk(
             summary="Jira screenshot summary.",
         ),
         ImageContext(
-            attachment_id="zendesk:47322:https://z/2",
+            attachment_id="zendesk:47322:zendesk-only.png",
             filename="zendesk-only.png",
             summary="Zendesk modal summary.",
         ),
@@ -243,7 +243,7 @@ def test_issue_block_renders_zendesk_image_source_hint_when_present(
     )
     contexts = [
         ImageContext(
-            attachment_id="zendesk:47322:https://z/2",
+            attachment_id="zendesk:47322:zendesk-only.png",
             filename="zendesk-comment.png",
             summary="Zendesk modal summary.",
             source_hint="Zendesk comment attachment",
@@ -284,7 +284,7 @@ def test_issue_block_routes_zendesk_images_to_matching_ticket_only(
     )
     contexts = [
         ImageContext(
-            attachment_id="zendesk:2:https://z/two.png",
+            attachment_id="zendesk:2:two.png",
             filename="two.png",
             summary="Screenshot from ticket two.",
         ),

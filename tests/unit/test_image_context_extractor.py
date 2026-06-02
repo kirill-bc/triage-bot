@@ -13,6 +13,7 @@ from triage_service.adapters.image_context_extractor import (
     OpenRouterVisionImageContextExtractor,
     _select_image_attachments,
     _select_zendesk_images_for_vision,
+    _zendesk_image_attachment_id,
 )
 from triage_service.adapters.zendesk_ticket_fetcher import ZendeskTicketFetchError
 from triage_service.adapters.jira_issue_fetcher import (
@@ -28,6 +29,30 @@ from triage_service.adapters.openrouter_inference_client import (
 )
 from triage_service.core.settings import AppSettings
 from triage_service.observability.langfuse_inference_tracing import LangfuseInferenceTracer
+
+
+@pytest.mark.unit
+def test_zendesk_image_attachment_id_avoids_sensitive_url_tokens() -> None:
+    signed_url = (
+        "https://company.zendesk.com/attachments/token/secret"
+        "?X-Amz-Signature=abc123&X-Amz-Credential=leak"
+    )
+    ref = ZendeskImageRef(url=signed_url, filename="screenshot.png")
+    assert _zendesk_image_attachment_id("47322", ref) == "zendesk:47322:screenshot.png"
+    assert signed_url not in _zendesk_image_attachment_id("47322", ref)
+
+
+@pytest.mark.unit
+def test_zendesk_image_attachment_id_prefers_attachment_id_then_filename() -> None:
+    ref = ZendeskImageRef(
+        url="https://z/1",
+        filename="fallback.png",
+        attachment_id="att-99",
+    )
+    assert _zendesk_image_attachment_id("88", ref) == "zendesk:88:att-99"
+
+    inline_ref = ZendeskImageRef(url="https://z/inline")
+    assert _zendesk_image_attachment_id("1", inline_ref) == "zendesk:1:inline_image"
 
 
 @pytest.fixture
@@ -245,7 +270,7 @@ def test_vision_extractor_processes_zendesk_only_image_in_remaining_budget_slots
     assert result.attachments_extracted == 2
     assert [ctx.attachment_id for ctx in result.contexts] == [
         "jira-inline",
-        "zendesk:47322:https://z/2",
+        "zendesk:47322:zendesk-only.png",
     ]
     assert result.contexts[0].source_hint == "Jira issue description attachment"
     assert result.contexts[1].source_hint == "Zendesk ticket description inline image"

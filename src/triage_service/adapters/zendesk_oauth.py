@@ -21,6 +21,7 @@ LOGGER = logging.getLogger(__name__)
 
 _OAUTH_CALLBACK_PATH = "/zendesk/oauth/callback"
 _TOKEN_REFRESH_BUFFER_SECONDS = 60.0
+_TOKEN_FILE_MODE = 0o600
 
 
 @dataclass(frozen=True)
@@ -86,7 +87,9 @@ class ZendeskOAuthTokenStore:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         temp_path = self._path.with_suffix(f"{self._path.suffix}.tmp")
         temp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        temp_path.chmod(_TOKEN_FILE_MODE)
         temp_path.replace(self._path)
+        self._path.chmod(_TOKEN_FILE_MODE)
 
     def clear(self) -> None:
         if self._path.is_file():

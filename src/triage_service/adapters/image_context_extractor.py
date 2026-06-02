@@ -76,7 +76,7 @@ class ImageContextExtractionResult(BaseModel):
 
 
 def _zendesk_image_attachment_id(ticket_id: str, image_ref: ZendeskImageRef) -> str:
-    key = image_ref.attachment_id or image_ref.url
+    key = (image_ref.attachment_id or image_ref.filename or "inline_image").strip()
     return f"zendesk:{ticket_id}:{key}"
 
 

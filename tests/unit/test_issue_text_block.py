@@ -18,7 +18,7 @@ from triage_service.core.issue_text_block import format_issue_text_block, is_zen
 def test_is_zendesk_image_context_detects_synthetic_zendesk_attachment_ids() -> None:
     assert is_zendesk_image_context(
         ImageContext(
-            attachment_id="zendesk:47322:https://z/2",
+            attachment_id="zendesk:47322:zendesk-only.png",
             filename="zendesk-only.png",
         ),
     )
@@ -454,7 +454,7 @@ def test_format_issue_text_block_renders_zendesk_image_within_resolution_signals
     )
     contexts = [
         ImageContext(
-            attachment_id="zendesk:47322:https://z/only.png",
+            attachment_id="zendesk:47322:zendesk-only.png",
             filename="zendesk-only.png",
             transcript="404 Not Found",
             summary="White page with 404 heading.",
@@ -522,7 +522,7 @@ def test_format_issue_text_block_renders_zendesk_image_soft_failure_within_ticke
     )
     contexts = [
         ImageContext(
-            attachment_id="zendesk:47322:https://z/huge.png",
+            attachment_id="zendesk:47322:huge.png",
             filename="huge.png",
             extraction_failure="exceeds size limit",
         ),
@@ -570,7 +570,7 @@ def test_format_issue_text_block_keeps_zendesk_images_when_resolution_summary_om
     )
     contexts = [
         ImageContext(
-            attachment_id="zendesk:11:https://z/unique.png",
+            attachment_id="zendesk:11:ticket-11-only.png",
             filename="ticket-11-only.png",
             summary="Unique screenshot for ticket 11.",
         ),

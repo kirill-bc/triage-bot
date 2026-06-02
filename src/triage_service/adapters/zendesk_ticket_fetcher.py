@@ -40,6 +40,26 @@ _ZENDESK_HTML_IMAGE_RE = re.compile(
 _IMAGE_MIME_PREFIX = "image/"
 _FILENAME_IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
 _MAX_TICKET_DESCRIPTION_CHARS = 2000
+_TRUSTED_ZENDESK_IMAGE_HOST_SUFFIXES = (
+    ".zendesk.com",
+    ".zdassets.com",
+)
+
+
+def is_trusted_zendesk_image_url(url: str, *, zendesk_base_url: str | None) -> bool:
+    """Return True when a discovered image URL belongs to Zendesk-controlled hosts."""
+    parsed = urlparse(url.strip())
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return False
+    configured_base = str(zendesk_base_url or "").strip()
+    if configured_base:
+        configured_host = (urlparse(configured_base).hostname or "").lower()
+        if configured_host and host == configured_host:
+            return True
+    return any(host.endswith(suffix) for suffix in _TRUSTED_ZENDESK_IMAGE_HOST_SUFFIXES)
 
 
 def extract_zendesk_ticket_ids(texts: Iterable[str | None]) -> list[str]:
@@ -330,10 +350,7 @@ class ZendeskTicketFetcher:
         url = image_ref.url.strip()
         if not url:
             raise ZendeskTicketFetchError("Zendesk image URL is required for content fetch.")
-        headers = {
-            "Authorization": self._auth_header(),
-            "Accept": "*/*",
-        }
+        headers = self._image_fetch_headers(url)
         if self._client is not None:
             response = self._client.get(url, headers=headers, follow_redirects=True)
             return self._image_bytes_from_response(response)
@@ -341,6 +358,15 @@ class ZendeskTicketFetcher:
         with httpx.Client(timeout=timeout, follow_redirects=True) as client:
             response = client.get(url, headers=headers)
             return self._image_bytes_from_response(response)
+
+    def _image_fetch_headers(self, url: str) -> dict[str, str]:
+        headers: dict[str, str] = {"Accept": "*/*"}
+        if is_trusted_zendesk_image_url(
+            url,
+            zendesk_base_url=self._settings.resolve_zendesk_base_url(),
+        ):
+            headers["Authorization"] = self._auth_header()
+        return headers
 
     def _image_bytes_from_response(self, response: httpx.Response) -> bytes:
         if response.status_code >= 400:
@@ -377,7 +403,7 @@ class ZendeskTicketFetcher:
             return []
         try:
             response = client.get(
-                self._comments_url(ticket_id),
+                self._comments_url(ticket_id, per_page=max_comments),
                 headers={
                     "Authorization": self._auth_header(),
                     "Accept": "application/json",
@@ -497,9 +523,12 @@ class ZendeskTicketFetcher:
     def _ticket_url(self, ticket_id: str) -> str:
         return f"{self._base_url()}/api/v2/tickets/{ticket_id}.json"
 
-    def _comments_url(self, ticket_id: str) -> str:
+    def _comments_url(self, ticket_id: str, *, per_page: int) -> str:
         base = f"{self._base_url()}/api/v2/tickets/{ticket_id}/comments.json"
-        return f"{base}?include_inline_images=true"
+        return (
+            f"{base}?include_inline_images=true"
+            f"&sort_order=desc&per_page={per_page}"
+        )
 
     def _auth_header(self) -> str:
         if self._settings.triage_zendesk_enable_oauth:

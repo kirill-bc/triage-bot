@@ -15,6 +15,7 @@ from triage_service.adapters.zendesk_ticket_fetcher import (
     ZendeskTicketFetcher,
     extract_zendesk_inline_image_urls,
     extract_zendesk_ticket_ids,
+    is_trusted_zendesk_image_url,
 )
 from triage_service.core.settings import AppSettings
 
@@ -40,6 +41,60 @@ def test_parse_zendesk_ticket_ids_from_field_value_multiline_and_urls() -> None:
         "5003",
         "5004",
     ]
+
+
+@pytest.mark.unit
+def test_parse_zendesk_ticket_ids_from_adf_multiparagraph_field() -> None:
+    """Regression: ADF blocks must not concatenate into one numeric token (123+456 -> 123456)."""
+    raw = {
+        "type": "doc",
+        "version": 1,
+        "content": [
+            {
+                "type": "paragraph",
+                "content": [{"type": "text", "text": "123"}],
+            },
+            {
+                "type": "paragraph",
+                "content": [{"type": "text", "text": "456"}],
+            },
+        ],
+    }
+    assert parse_zendesk_ticket_ids_from_field_value(raw) == ["123", "456"]
+
+
+@pytest.mark.unit
+def test_parse_zendesk_ticket_ids_from_adf_bullet_list_field() -> None:
+    raw = {
+        "type": "doc",
+        "version": 1,
+        "content": [
+            {
+                "type": "bulletList",
+                "content": [
+                    {
+                        "type": "listItem",
+                        "content": [
+                            {
+                                "type": "paragraph",
+                                "content": [{"type": "text", "text": "789"}],
+                            },
+                        ],
+                    },
+                    {
+                        "type": "listItem",
+                        "content": [
+                            {
+                                "type": "paragraph",
+                                "content": [{"type": "text", "text": "101112"}],
+                            },
+                        ],
+                    },
+                ],
+            },
+        ],
+    }
+    assert parse_zendesk_ticket_ids_from_field_value(raw) == ["789", "101112"]
 
 
 @pytest.mark.unit
@@ -430,8 +485,72 @@ def test_extract_zendesk_inline_image_urls_from_markdown_and_html() -> None:
 
 
 @pytest.mark.unit
-def test_fetch_ticket_comments_requests_include_inline_images(settings: AppSettings) -> None:
-    requested_query: list[str] = []
+def test_fetch_ticket_comments_requests_newest_first_page_from_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: oldest-first default page must not hide newest comments on long tickets."""
+    monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
+    monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
+    monkeypatch.setenv("TRIAGE_ZENDESK_CONTEXT_ENABLED", "true")
+    monkeypatch.setenv("ZENDESK_BASE_URL", "https://acme.zendesk.com")
+    monkeypatch.setenv("ZENDESK_USER_EMAIL", "agent@example.com")
+    monkeypatch.setenv("ZENDESK_API_TOKEN", "zd-token")
+    monkeypatch.setenv("TRIAGE_ZENDESK_MAX_COMMENTS_PER_TICKET", "3")
+    limited = AppSettings()
+
+    all_comments = [
+        {
+            "id": index,
+            "body": f"comment-{index}",
+            "public": True,
+            "created_at": f"2026-01-{index:02d}T10:00:00Z",
+        }
+        for index in range(1, 11)
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v2/tickets/444.json":
+            return httpx.Response(
+                200,
+                json={
+                    "ticket": {
+                        "id": 444,
+                        "subject": "Long thread",
+                        "description": "Desc",
+                        "status": "open",
+                        "priority": "normal",
+                    },
+                },
+            )
+        if request.url.path == "/api/v2/tickets/444/comments.json":
+            sort_order = request.url.params.get("sort_order")
+            per_page = int(request.url.params.get("per_page", "100"))
+            ordered = sorted(
+                all_comments,
+                key=lambda item: str(item["created_at"]),
+                reverse=sort_order == "desc",
+            )
+            return httpx.Response(200, json={"comments": ordered[:per_page]})
+        raise AssertionError(f"Unexpected Zendesk request: {request.url.path}")
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        fetcher = ZendeskTicketFetcher(limited, client=client)
+        tickets = fetcher.fetch_tickets_by_ids(["444"])
+
+    assert [c.body for c in tickets[0].comments] == [
+        "comment-10",
+        "comment-9",
+        "comment-8",
+    ]
+
+
+@pytest.mark.unit
+def test_fetch_ticket_comments_requests_include_inline_images_and_newest_first(
+    settings: AppSettings,
+) -> None:
+    captured_params: list[dict[str, str | None]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/v2/tickets/555.json":
@@ -448,7 +567,13 @@ def test_fetch_ticket_comments_requests_include_inline_images(settings: AppSetti
                 },
             )
         if request.url.path == "/api/v2/tickets/555/comments.json":
-            requested_query.append(request.url.params.get("include_inline_images"))
+            captured_params.append(
+                {
+                    "include_inline_images": request.url.params.get("include_inline_images"),
+                    "sort_order": request.url.params.get("sort_order"),
+                    "per_page": request.url.params.get("per_page"),
+                },
+            )
             return httpx.Response(200, json={"comments": []})
         raise AssertionError(f"Unexpected Zendesk request: {request.url.path}")
 
@@ -457,7 +582,13 @@ def test_fetch_ticket_comments_requests_include_inline_images(settings: AppSetti
         fetcher = ZendeskTicketFetcher(settings, client=client)
         fetcher.fetch_tickets_by_ids(["555"])
 
-    assert requested_query == ["true"]
+    assert captured_params == [
+        {
+            "include_inline_images": "true",
+            "sort_order": "desc",
+            "per_page": str(settings.triage_zendesk_max_comments_per_ticket),
+        },
+    ]
 
 
 @pytest.mark.unit
@@ -636,3 +767,79 @@ def test_fetch_image_bytes_raises_when_credentials_missing(
     )
     with pytest.raises(ZendeskTicketFetchError, match="credentials required"):
         fetcher.fetch_image_bytes(image_ref, run_id="run-zd-no-creds")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://acme.zendesk.com/attachments/token/abc/", True),
+        ("https://cdn.zendesk.com/images/screenshot.png", True),
+        ("https://static.zdassets.com/hc/assets/photo.png", True),
+        ("https://evil.example.com/steal-token.png", False),
+        ("https://attacker.io/fake-zendesk.png", False),
+    ],
+)
+def test_is_trusted_zendesk_image_url_recognizes_configured_and_cdn_hosts(
+    url: str,
+    expected: bool,
+) -> None:
+    assert (
+        is_trusted_zendesk_image_url(
+            url,
+            zendesk_base_url="https://acme.zendesk.com",
+        )
+        is expected
+    )
+
+
+@pytest.mark.unit
+def test_fetch_image_bytes_omits_auth_for_external_image_url(settings: AppSettings) -> None:
+    external_url = "https://evil.example.com/inline-screenshot.png"
+    image_ref = ZendeskImageRef(
+        url=external_url,
+        filename="inline-screenshot.png",
+        source="inline_body",
+    )
+    png_bytes = b"\x89PNG\r\n\x1a\npublic-image"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == external_url
+        assert "Authorization" not in request.headers
+        assert request.headers.get("Accept") == "*/*"
+        return httpx.Response(200, content=png_bytes)
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        fetcher = ZendeskTicketFetcher(settings, client=client)
+        data = fetcher.fetch_image_bytes(image_ref, run_id="run-zd-external")
+
+    assert data == png_bytes
+
+
+@pytest.mark.unit
+def test_fetch_image_bytes_external_url_does_not_require_zendesk_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
+    monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
+    settings = AppSettings()
+    fetcher = ZendeskTicketFetcher(settings)
+    image_ref = ZendeskImageRef(
+        url="https://public.example.com/screenshot.png",
+        filename="screenshot.png",
+        source="inline_body",
+    )
+    png_bytes = b"\x89PNG\r\n\x1a\npublic"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "Authorization" not in request.headers
+        return httpx.Response(200, content=png_bytes)
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        fetcher = ZendeskTicketFetcher(settings, client=client)
+        data = fetcher.fetch_image_bytes(image_ref, run_id="run-zd-external-no-creds")
+
+    assert data == png_bytes

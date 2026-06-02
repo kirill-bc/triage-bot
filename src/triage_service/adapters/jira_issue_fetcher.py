@@ -263,20 +263,47 @@ def collect_attachment_ids_from_rendered_description(rendered_description: Any) 
     return found
 
 
+_ADF_BLOCK_CONTAINER_TYPES = frozenset(
+    {
+        "doc",
+        "bulletList",
+        "orderedList",
+        "listItem",
+        "blockquote",
+        "table",
+        "tableRow",
+        "tableCell",
+        "tableHeader",
+        "panel",
+        "expand",
+        "nestedExpand",
+    },
+)
+
+
 def _extract_text_from_adf(node: Any) -> str:
     if node is None:
         return ""
     if isinstance(node, str):
         return node
     if isinstance(node, dict):
+        node_type = node.get("type")
+        if node_type == "hardBreak":
+            return "\n"
         if "text" in node:
             return str(node["text"])
-        parts: list[str] = []
-        for child in node.get("content") or []:
-            parts.append(_extract_text_from_adf(child))
+        children = node.get("content") or []
+        if not children:
+            return ""
+        parts = [_extract_text_from_adf(child) for child in children]
+        separator = "\n" if node_type in _ADF_BLOCK_CONTAINER_TYPES else ""
+        if separator:
+            return separator.join(part for part in parts if part)
         return "".join(parts)
     if isinstance(node, list):
-        return "".join(_extract_text_from_adf(item) for item in node)
+        return "\n".join(
+            part for item in node if (part := _extract_text_from_adf(item))
+        )
     return ""
 
 
