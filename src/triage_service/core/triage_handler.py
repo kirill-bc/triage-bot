@@ -200,12 +200,10 @@ def _normalized_intake_issue_type(issue: FetchedIssue) -> str:
 def _normalized_intake_priority(issue: FetchedIssue) -> str | None:
     if _normalized_intake_issue_type(issue) == "Story":
         return None
-    if issue.priority is None:
-        return None
-    pri = str(issue.priority).strip().upper()
+    pri = str(issue.priority or "").strip().upper()
     if pri in _INTAKE_PRIORITIES:
         return pri
-    return None
+    return "P3"
 
 
 def _intake_telemetry(issue: FetchedIssue) -> dict[str, object]:

@@ -137,7 +137,7 @@ apps/jira-triage-dashboard/
 | `run_id` | yes | Idempotency key (PK) |
 | `issue_key`, `project` | yes | Grouping / filtering |
 | `source` | yes | `bug_created` \| `priority_changed` \| `manual_trigger` \| `backfill` |
-| `intake_issue_type`, `intake_priority` | yes | Before state; `intake_priority` null when intake is Story |
+| `intake_issue_type`, `intake_priority` | yes | Before state; `intake_priority` null when intake is Story; Bug intake with missing or non-`P0`–`P4` Jira priority normalizes to `P3` in telemetry |
 | `recommended_issue_type`, `recommended_priority` | yes | After recommendation; `recommended_priority` null when Story |
 | `applied_type_change`, `applied_priority_change` | yes | Distinguish advisory vs auto-applied |
 | `confidence` | yes | 0.0–1.0 |

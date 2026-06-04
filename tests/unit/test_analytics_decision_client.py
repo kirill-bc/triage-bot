@@ -67,6 +67,28 @@ def _completed_event(**telemetry: object) -> TriageCompletedAuditEvent:
 
 
 @pytest.mark.unit
+def test_start_background_task_uses_daemon_thread() -> None:
+    from triage_service.adapters.analytics_decision_client import _start_background_task
+
+    captured: dict[str, object] = {}
+
+    class _RecordingThread:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+        def start(self) -> None:
+            return None
+
+    with patch(
+        "triage_service.adapters.analytics_decision_client.threading.Thread",
+        _RecordingThread,
+    ):
+        _start_background_task(lambda: None)
+
+    assert captured["daemon"] is True
+
+
+@pytest.mark.unit
 def test_build_decision_payload_maps_story_recommendation_with_null_priority() -> None:
     from triage_service.adapters.analytics_decision_client import build_decision_payload
 
@@ -277,6 +299,46 @@ def test_http_client_logs_rejected_status_without_raising(
             )
 
     assert any("analytics_decision_post_rejected" in r.message for r in caplog.records)
+
+
+@pytest.mark.unit
+def test_http_client_swallows_payload_build_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from triage_service.adapters.analytics_decision_client import build_analytics_decision_client
+
+    settings = _settings(monkeypatch)
+    event = TriageCompletedAuditEvent(
+        event_type="triage_completed",
+        run_id="run-bad",
+        issue_key="TJC-9",
+        project="TJC",
+        source="bug_created",
+        recommended_issue_type="Story",
+        recommended_priority=None,
+        confidence=0.5,
+        reason="Incomplete telemetry.",
+        telemetry={},
+    )
+    with (
+        patch(
+            "triage_service.adapters.analytics_decision_client._start_background_task",
+            _run_background_tasks_inline,
+        ),
+        patch("httpx.Client.post") as post_mock,
+    ):
+        client = build_analytics_decision_client(settings)
+        with caplog.at_level("WARNING"):
+            client.emit_completed_decision(
+                event,
+                applied_type_change=False,
+                applied_priority_change=False,
+                inference_cost_usd=None,
+            )
+
+    post_mock.assert_not_called()
+    assert any("analytics_decision_emit_failed" in r.message for r in caplog.records)
 
 
 @pytest.mark.unit

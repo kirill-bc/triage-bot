@@ -770,7 +770,7 @@ def test_handler_story_path_emits_classification_and_triage_completed_without_pr
     assert audit.events[1].recommended_priority is None
     assert audit.events[1].telemetry == {
         "intake_issue_type": "Bug",
-        "intake_priority": None,
+        "intake_priority": "P3",
         "image_context_attachments_considered": 0,
         "image_context_attachments_extracted": 0,
         "auto_apply_deescalation_enabled": False,
@@ -1176,6 +1176,68 @@ def test_triage_completed_telemetry_nulls_intake_priority_for_story_intake(
     assert telemetry is not None
     assert telemetry["intake_issue_type"] == "Story"
     assert telemetry["intake_priority"] is None
+
+
+@pytest.mark.unit
+def test_triage_completed_telemetry_defaults_intake_priority_to_p3_when_bug_priority_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from triage_service.core.triage_handler import _triage_completed_telemetry
+
+    settings = _app_settings(monkeypatch)
+    issue = FetchedIssue(
+        issue_key="TJC-57",
+        summary="s",
+        description=None,
+        issue_type="Bug",
+        priority=None,
+        reporter="r",
+    )
+    recommendation = TriageRecommendation(
+        recommended_issue_type="Bug",
+        recommended_priority="P2",
+        confidence=0.9,
+        reason="Escalate.",
+    )
+    telemetry = _triage_completed_telemetry(
+        issue=issue,
+        recommendation=recommendation,
+        settings=settings,
+    )
+    assert telemetry is not None
+    assert telemetry["intake_issue_type"] == "Bug"
+    assert telemetry["intake_priority"] == "P3"
+
+
+@pytest.mark.unit
+def test_triage_completed_telemetry_defaults_intake_priority_to_p3_when_bug_priority_invalid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from triage_service.core.triage_handler import _triage_completed_telemetry
+
+    settings = _app_settings(monkeypatch)
+    issue = FetchedIssue(
+        issue_key="TJC-58",
+        summary="s",
+        description=None,
+        issue_type="Bug",
+        priority="Medium",
+        reporter="r",
+    )
+    recommendation = TriageRecommendation(
+        recommended_issue_type="Bug",
+        recommended_priority="P2",
+        confidence=0.9,
+        reason="Escalate.",
+    )
+    telemetry = _triage_completed_telemetry(
+        issue=issue,
+        recommendation=recommendation,
+        settings=settings,
+    )
+    assert telemetry is not None
+    assert telemetry["intake_issue_type"] == "Bug"
+    assert telemetry["intake_priority"] == "P3"
 
 
 class _RecordingAnalyticsClient:

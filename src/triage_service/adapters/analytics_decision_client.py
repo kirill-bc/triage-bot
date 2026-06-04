@@ -22,7 +22,7 @@ def _start_background_task(
     **kwargs: object,
 ) -> None:
     """Run ``target`` on a background thread so callers return immediately."""
-    threading.Thread(target=target, args=args, kwargs=kwargs, daemon=False).start()
+    threading.Thread(target=target, args=args, kwargs=kwargs, daemon=True).start()
 
 
 def _analytics_log_extra(
@@ -194,34 +194,43 @@ class HttpAnalyticsDecisionClient:
                 },
             )
             return None
-        payload = build_decision_payload(
-            event,
-            applied_type_change=applied_type_change,
-            applied_priority_change=applied_priority_change,
-            inference_cost_usd=inference_cost_usd,
-            triaged_at=triaged_at,
-            issue_created_at=issue_created_at,
-            issue_name=issue_name,
-        )
-        url = f"{base_url}/decisions"
-        headers: dict[str, str] = {"Content-Type": "application/json"}
-        token = str(self._settings.analytics_token or "").strip()
-        if token:
-            headers["X-Analytics-Token"] = token
-        LOGGER.info(
-            "analytics_decision_dispatch",
-            extra={
-                **_analytics_log_extra(event, url=url),
-                "event_type": "analytics_decision_dispatch",
-            },
-        )
-        _start_background_task(
-            self._post_decision,
-            url=url,
-            payload=payload,
-            headers=headers,
-            event=event,
-        )
+        try:
+            payload = build_decision_payload(
+                event,
+                applied_type_change=applied_type_change,
+                applied_priority_change=applied_priority_change,
+                inference_cost_usd=inference_cost_usd,
+                triaged_at=triaged_at,
+                issue_created_at=issue_created_at,
+                issue_name=issue_name,
+            )
+            url = f"{base_url}/decisions"
+            headers: dict[str, str] = {"Content-Type": "application/json"}
+            token = str(self._settings.analytics_token or "").strip()
+            if token:
+                headers["X-Analytics-Token"] = token
+            LOGGER.info(
+                "analytics_decision_dispatch",
+                extra={
+                    **_analytics_log_extra(event, url=url),
+                    "event_type": "analytics_decision_dispatch",
+                },
+            )
+            _start_background_task(
+                self._post_decision,
+                url=url,
+                payload=payload,
+                headers=headers,
+                event=event,
+            )
+        except Exception as exc:
+            LOGGER.warning(
+                "analytics_decision_emit_failed",
+                extra={
+                    **_analytics_log_extra(event, error=str(exc)),
+                    "event_type": "analytics_decision_emit_failed",
+                },
+            )
         return None
 
     def _post_decision(
