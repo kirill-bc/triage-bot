@@ -13,7 +13,7 @@ Primary goal: keep triage reliable, observable, and easy to operate while preser
 - Observability baseline is in place: structured audit logs, Langfuse tracing hooks, `run_id` correlation.
 - Image-context preprocessing for Jira inline description attachments is implemented (feature-flagged).
 - Zendesk linked-ticket enrichment is implemented end-to-end (fetch, resolution summarization, dedupe, Zendesk-only vision, OAuth client_credentials with 401 retry, observability); benchmark stratification for Zendesk context is still open in `TODO.md` §11.
-- Triage analytics decision emission is implemented (`ANALYTICS_DASHBOARD_URL` fire-and-forget POST after successful triage); optional Langfuse backfill script for historical bootstrap.
+- Triage analytics decision emission is implemented (`ANALYTICS_DASHBOARD_URL` fire-and-forget POST after successful triage); Langfuse decision-row tooling in `scripts/build_dashboard_seed.py` subcommands `backfill`, `catchup` (seed → `catchup.json`, idempotent on `run_id`), and `enrich` for dashboard bootstrap.
 - Integration-test expansion remains deferred in `TODO.md` §12.
 
 ## Non-Negotiable Workflow
@@ -86,7 +86,7 @@ Commonly relevant optional flags:
 - `TRIAGE_ALLOWED_PROJECTS`
 - `TRIAGE_IMAGE_CONTEXT_ENABLED`, `TRIAGE_VISION_MODEL`
 - `TRIAGE_ZENDESK_CONTEXT_ENABLED`
-- `TRIAGE_ZENDESK_ENABLE_OAUTH` (Bearer auth via confidential client_credentials; alternative to `ZENDESK_API_TOKEN`)
+- `ZENDESK_IDENTIFIER`, `ZENDESK_SECRET`, `ZENDESK_BASE_URL` or `ZENDESK_SUBDOMAIN` (OAuth client_credentials)
 - `TRIAGE_JIRA_ZENDESK_TICKET_IDS_FIELD_ID`
 - `TRIAGE_JIRA_IMPORTED_ZENDESK_TICKET_IDS_FIELD_ID`
 - `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_BASE_URL`

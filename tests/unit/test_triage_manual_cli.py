@@ -592,6 +592,60 @@ def test_main_json_reports_image_context_disabled(
 
 
 @pytest.mark.unit
+def test_main_omitted_auto_apply_flags_pass_none_to_handler() -> None:
+    """CLI without --auto-apply-* should defer to TRIAGE_AUTO_APPLY_* in settings."""
+    from triage_manual_cli import main
+
+    build_calls: list[tuple[bool | None, bool | None]] = []
+
+    def _fake_build(
+        *,
+        post_mismatch_comments: bool = True,
+        apply_to_jira: bool = True,
+        auto_apply_deescalation: bool | None = None,
+        auto_apply_bug_to_story: bool | None = None,
+    ) -> object:
+        _ = (post_mismatch_comments, apply_to_jira)
+        build_calls.append((auto_apply_deescalation, auto_apply_bug_to_story))
+
+        class _Runner:
+            def run_sync(
+                self,
+                issue_key: str,
+                project: str,
+                source: str,
+                *,
+                run_id: str,
+            ) -> TriageSyncResult:
+                _ = (issue_key, project, source, run_id)
+                return TriageSyncResult(
+                    outcome=TriageRecommendation(
+                        recommended_issue_type="Bug",
+                        recommended_priority="P2",
+                        confidence=0.5,
+                        reason="ok",
+                    ),
+                )
+
+            def flush_inference_telemetry(self) -> None:
+                return None
+
+        return _Runner()
+
+    class _Settings:
+        triage_image_context_enabled = False
+
+    with (
+        patch("triage_service.core.settings.load_settings", return_value=_Settings()),
+        patch("triage_manual_cli.build_default_triage_handler", side_effect=_fake_build),
+    ):
+        rc = main(["TJC-7"])
+
+    assert rc == 0
+    assert build_calls == [(None, None)]
+
+
+@pytest.mark.unit
 def test_main_read_only_sets_read_only_mode() -> None:
     from triage_manual_cli import main
 

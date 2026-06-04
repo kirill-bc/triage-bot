@@ -177,10 +177,17 @@ only — no DB, no outcome / revert tracking, and no triage hot-path blocking.
 
 - [x] **Telemetry enrichment (no audit model expansion):** add `intake_issue_type` and `intake_priority` to `TriageCompletedAuditEvent.telemetry` in `src/triage_service/core/triage_handler.py` (Story intake keeps priority null). Keep `TriageCompletedAuditEvent` schema unchanged per `docs/specification.md` assumptions.
 - [x] **Add analytics HTTP client + config:** after recording `triage_completed`, POST a decision payload to `ANALYTICS_DASHBOARD_URL` with `X-Analytics-Token: ANALYTICS_TOKEN`. If URL is unset, skip. Use short timeout and swallow/log all errors (warning level) so triage never fails on analytics transport.
-- [x] **Build payload from existing event + telemetry:** emit the contract fields from `docs/specification.md` (`event_type`, `run_id`, `issue_key`, `project`, `source`, intake/recommended state, `applied_*`, `confidence`, `inference_cost_usd`, `reason`, `occurred_at`) without introducing new persistence concerns in this service.
+- [x] **Build payload from existing event + telemetry:** emit the dashboard `DecisionEvent` fields from `docs/specification.md` (`event_type`, `run_id`, `issue_key`, `project`, `source`, intake/recommended state, `applied_*`, `confidence`, `inference_cost_usd`, `reason`, `triaged_at`, optional `issue_created_at`, optional `issue_name`) without introducing new persistence concerns in this service.
 - [x] **Tests (TDD first):** unit coverage for URL-unset no-op, payload mapping (including Story null-priority handling), auth header, and failure swallowing; integration coverage for successful POST and timeout/error paths.
 - [x] **Ops wiring + docs:** add `ANALYTICS_DASHBOARD_URL` and `ANALYTICS_TOKEN` to `.env.example` / `README.md` with explicit failure-safe semantics and endpoint expectations (`/api/v1/decisions` on dashboard service).
 - Done when: completed triage runs attempt a non-blocking POST to the dashboard when configured; URL-unset behavior is a no-op; failures are observable in logs but never fail triage; emitted payload matches `docs/specification.md`; and `pytest -m lint`, `mypy .`, and `pytest -m "unit or integration"` pass.
+
+### 10.1. Catch-up script
+
+- [x] Write `scripts/build_dashboard_seed.py catchup` (or flag): queries Langfuse for traces newer than the latest `triaged_at` in the seed file
+- [x] Outputs `catchup.json` with any rows not already in the seed
+- [x] Idempotent: re-running produces no duplicates (keyed on `run_id`)
+- [x] Runs on container startup before DB ingest — fills the gap between last committed seed and now
 
 ## 11. Post-MVP
 - [x] **Classification benchmark harness (in-repo):** `scripts/benchmark/classification_benchmark.py` / `scripts/benchmark/benchmark_summary.py`, `scripts/benchmark/run_classification_benchmark.py` (multi-model JSONL + `summary.json`), `scripts/benchmark/summarize_benchmark_rows.py` (offline re-aggregation), unit tests under `tests/unit/test_classification_benchmark.py` and `tests/unit/test_benchmark_summary.py`. Curated rows live under `data/` (combined `issue_benchmark_dataset.csv` plus bucket CSVs). **Jira sampler:** `scripts/benchmark/build_benchmark_dataset.py` (changelog-derived keys; uses `GET /rest/api/3/search/jql` with `nextPageToken` because Cloud removed legacy search). **Composition:** keep the CSV Bug-centric; no requirement to rebalance toward equal Story buckets while Story outcomes stay out of scope—add rows when they help Bug-path / priority signal, and keep human ground truth vs Jira fields explicit where rows encode corrections.

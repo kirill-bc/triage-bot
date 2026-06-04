@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import logging
 import re
 from collections.abc import Iterable
@@ -248,20 +247,14 @@ class ZendeskTicketFetcher:
         self._settings = settings
         self._client = client
         self._oauth_client = oauth_client
-        if settings.triage_zendesk_enable_oauth and self._oauth_client is None:
+        if self._oauth_client is None:
             self._oauth_client = build_zendesk_oauth_client(settings)
 
     @property
     def credentials_configured(self) -> bool:
-        if self._settings.triage_zendesk_enable_oauth:
-            return bool(
-                self._settings.zendesk_oauth_configured
-                and self._oauth_client is not None,
-            )
         return bool(
-            self._settings.resolve_zendesk_base_url()
-            and self._settings.zendesk_user_email
-            and self._settings.zendesk_api_token,
+            self._settings.zendesk_oauth_configured
+            and self._oauth_client is not None,
         )
 
     @property
@@ -550,25 +543,16 @@ class ZendeskTicketFetcher:
         )
 
     def _auth_header(self) -> str:
-        if self._settings.triage_zendesk_enable_oauth:
-            if self._oauth_client is None:
-                raise ZendeskTicketFetchError(
-                    "Zendesk OAuth is enabled but the OAuth client is not configured.",
-                )
-            try:
-                access_token = self._oauth_client.get_access_token()
-            except ZendeskOAuthError as exc:
-                raise ZendeskTicketFetchError(str(exc)) from exc
-            return f"Bearer {access_token}"
-        email = str(self._settings.zendesk_user_email or "").strip()
-        token = str(self._settings.zendesk_api_token or "").strip()
-        if not email or not token:
+        if self._oauth_client is None:
             raise ZendeskTicketFetchError(
-                "Zendesk credentials required "
-                "(ZENDESK_USER_EMAIL or ZENDESK_AGENT_EMAIL, ZENDESK_API_TOKEN).",
+                "Zendesk OAuth is not configured; set ZENDESK_IDENTIFIER, ZENDESK_SECRET, "
+                "and ZENDESK_BASE_URL or ZENDESK_SUBDOMAIN.",
             )
-        encoded = base64.b64encode(f"{email}/token:{token}".encode("utf-8")).decode("ascii")
-        return f"Basic {encoded}"
+        try:
+            access_token = self._oauth_client.get_access_token()
+        except ZendeskOAuthError as exc:
+            raise ZendeskTicketFetchError(str(exc)) from exc
+        return f"Bearer {access_token}"
 
     def _get_with_oauth_401_retry(
         self,
@@ -588,8 +572,4 @@ class ZendeskTicketFetcher:
         return client.get(url, headers=retry_headers, follow_redirects=follow_redirects)
 
     def _should_retry_oauth_401(self, status_code: int) -> bool:
-        return (
-            status_code == 401
-            and self._settings.triage_zendesk_enable_oauth
-            and self._oauth_client is not None
-        )
+        return status_code == 401 and self._oauth_client is not None

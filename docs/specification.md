@@ -126,7 +126,9 @@ apps/jira-triage-dashboard/
   "confidence": 0.82,
   "inference_cost_usd": 0.018,
   "reason": "...",
-  "occurred_at": "2026-06-02T13:00:00Z"
+  "triaged_at": "2026-06-02T13:00:00Z",
+  "issue_created_at": "2026-06-02T12:55:00Z",
+  "issue_name": "Login button unresponsive on mobile"
 }
 ```
 
@@ -140,7 +142,9 @@ apps/jira-triage-dashboard/
 | `applied_type_change`, `applied_priority_change` | yes | Distinguish advisory vs auto-applied |
 | `confidence` | yes | 0.0–1.0 |
 | `inference_cost_usd` | no | Cost-efficiency panels |
-| `occurred_at` | yes | ISO-8601 UTC |
+| `triaged_at` | yes | ISO-8601 UTC (triage completion time) |
+| `issue_created_at` | no | ISO-8601 UTC from Jira `fields.created` when available |
+| `issue_name` | no | Jira issue summary (`fields.summary`) when available |
 
 **Responses:** `201` new row, `200` upsert replay, `400` validation/allowlist, `401` token mismatch, `500` persistence failure.
 

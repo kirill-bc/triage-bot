@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import logging
 import re
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -170,6 +171,13 @@ def _parse_zendesk_ticket_count(fields: dict[str, Any], *, field_id: str | None)
     return None
 
 
+class IssueDecisionMetadata(BaseModel):
+    """Minimal Jira fields for analytics decision rows (one REST fetch)."""
+
+    issue_created_at: str | None = None
+    issue_name: str | None = None
+
+
 class FetchedIssue(BaseModel):
     """Normalized issue fields used by triage composition."""
 
@@ -187,6 +195,7 @@ class FetchedIssue(BaseModel):
     zendesk_ticket_count: int | None = None
     zendesk_tickets: list[LinkedZendeskTicket] = Field(default_factory=list)
     comments: list[CommentRef] = Field(default_factory=list)
+    issue_created_at: str | None = None
 
 
 class JiraIssueFetchError(RuntimeError):
@@ -503,6 +512,10 @@ def _parse_issue_payload(
         fields,
         field_id=zendesk_ticket_count_field_id,
     )
+    issue_created_at: str | None = None
+    created_raw = fields.get("created")
+    if isinstance(created_raw, str) and created_raw.strip():
+        issue_created_at = normalize_jira_created_timestamp(created_raw)
     return FetchedIssue(
         issue_key=key,
         issue_id=issue_id,
@@ -517,7 +530,31 @@ def _parse_issue_payload(
         zendesk_ticket_ids=zendesk_ids,
         zendesk_ticket_count=zendesk_count,
         comments=parsed_comments,
+        issue_created_at=issue_created_at,
     )
+
+
+def normalize_jira_created_timestamp(raw: str) -> str:
+    """Normalize Jira ``fields.created`` to UTC ISO-8601 with a ``Z`` suffix."""
+    text = raw.strip()
+    if not text:
+        msg = "Jira created timestamp is empty."
+        raise ValueError(msg)
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    else:
+        # Jira commonly uses offsets like "+1100" / "-0500" (no colon).
+        match = re.match(r"^(.*)([+-]\d{2})(\d{2})$", text)
+        if match:
+            text = f"{match.group(1)}{match.group(2)}:{match.group(3)}"
+    dt = datetime.fromisoformat(text)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    utc = dt.astimezone(timezone.utc)
+    iso = utc.isoformat(timespec="milliseconds")
+    if iso.endswith("+00:00"):
+        return iso[:-6] + "Z"
+    return iso
 
 
 def _basic_auth_header(email: str, api_token: str) -> str:
@@ -571,11 +608,38 @@ class JiraIssueFetcher:
         "priority",
         "reporter",
         "attachment",
+        "created",
     )
 
     def __init__(self, settings: AppSettings, *, client: httpx.Client | None = None) -> None:
         self._settings = settings
         self._client = client
+
+    def fetch_created_at(self, issue_key: str, *, run_id: str) -> str | None:
+        """Return raw Jira ``fields.created`` for ``issue_key`` (minimal REST fetch)."""
+        _ = run_id
+        fields = self._fetch_issue_fields(issue_key, field_names="created")
+        created = fields.get("created")
+        if isinstance(created, str) and created.strip():
+            return created.strip()
+        return None
+
+    def fetch_decision_metadata(self, issue_key: str, *, run_id: str) -> IssueDecisionMetadata:
+        """Return Jira ``fields.created`` and ``fields.summary`` for analytics enrichment."""
+        fields = self._fetch_issue_fields(issue_key, field_names="created,summary")
+        issue_created_at: str | None = None
+        created = fields.get("created")
+        if isinstance(created, str) and created.strip():
+            issue_created_at = normalize_jira_created_timestamp(created)
+        issue_name: str | None = None
+        summary = fields.get("summary")
+        if isinstance(summary, str):
+            stripped = summary.strip()
+            issue_name = stripped or None
+        return IssueDecisionMetadata(
+            issue_created_at=issue_created_at,
+            issue_name=issue_name,
+        )
 
     def fetch(self, issue_key: str, *, run_id: str) -> FetchedIssue:
         _ = run_id
@@ -675,6 +739,50 @@ class JiraIssueFetcher:
             if field_id:
                 out.append(field_id)
         return out
+
+    def _fetch_issue_fields(self, issue_key: str, *, field_names: str) -> dict[str, Any]:
+        url = _issue_get_url(self._settings, issue_key)
+        params = {"fields": field_names}
+        headers = {
+            **self._auth_headers(),
+            "Accept": "application/json",
+        }
+        if self._client is not None:
+            return self._request_issue_fields_dict(
+                self._client,
+                url,
+                params,
+                headers,
+            )
+        timeout = httpx.Timeout(self._settings.jira_http_timeout_seconds)
+        with httpx.Client(timeout=timeout) as client:
+            return self._request_issue_fields_dict(
+                client,
+                url,
+                params,
+                headers,
+            )
+
+    def _request_issue_fields_dict(
+        self,
+        client: httpx.Client,
+        url: str,
+        params: dict[str, str],
+        headers: dict[str, str],
+    ) -> dict[str, Any]:
+        response = self._get_with_retries(
+            client,
+            url,
+            params=params,
+            headers=headers,
+        )
+        payload = response.json()
+        if not isinstance(payload, dict):
+            return {}
+        fields = payload.get("fields")
+        if isinstance(fields, dict):
+            return fields
+        return {}
 
     def _request_issue(
         self,

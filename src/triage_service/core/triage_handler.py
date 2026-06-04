@@ -568,6 +568,7 @@ class TriageHandler:
                     started_at=action_start,
                 )
             self._emit_analytics_decision(
+                issue=issue,
                 steps=steps,
                 applied=applied,
                 image_extraction=image_extraction,
@@ -947,6 +948,7 @@ class TriageHandler:
                     started_at=action_start,
                 )
             self._emit_analytics_decision(
+                issue=issue,
                 steps=steps,
                 applied=applied,
                 image_extraction=image_extraction,
@@ -1253,6 +1255,7 @@ class TriageHandler:
     def _emit_analytics_decision(
         self,
         *,
+        issue: FetchedIssue,
         steps: _TriageInferenceSteps,
         applied: TriageActionAppliedFlags,
         image_extraction: ImageContextExtractionResult | None,
@@ -1263,11 +1266,22 @@ class TriageHandler:
             image_extraction,
             zendesk_context,
         )
+        LOGGER.info(
+            "analytics_decision_emit",
+            extra={
+                "event_type": "analytics_decision_emit",
+                "run_id": steps.completed_event.run_id,
+                "issue_key": steps.completed_event.issue_key,
+                "project": steps.completed_event.project,
+            },
+        )
         self._analytics_client.emit_completed_decision(
             steps.completed_event,
             applied_type_change=applied.applied_type_change,
             applied_priority_change=applied.applied_priority_change,
             inference_cost_usd=inference_cost,
+            issue_created_at=issue.issue_created_at,
+            issue_name=issue.summary.strip() or None,
         )
 
     def _log_stage_timing(

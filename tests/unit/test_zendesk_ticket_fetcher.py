@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import httpx
 import pytest
 
@@ -10,6 +12,7 @@ from triage_service.adapters.jira_issue_fetcher import (
     ZendeskImageRef,
     parse_zendesk_ticket_ids_from_field_value,
 )
+from triage_service.adapters.zendesk_oauth import ZendeskOAuthClient
 from triage_service.adapters.zendesk_ticket_fetcher import (
     ZendeskTicketFetchError,
     ZendeskTicketFetcher,
@@ -20,6 +23,35 @@ from triage_service.adapters.zendesk_ticket_fetcher import (
 from triage_service.core.settings import AppSettings
 
 
+class _StubZendeskOAuthClient:
+    def get_access_token(self) -> str:
+        return "test-oauth-token"
+
+    def clear_cached_token(self) -> None:
+        pass
+
+
+@pytest.fixture
+def oauth_client() -> _StubZendeskOAuthClient:
+    return _StubZendeskOAuthClient()
+
+
+def _fetcher(
+    settings: AppSettings,
+    *,
+    client: httpx.Client | None = None,
+    oauth_client: _StubZendeskOAuthClient | None = None,
+) -> ZendeskTicketFetcher:
+    return ZendeskTicketFetcher(
+        settings,
+        client=client,
+        oauth_client=cast(
+            ZendeskOAuthClient,
+            oauth_client or _StubZendeskOAuthClient(),
+        ),
+    )
+
+
 @pytest.fixture
 def settings(monkeypatch: pytest.MonkeyPatch) -> AppSettings:
     monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
@@ -27,8 +59,8 @@ def settings(monkeypatch: pytest.MonkeyPatch) -> AppSettings:
     monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
     monkeypatch.setenv("TRIAGE_ZENDESK_CONTEXT_ENABLED", "true")
     monkeypatch.setenv("ZENDESK_BASE_URL", "https://acme.zendesk.com")
-    monkeypatch.setenv("ZENDESK_USER_EMAIL", "agent@example.com")
-    monkeypatch.setenv("ZENDESK_API_TOKEN", "zd-token")
+    monkeypatch.setenv("ZENDESK_IDENTIFIER", "jira_bug_triage_bot")
+    monkeypatch.setenv("ZENDESK_SECRET", "oauth-secret")
     return AppSettings()
 
 
@@ -149,8 +181,8 @@ def test_collect_linked_ticket_ids_caps_custom_field_ids(
     monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
     monkeypatch.setenv("TRIAGE_ZENDESK_CONTEXT_ENABLED", "true")
     monkeypatch.setenv("ZENDESK_BASE_URL", "https://acme.zendesk.com")
-    monkeypatch.setenv("ZENDESK_USER_EMAIL", "agent@example.com")
-    monkeypatch.setenv("ZENDESK_API_TOKEN", "zd-token")
+    monkeypatch.setenv("ZENDESK_IDENTIFIER", "jira_bug_triage_bot")
+    monkeypatch.setenv("ZENDESK_SECRET", "oauth-secret")
     monkeypatch.setenv("TRIAGE_ZENDESK_MAX_TICKETS", "3")
     limited = AppSettings()
     issue = FetchedIssue(
@@ -177,8 +209,8 @@ def test_collect_linked_ticket_ids_with_stats_includes_cap_drops_for_custom_fiel
     monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
     monkeypatch.setenv("TRIAGE_ZENDESK_CONTEXT_ENABLED", "true")
     monkeypatch.setenv("ZENDESK_BASE_URL", "https://acme.zendesk.com")
-    monkeypatch.setenv("ZENDESK_USER_EMAIL", "agent@example.com")
-    monkeypatch.setenv("ZENDESK_API_TOKEN", "zd-token")
+    monkeypatch.setenv("ZENDESK_IDENTIFIER", "jira_bug_triage_bot")
+    monkeypatch.setenv("ZENDESK_SECRET", "oauth-secret")
     monkeypatch.setenv("TRIAGE_ZENDESK_MAX_TICKETS", "2")
     limited = AppSettings()
     issue = FetchedIssue(
@@ -224,7 +256,7 @@ def test_fetch_linked_tickets_enriches_issue_when_configured(settings: AppSettin
     )
 
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.headers.get("Authorization", "").startswith("Basic ")
+        assert request.headers.get("Authorization", "") == "Bearer test-oauth-token"
         ticket_id = request.url.path.split("/")[-1].replace(".json", "")
         if request.url.path.endswith("/comments.json"):
             return httpx.Response(200, json={"comments": []})
@@ -244,7 +276,7 @@ def test_fetch_linked_tickets_enriches_issue_when_configured(settings: AppSettin
 
     transport = httpx.MockTransport(handler)
     with httpx.Client(transport=transport) as client:
-        fetcher = ZendeskTicketFetcher(settings, client=client)
+        fetcher = _fetcher(settings, client=client)
         tickets = fetcher.fetch_linked_tickets(issue, run_id="run-zd")
 
     assert [t.ticket_id for t in tickets] == ["777", "888"]
@@ -274,7 +306,7 @@ def test_fetch_ticket_parses_problem_id_from_api(settings: AppSettings) -> None:
 
     transport = httpx.MockTransport(handler)
     with httpx.Client(transport=transport) as client:
-        fetcher = ZendeskTicketFetcher(settings, client=client)
+        fetcher = _fetcher(settings, client=client)
         tickets = fetcher.fetch_tickets_by_ids(["555"])
 
     assert tickets[0].problem_id == "100"
@@ -309,7 +341,7 @@ def _ticket_and_comments_handler(
     """Mock Zendesk ticket + comments endpoints for one ticket id."""
 
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.headers.get("Authorization", "").startswith("Basic ")
+        assert request.headers.get("Authorization", "") == "Bearer test-oauth-token"
         if request.url.path == f"/api/v2/tickets/{ticket_id}.json":
             return httpx.Response(
                 200,
@@ -358,7 +390,7 @@ def test_fetch_ticket_includes_comments_newest_first(settings: AppSettings) -> N
         ],
     )
     with httpx.Client(transport=transport) as client:
-        fetcher = ZendeskTicketFetcher(settings, client=client)
+        fetcher = _fetcher(settings, client=client)
         tickets = fetcher.fetch_tickets_by_ids(["777"])
 
     assert len(tickets) == 1
@@ -381,8 +413,8 @@ def test_fetch_ticket_comments_capped_by_max_comments_per_ticket(
     monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
     monkeypatch.setenv("TRIAGE_ZENDESK_CONTEXT_ENABLED", "true")
     monkeypatch.setenv("ZENDESK_BASE_URL", "https://acme.zendesk.com")
-    monkeypatch.setenv("ZENDESK_USER_EMAIL", "agent@example.com")
-    monkeypatch.setenv("ZENDESK_API_TOKEN", "zd-token")
+    monkeypatch.setenv("ZENDESK_IDENTIFIER", "jira_bug_triage_bot")
+    monkeypatch.setenv("ZENDESK_SECRET", "oauth-secret")
     monkeypatch.setenv("TRIAGE_ZENDESK_MAX_COMMENTS_PER_TICKET", "2")
     limited = AppSettings()
 
@@ -410,7 +442,7 @@ def test_fetch_ticket_comments_capped_by_max_comments_per_ticket(
         ],
     )
     with httpx.Client(transport=transport) as client:
-        fetcher = ZendeskTicketFetcher(limited, client=client)
+        fetcher = _fetcher(limited, client=client)
         tickets = fetcher.fetch_tickets_by_ids(["888"])
 
     assert [c.body for c in tickets[0].comments] == ["newest", "middle"]
@@ -425,7 +457,7 @@ def test_fetch_ticket_comment_fetch_soft_fails_leaves_empty_comments(
         comments_status=503,
     )
     with httpx.Client(transport=transport) as client:
-        fetcher = ZendeskTicketFetcher(settings, client=client)
+        fetcher = _fetcher(settings, client=client)
         tickets = fetcher.fetch_tickets_by_ids(["999"])
 
     assert len(tickets) == 1
@@ -439,7 +471,7 @@ def test_fetch_tickets_by_ids_with_failures_continues_on_per_ticket_error(
     settings: AppSettings,
 ) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.headers.get("Authorization", "").startswith("Basic ")
+        assert request.headers.get("Authorization", "") == "Bearer test-oauth-token"
         if request.url.path == "/api/v2/tickets/100.json":
             return httpx.Response(
                 200,
@@ -461,7 +493,7 @@ def test_fetch_tickets_by_ids_with_failures_continues_on_per_ticket_error(
 
     transport = httpx.MockTransport(handler)
     with httpx.Client(transport=transport) as client:
-        fetcher = ZendeskTicketFetcher(settings, client=client)
+        fetcher = _fetcher(settings, client=client)
         result = fetcher.fetch_tickets_by_ids_with_failures(["100", "200"])
 
     assert len(result.tickets) == 1
@@ -494,8 +526,8 @@ def test_fetch_ticket_comments_requests_newest_first_page_from_api(
     monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
     monkeypatch.setenv("TRIAGE_ZENDESK_CONTEXT_ENABLED", "true")
     monkeypatch.setenv("ZENDESK_BASE_URL", "https://acme.zendesk.com")
-    monkeypatch.setenv("ZENDESK_USER_EMAIL", "agent@example.com")
-    monkeypatch.setenv("ZENDESK_API_TOKEN", "zd-token")
+    monkeypatch.setenv("ZENDESK_IDENTIFIER", "jira_bug_triage_bot")
+    monkeypatch.setenv("ZENDESK_SECRET", "oauth-secret")
     monkeypatch.setenv("TRIAGE_ZENDESK_MAX_COMMENTS_PER_TICKET", "3")
     limited = AppSettings()
 
@@ -536,7 +568,7 @@ def test_fetch_ticket_comments_requests_newest_first_page_from_api(
 
     transport = httpx.MockTransport(handler)
     with httpx.Client(transport=transport) as client:
-        fetcher = ZendeskTicketFetcher(limited, client=client)
+        fetcher = _fetcher(limited, client=client)
         tickets = fetcher.fetch_tickets_by_ids(["444"])
 
     assert [c.body for c in tickets[0].comments] == [
@@ -579,7 +611,7 @@ def test_fetch_ticket_comments_requests_include_inline_images_and_newest_first(
 
     transport = httpx.MockTransport(handler)
     with httpx.Client(transport=transport) as client:
-        fetcher = ZendeskTicketFetcher(settings, client=client)
+        fetcher = _fetcher(settings, client=client)
         fetcher.fetch_tickets_by_ids(["555"])
 
     assert captured_params == [
@@ -624,7 +656,7 @@ def test_fetch_ticket_parses_comment_attachment_and_inline_body_images(
         ],
     )
     with httpx.Client(transport=transport) as client:
-        fetcher = ZendeskTicketFetcher(settings, client=client)
+        fetcher = _fetcher(settings, client=client)
         tickets = fetcher.fetch_tickets_by_ids(["666"])
 
     assert len(tickets) == 1
@@ -675,7 +707,7 @@ def test_fetch_ticket_parses_description_inline_images(settings: AppSettings) ->
 
     transport = httpx.MockTransport(handler)
     with httpx.Client(transport=transport) as client:
-        fetcher = ZendeskTicketFetcher(settings, client=client)
+        fetcher = _fetcher(settings, client=client)
         tickets = fetcher.fetch_tickets_by_ids(["777"])
 
     assert tickets[0].description_image_refs == [
@@ -688,20 +720,20 @@ def test_fetch_ticket_parses_description_inline_images(settings: AppSettings) ->
 
 
 @pytest.mark.unit
-def test_fetch_image_bytes_returns_binary_with_basic_auth(settings: AppSettings) -> None:
+def test_fetch_image_bytes_returns_binary_with_bearer_auth(settings: AppSettings) -> None:
     image_url = "https://acme.zendesk.com/attachments/token/abc123/?name=blobid0.png"
     image_ref = ZendeskImageRef(url=image_url, filename="blobid0.png", source="inline_body")
     png_bytes = b"\x89PNG\r\n\x1a\nfake-png"
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert str(request.url) == image_url
-        assert request.headers.get("Authorization", "").startswith("Basic ")
+        assert request.headers.get("Authorization", "") == "Bearer test-oauth-token"
         assert request.headers.get("Accept") == "*/*"
         return httpx.Response(200, content=png_bytes)
 
     transport = httpx.MockTransport(handler)
     with httpx.Client(transport=transport) as client:
-        fetcher = ZendeskTicketFetcher(settings, client=client)
+        fetcher = _fetcher(settings, client=client)
         data = fetcher.fetch_image_bytes(image_ref, run_id="run-zd-img")
 
     assert data == png_bytes
@@ -718,7 +750,7 @@ def test_fetch_image_bytes_follows_redirect_to_signed_cdn_url(settings: AppSetti
     def handler(request: httpx.Request) -> httpx.Response:
         requests_seen.append(str(request.url))
         if str(request.url) == token_url:
-            assert request.headers.get("Authorization", "").startswith("Basic ")
+            assert request.headers.get("Authorization", "") == "Bearer test-oauth-token"
             return httpx.Response(302, headers={"Location": cdn_url})
         if str(request.url) == cdn_url:
             return httpx.Response(200, content=png_bytes)
@@ -726,7 +758,7 @@ def test_fetch_image_bytes_follows_redirect_to_signed_cdn_url(settings: AppSetti
 
     transport = httpx.MockTransport(handler)
     with httpx.Client(transport=transport, follow_redirects=True) as client:
-        fetcher = ZendeskTicketFetcher(settings, client=client)
+        fetcher = _fetcher(settings, client=client)
         data = fetcher.fetch_image_bytes(image_ref, run_id="run-zd-redirect")
 
     assert data == png_bytes
@@ -746,7 +778,7 @@ def test_fetch_image_bytes_raises_on_http_error(settings: AppSettings) -> None:
 
     transport = httpx.MockTransport(handler)
     with httpx.Client(transport=transport) as client:
-        fetcher = ZendeskTicketFetcher(settings, client=client)
+        fetcher = _fetcher(settings, client=client)
         with pytest.raises(ZendeskTicketFetchError, match="HTTP 404"):
             fetcher.fetch_image_bytes(image_ref, run_id="run-zd-missing")
 
@@ -766,7 +798,7 @@ def test_fetch_image_bytes_raises_when_credentials_missing(
         filename="blobid0.png",
         source="inline_body",
     )
-    with pytest.raises(ZendeskTicketFetchError, match="credentials required"):
+    with pytest.raises(ZendeskTicketFetchError, match="OAuth is not configured"):
         fetcher.fetch_image_bytes(image_ref, run_id="run-zd-no-creds")
 
 
@@ -826,7 +858,7 @@ def test_fetch_image_bytes_omits_auth_for_other_zendesk_tenant_url(
 
     transport = httpx.MockTransport(handler)
     with httpx.Client(transport=transport) as client:
-        fetcher = ZendeskTicketFetcher(settings, client=client)
+        fetcher = _fetcher(settings, client=client)
         data = fetcher.fetch_image_bytes(image_ref, run_id="run-zd-other-tenant")
 
     assert data == png_bytes
@@ -850,7 +882,7 @@ def test_fetch_image_bytes_omits_auth_for_external_image_url(settings: AppSettin
 
     transport = httpx.MockTransport(handler)
     with httpx.Client(transport=transport) as client:
-        fetcher = ZendeskTicketFetcher(settings, client=client)
+        fetcher = _fetcher(settings, client=client)
         data = fetcher.fetch_image_bytes(image_ref, run_id="run-zd-external")
 
     assert data == png_bytes
@@ -878,7 +910,7 @@ def test_fetch_image_bytes_external_url_does_not_require_zendesk_credentials(
 
     transport = httpx.MockTransport(handler)
     with httpx.Client(transport=transport) as client:
-        fetcher = ZendeskTicketFetcher(settings, client=client)
+        fetcher = _fetcher(settings, client=client)
         data = fetcher.fetch_image_bytes(image_ref, run_id="run-zd-external-no-creds")
 
     assert data == png_bytes

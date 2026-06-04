@@ -49,17 +49,10 @@ def build_fetch_output(issue: FetchedIssue, *, settings: AppSettings) -> dict[st
     if not zendesk.credentials_configured:
         payload["zendesk_tickets"] = []
         if ticket_ids:
-            if getattr(settings, "triage_zendesk_enable_oauth", False):
-                payload["zendesk_fetch_skipped_reason"] = (
-                    "Zendesk OAuth not configured: set TRIAGE_ZENDESK_ENABLE_OAUTH=true, "
-                    "ZENDESK_IDENTIFIER, ZENDESK_SECRET, and ZENDESK_BASE_URL or "
-                    "ZENDESK_SUBDOMAIN."
-                )
-            else:
-                payload["zendesk_fetch_skipped_reason"] = (
-                    "Zendesk credentials missing: set ZENDESK_BASE_URL, ZENDESK_API_TOKEN, "
-                    "and ZENDESK_USER_EMAIL or ZENDESK_AGENT_EMAIL."
-                )
+            payload["zendesk_fetch_skipped_reason"] = (
+                "Zendesk OAuth not configured: set ZENDESK_IDENTIFIER, ZENDESK_SECRET, "
+                "and ZENDESK_BASE_URL or ZENDESK_SUBDOMAIN."
+            )
     elif ticket_ids:
         try:
             tickets = zendesk.fetch_tickets_by_ids(ticket_ids)

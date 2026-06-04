@@ -42,7 +42,7 @@ See `TODO.md` for the active implementation backlog.
 - `scripts/benchmark/summarize_benchmark_rows.py`: offline aggregator over any folder of `rows_*.jsonl` benchmark outputs — per-bucket and overall accuracy, latency stats, issue-type confusion matrix, and failure breakdown; optional folder-level JSON dump
 - `scripts/benchmark/classification_benchmark.py`: CSV loader and bucket-aware scoring (stable bugs vs human-corrected type/priority)
 - `scripts/benchmark/benchmark_summary.py`: pure-logic helpers used by `summarize_benchmark_rows.py` (JSONL parsing, latency/failure aggregation, summary serialization)
-- `scripts/backfill_langfuse_decisions.py`: one-shot export of historical decision rows from Langfuse traces for analytics dashboard bootstrap (writes JSON; `source=backfill`)
+- `scripts/build_dashboard_seed.py`: build dashboard decision seed JSON — subcommands `backfill`, `catchup` (incremental; idempotent on `run_id`), `enrich` (Jira metadata)
 - `scripts/run_dev_tunnel.py`: uvicorn + tunnel helper (uses `dev_tunnel.main`)
 - `scripts/run_container_tunnel.sh`: build/run container with `.env` secrets, post a live `/triage` payload, then expose the container via `cloudflared` (or `ngrok`) for Jira Automation testing
 - `scripts/run_tests.sh`: local entrypoint for the standard test workflow
@@ -80,12 +80,12 @@ From repository root:
   - optional: `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, and `LANGFUSE_BASE_URL` (when the first two are set, OpenRouter steps are traced in Langfuse: each triage `run_id` is the Langfuse **session** id (Sessions UI replay), with root span `triage_issue_pipeline` and nested `inference_*` generations; token usage and any cost fields returned by OpenRouter are forwarded onto those generation observations when present. Lifecycle audit events attach under that span when emitted during triage. Use `run_id` from the API or CLI response and the span metadata to correlate with logs. `POST /triage` and the manual CLI call `flush_inference_telemetry()` after each run so buffers are not stuck in short-lived processes)
   - optional Langfuse prompt management (defaults shown; Langfuse project `triagebot`): `TRIAGE_LANGFUSE_PROMPTS_ENABLED=true`, user prompts `TRIAGE_LANGFUSE_CLASSIFICATION_PROMPT_NAME=triagebot/classification-user` and `TRIAGE_LANGFUSE_PRIORITY_PROMPT_NAME=triagebot/priority-user` (policies and reason guidance are embedded in Langfuse; only `{{issue_block}}` is compiled at runtime), system prompts `TRIAGE_LANGFUSE_CLASSIFICATION_SYSTEM_PROMPT_NAME=triagebot/classification-system` / `TRIAGE_LANGFUSE_PRIORITY_SYSTEM_PROMPT_NAME=triagebot/priority-system`, optional `TRIAGE_LANGFUSE_REASON_FOR_HUMANS_PROMPT_NAME=triagebot/reason-for-humans` (local fallback only), shared `TRIAGE_LANGFUSE_PROMPT_LABEL=production`, `TRIAGE_LANGFUSE_PROMPT_CACHE_TTL_SECONDS` (unset uses SDK default). When Langfuse is unavailable, `prompt_templates.json` and `src/triage_service/core/policy/*.md` (`load_policy_context`) are composed locally.
    - optional audit routing and redaction (defaults: structured JSON logs **on**, Langfuse audit mirror **on** when Langfuse keys exist, model input redaction **off**, model output redaction **off**): `TRIAGE_AUDIT_STRUCTURED_LOG_ENABLED`, `TRIAGE_AUDIT_LANGFUSE_ENABLED`, `TRIAGE_AUDIT_REDACT_MODEL_INPUT`, `TRIAGE_AUDIT_REDACT_MODEL_OUTPUT`. Filter JSON log lines by `run_id` (API response field or CLI-generated UUID); in Langfuse, open **Sessions** and search by `run_id` (session id) or use `run_id` on the root span metadata to align traces, generations, and audit events.
-   - optional analytics dashboard (default **off**): when `ANALYTICS_DASHBOARD_URL` is set (base URL including `/api/v1`), each successful triage run fire-and-forgets a `POST` to `{ANALYTICS_DASHBOARD_URL}/decisions` with the decision payload (`run_id`, intake/recommended state, applied flags, confidence, optional `inference_cost_usd`). Send `ANALYTICS_TOKEN` as header `X-Analytics-Token`. Uses `ANALYTICS_HTTP_TIMEOUT_SECONDS` (default `2`); transport failures are logged at warning and never fail triage.
+   - optional analytics dashboard (default **off**): when `ANALYTICS_DASHBOARD_URL` is set (base URL including `/api/v1`), each successful triage run fire-and-forgets a `POST` to `{ANALYTICS_DASHBOARD_URL}/decisions` with the dashboard decision payload (`run_id`, intake/recommended state, applied flags, confidence, `triaged_at`, optional `issue_created_at` from Jira `fields.created`, optional `issue_name` from Jira summary, optional `inference_cost_usd`). Send `ANALYTICS_TOKEN` as header `X-Analytics-Token`. Uses `ANALYTICS_HTTP_TIMEOUT_SECONDS` (default `2`); transport failures are logged at warning and never fail triage.
    - optional local smoke mode: `TRIAGE_LOCAL_MOCK_MODE` (`1`, `true`, `yes`, or `on`) switches triage into a deterministic local runner that skips Jira/OpenRouter calls. Intended only for local container smoke checks.
   - optional image attachment preprocessing (default **off**): `TRIAGE_IMAGE_CONTEXT_ENABLED` runs description-inline images first, then comment-referenced images (if slots remain) through a dedicated vision model before classification and priority. Uses `TRIAGE_VISION_MODEL` (independent from `TRIAGE_TEXT_MODEL`), `TRIAGE_IMAGE_CONTEXT_MAX_ATTACHMENTS` (default `5`), `TRIAGE_IMAGE_CONTEXT_MAX_BYTES_PER_IMAGE` (default 5 MiB), `TRIAGE_IMAGE_CONTEXT_TIMEOUT_SECONDS` (default `90`). Audit logs redact vision transcripts by default (`TRIAGE_AUDIT_REDACT_IMAGE_TRANSCRIPT=true`) because screenshots often contain PII. Each processed image is one billed OpenRouter vision call; failures degrade to placeholders and never abort triage.
   - optional issue comment context budget: `TRIAGE_COMMENTS_CHAR_BUDGET` (default `6000`) controls total Jira comment body characters included in `issue_block`; oldest comments are dropped first when over budget.
   - optional Jira auto-apply controls (default **off**): `TRIAGE_AUTO_APPLY_DEESCALATION=true` applies Bug deescalation priority recommendations directly to Jira priority; `TRIAGE_AUTO_APPLY_BUG_TO_STORY=true` applies Bug -> Story recommendations directly to Jira issue type. Escalation (`P2 -> P1`) remains advisory-only.
-  - optional Zendesk enrichment (default **off**): when `TRIAGE_ZENDESK_CONTEXT_ENABLED=true` and Zendesk credentials are configured, triage reads Zendesk ticket ids from Jira custom fields (`TRIAGE_JIRA_ZENDESK_TICKET_IDS_FIELD_ID`, default `customfield_10158`; `TRIAGE_JIRA_IMPORTED_ZENDESK_TICKET_IDS_FIELD_ID`, default `customfield_10162`), fetches ticket metadata and comments from Zendesk API (`TRIAGE_ZENDESK_HTTP_TIMEOUT_SECONDS`, default `20`; `TRIAGE_ZENDESK_MAX_COMMENTS_PER_TICKET`, default `20`), and appends them to the issue block. **Auth:** API token (default) via `ZENDESK_BASE_URL`, `ZENDESK_USER_EMAIL` or `ZENDESK_AGENT_EMAIL`, and `ZENDESK_API_TOKEN`; or OAuth client-credentials flow when `TRIAGE_ZENDESK_ENABLE_OAUTH=true` (`ZENDESK_IDENTIFIER`, `ZENDESK_SECRET`, `ZENDESK_BASE_URL` or `ZENDESK_SUBDOMAIN`, optional `ZENDESK_OAUTH_SCOPE`). The service mints short-lived Bearer tokens in memory on demand; no browser authorize step or token file is required. When `TRIAGE_ZENDESK_COMMENT_SUMMARY_ENABLED=true` (default **off**), one OpenRouter call per linked ticket condenses comments into resolution signals (`TRIAGE_ZENDESK_SUMMARY_MODEL`, `TRIAGE_ZENDESK_COMMENTS_CHAR_BUDGET`, `TRIAGE_ZENDESK_SUMMARY_TIMEOUT_SECONDS`) rendered instead of raw ticket descriptions; failures fall back to subject/description. Priority policy and prompts weigh current impact over historical peak severity when recovery is documented in those signals.
+  - optional Zendesk enrichment (default **off**): when `TRIAGE_ZENDESK_CONTEXT_ENABLED=true` and Zendesk OAuth credentials are configured, triage reads Zendesk ticket ids from Jira custom fields (`TRIAGE_JIRA_ZENDESK_TICKET_IDS_FIELD_ID`, default `customfield_10158`; `TRIAGE_JIRA_IMPORTED_ZENDESK_TICKET_IDS_FIELD_ID`, default `customfield_10162`), fetches ticket metadata and comments from Zendesk API (`TRIAGE_ZENDESK_HTTP_TIMEOUT_SECONDS`, default `20`; `TRIAGE_ZENDESK_MAX_COMMENTS_PER_TICKET`, default `20`), and appends them to the issue block. **Auth:** OAuth client-credentials flow via `ZENDESK_IDENTIFIER`, `ZENDESK_SECRET`, `ZENDESK_BASE_URL` or `ZENDESK_SUBDOMAIN` (optional `ZENDESK_OAUTH_SCOPE`). The service mints short-lived Bearer tokens in memory on demand; no browser authorize step or token file is required. When `TRIAGE_ZENDESK_COMMENT_SUMMARY_ENABLED=true` (default **off**), one OpenRouter call per linked ticket condenses comments into resolution signals (`TRIAGE_ZENDESK_SUMMARY_MODEL`, `TRIAGE_ZENDESK_COMMENTS_CHAR_BUDGET`, `TRIAGE_ZENDESK_SUMMARY_TIMEOUT_SECONDS`) rendered instead of raw ticket descriptions; failures fall back to subject/description. Priority policy and prompts weigh current impact over historical peak severity when recovery is documented in those signals.
 3. Run quality gates:
    - `.venv/bin/pytest -m lint`
    - `.venv/bin/mypy .`
@@ -174,7 +174,62 @@ Run the same synchronous pipeline as `POST /triage` without Jira Automation (Ope
 .venv/bin/python scripts/run_triage_cli.py YOUR-123
 ```
 
-Optional `--project TJC` overrides the project key inferred from the issue key (`TJC` from `TJC-123`). Use `--read-only` for dry-run mode (no labels, no mismatch comments, no Jira field updates). Use `--auto-apply-deescalation` and/or `--auto-apply-bug-to-story` to override env defaults for this run. The handler receives `source="manual_trigger"`; stdout is JSON with `status`, `recommendation` or `failure`, per-step `classification` and `priority` when inference succeeded (Bug path includes both steps; Story path includes `classification` only), `image_context` (compact attachment summary: `enabled`, counts, per-file `status`/`summary` or `failure` — no full transcripts), and `zendesk_context` when `TRIAGE_ZENDESK_CONTEXT_ENABLED=true` (linked ticket ids, fetch/summary counts, per-ticket `resolution_signals` or subject/description fallback). Honors `TRIAGE_IMAGE_CONTEXT_ENABLED` and Zendesk flags the same way as `POST /triage` (via `build_default_triage_handler`). Langfuse generation traces send full prompts by default (`TRIAGE_LANGFUSE_TRUNCATE_PAYLOADS=false`); set `TRIAGE_LANGFUSE_TRUNCATE_PAYLOADS=true` to clip at `TRIAGE_LANGFUSE_MAX_STRING_CHARS` (8192). Exit code `0` on completed triage, `1` on `TriageFailure`, `2` on settings validation errors.
+`scripts/run_triage_cli.py` loads the repository **`.env`** from the repo root (`triage_manual_cli.py` passes that path into `load_settings`). You do not need to be in the repo directory for that file to load, but you should still run the command from the repo root so relative paths and tooling behave predictably.
+
+Optional `--project TJC` overrides the project key inferred from the issue key (`TJC` from `TJC-123`). Use `--read-only` for dry-run mode (no labels, no mismatch comments, no Jira field updates). The handler receives `source="manual_trigger"`; stdout is JSON with `status`, `recommendation` or `failure`, per-step `classification` and `priority` when inference succeeded (Bug path includes both steps; Story path includes `classification` only), `image_context` (compact attachment summary: `enabled`, counts, per-file `status`/`summary` or `failure` — no full transcripts), and `zendesk_context` when `TRIAGE_ZENDESK_CONTEXT_ENABLED=true` (linked ticket ids, fetch/summary counts, per-ticket `resolution_signals` or subject/description fallback). Honors `TRIAGE_IMAGE_CONTEXT_ENABLED` and Zendesk flags the same way as `POST /triage` (via `build_default_triage_handler`). Langfuse generation traces send full prompts by default (`TRIAGE_LANGFUSE_TRUNCATE_PAYLOADS=false`); set `TRIAGE_LANGFUSE_TRUNCATE_PAYLOADS=true` to clip at `TRIAGE_LANGFUSE_MAX_STRING_CHARS` (8192). Exit code `0` on completed triage, `1` on `TriageFailure`, `2` on settings validation errors.
+
+### Apply Jira changes + analytics dashboard
+
+To mirror production side effects on a single issue: write labels/comments, **auto-apply** deescalation priority and Bug→Story recommendations when the model suggests them, and **POST a decision row** to the analytics dashboard after a successful run.
+
+**Required in `.env` (or exported in the shell before the command):**
+
+| Goal | Variables |
+|------|-----------|
+| Jira fetch + mutations | `JIRA_API_KEY`, `JIRA_CLOUD_ID`, `JIRA_USER_EMAIL` (without cloud id + email the CLI still triages but uses a no-op Jira executor — no labels, comments, or field updates) |
+| Auto-apply deescalation | `TRIAGE_AUTO_APPLY_DEESCALATION=true` **or** CLI `--auto-apply-deescalation` |
+| Auto-apply Bug→Story | `TRIAGE_AUTO_APPLY_BUG_TO_STORY=true` **or** CLI `--auto-apply-bug-to-story` |
+| Analytics POST | `ANALYTICS_DASHBOARD_URL` (base URL including `/api/v1`), optional `ANALYTICS_TOKEN` (`X-Analytics-Token`) |
+
+Escalation (`P2 → P1` and similar) stays **advisory-only** even with auto-apply enabled. Do **not** pass `--read-only` when you want Jira writes. Analytics emission runs only on `status: completed`; failures do not POST.
+
+**Example using `.env` at the repo root** (auto-apply flags in file, analytics URL/token in file):
+
+```bash
+cd /path/to/jira_triage
+.venv/bin/python scripts/run_triage_cli.py YOUR-123
+```
+
+**Example forcing auto-apply on the CLI** (overrides `.env` when you pass the flags; omit them to fall back to `TRIAGE_AUTO_APPLY_*` in `.env`):
+
+```bash
+.venv/bin/python scripts/run_triage_cli.py YOUR-123 \
+  --auto-apply-deescalation \
+  --auto-apply-bug-to-story
+```
+
+**When `.env` does not seem to apply** — `load_dotenv` uses `override=False`, so **variables already set in your shell win** over `.env`. Stale exports (for example an empty `ANALYTICS_DASHBOARD_URL=`) block the file. Use one of:
+
+```bash
+# Re-export everything from .env for this shell, then run
+set -a && source .env && set +a
+.venv/bin/python scripts/run_triage_cli.py YOUR-123 \
+  --auto-apply-deescalation --auto-apply-bug-to-story
+```
+
+```bash
+# One-shot inline env (no dependency on .env loading)
+TRIAGE_AUTO_APPLY_DEESCALATION=true \
+TRIAGE_AUTO_APPLY_BUG_TO_STORY=true \
+ANALYTICS_DASHBOARD_URL=http://localhost:8080/api/v1 \
+ANALYTICS_TOKEN=your-token \
+JIRA_CLOUD_ID=your-cloud-id \
+JIRA_USER_EMAIL=you@example.com \
+.venv/bin/python scripts/run_triage_cli.py YOUR-123 \
+  --auto-apply-deescalation --auto-apply-bug-to-story
+```
+
+Unset conflicting shell values first if needed: `unset ANALYTICS_DASHBOARD_URL TRIAGE_AUTO_APPLY_DEESCALATION`. Check that the repo `.env` exists (copy from `.env.example`) and that `ANALYTICS_DASHBOARD_URL` is the API base (e.g. `http://host:8080/api/v1`), not the UI root. Transport errors to the dashboard are logged at warning and never fail triage.
 
 ## Bulk triage (CLI)
 
@@ -199,16 +254,37 @@ Exit code `0` when every issue completed, `1` when any issue failed or the JQL m
 
 When `ANALYTICS_DASHBOARD_URL` is set, each **successful** triage run POSTs a decision row to `{ANALYTICS_DASHBOARD_URL}/decisions` (see `docs/specification.md`). Transport errors are logged and never fail triage.
 
-To bootstrap historical rows from Langfuse before live emission is wired in production:
+All three decision-row operations live in one script with subcommands. `--env-file` goes before the subcommand name.
+
+**Backfill** — one-shot Langfuse export:
 
 ```bash
-.venv/bin/python scripts/backfill_langfuse_decisions.py \
+.venv/bin/python scripts/build_dashboard_seed.py backfill \
   -o /tmp/backfill_decisions.json \
-  --latest-only \
+  --latest-per-issue \
   --max-records 500
 ```
 
-Requires `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, and `LANGFUSE_BASE_URL` in `.env`. Exported rows use `source=backfill` and `applied_*=false` (no Jira mutation history in traces). Import the JSON into the separate dashboard service per its runbook.
+Requires `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, and `LANGFUSE_BASE_URL` in `.env`. By default only **BC** issues are exported (`--projects BC,TJC` for multiple) and traces before **2026-05-25 UTC** are skipped (`--min-occurred-at`). The cutoff is applied client-side while paginating observations (newest-first; stops when older rows appear). Use `--no-min-occurred-at` for full history. After Langfuse export, the script queries Jira for each issue’s `fields.created` and `fields.summary`, writing `issue_created_at` and `issue_name`; `triaged_at` is the Langfuse trace timestamp (same field as live `POST /decisions`). Jira credentials (`JIRA_API_KEY`, `JIRA_CLOUD_ID`, `JIRA_USER_EMAIL`) are required unless you pass `--no-jira-created`. Use `--no-jira-created` to skip the Jira step. Exported rows use `applied_*=false` (no Jira mutation history in traces). Import the JSON into the separate dashboard service per its runbook.
+
+**Catch-up** — incremental since seed (container startup before DB ingest):
+
+```bash
+.venv/bin/python scripts/build_dashboard_seed.py catchup \
+  --seed decisions.json \
+  -o catchup.json \
+  --projects BC,TJC
+```
+
+Queries Langfuse from the latest `triaged_at` in the seed and writes only rows whose `run_id` is absent. Re-running is idempotent.
+
+**Enrich** — add Jira metadata to existing JSON:
+
+```bash
+.venv/bin/python scripts/build_dashboard_seed.py enrich decisions.json
+```
+
+Writes in place by default; use `-o /path/out.json` for a copy. Skips rows that already have both fields unless `--force-refresh`.
 
 ## Jira Automation recipe (scheduled scan)
 

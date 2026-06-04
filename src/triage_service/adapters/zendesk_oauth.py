@@ -104,8 +104,8 @@ class ZendeskOAuthClient:
     def _require_oauth_config(self) -> None:
         if not self._settings.zendesk_oauth_configured:
             raise ZendeskOAuthError(
-                "Zendesk OAuth is not configured; set TRIAGE_ZENDESK_ENABLE_OAUTH=true, "
-                "ZENDESK_IDENTIFIER, ZENDESK_SECRET, and ZENDESK_BASE_URL or ZENDESK_SUBDOMAIN.",
+                "Zendesk OAuth is not configured; set ZENDESK_IDENTIFIER, ZENDESK_SECRET, "
+                "and ZENDESK_BASE_URL or ZENDESK_SUBDOMAIN.",
             )
 
     def _base_url(self) -> str:
@@ -131,7 +131,7 @@ class ZendeskOAuthClient:
 
 
 def build_zendesk_oauth_client(settings: AppSettings) -> ZendeskOAuthClient | None:
-    """Return an OAuth client when OAuth mode is enabled."""
-    if not settings.triage_zendesk_enable_oauth:
+    """Return an OAuth client when confidential client credentials are configured."""
+    if not settings.zendesk_oauth_configured:
         return None
     return ZendeskOAuthClient(settings)

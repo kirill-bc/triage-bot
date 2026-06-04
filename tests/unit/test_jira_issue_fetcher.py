@@ -15,6 +15,7 @@ from triage_service.adapters.jira_issue_fetcher import (
     JiraIssueFetcher,
     _MAX_COMMENT_PAGES,
     _comments_needed_for_triage,
+    normalize_jira_created_timestamp,
 )
 from triage_service.core.settings import AppSettings
 
@@ -535,6 +536,36 @@ def test_fetch_issue_returns_summary_description_type_priority_reporter(
 
 
 @pytest.mark.unit
+def test_fetch_issue_populates_issue_created_at_from_jira_created_field(
+    jira_app_settings: AppSettings,
+) -> None:
+    body = {
+        "key": "TJC-99",
+        "fields": {
+            "summary": "Crash",
+            "description": "Details",
+            "issuetype": {"name": "Bug"},
+            "priority": {"name": "High"},
+            "reporter": {"displayName": "Alice Support"},
+            "created": "2026-06-02T12:55:00.123+0000",
+        },
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/comment"):
+            return httpx.Response(200, json=_empty_comment_page())
+        assert "created" in str(request.url)
+        return httpx.Response(200, json=body)
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        fetcher = JiraIssueFetcher(jira_app_settings, client=client)
+        issue = fetcher.fetch("TJC-99", run_id="run-created")
+
+    assert issue.issue_created_at == "2026-06-02T12:55:00.123Z"
+
+
+@pytest.mark.unit
 def test_fetch_issue_extracts_reproduction_steps_section_from_description(
     jira_app_settings: AppSettings,
 ) -> None:
@@ -638,6 +669,81 @@ def test_fetch_issue_uses_reporter_account_id_when_display_name_missing(
     assert issue.priority is None
     assert issue.reporter == "acc-123"
     assert issue.reporter_account_id == "acc-123"
+
+
+@pytest.mark.unit
+def test_normalize_jira_created_timestamp_converts_jira_offset_to_z() -> None:
+    assert (
+        normalize_jira_created_timestamp("2026-05-29T11:00:00.000+0000")
+        == "2026-05-29T11:00:00.000Z"
+    )
+
+
+@pytest.mark.unit
+def test_normalize_jira_created_timestamp_converts_non_utc_jira_offset() -> None:
+    assert (
+        normalize_jira_created_timestamp("2026-05-29T22:00:00.000+1100")
+        == "2026-05-29T11:00:00.000Z"
+    )
+    assert (
+        normalize_jira_created_timestamp("2026-05-29T06:00:00.000-0500")
+        == "2026-05-29T11:00:00.000Z"
+    )
+
+
+@pytest.mark.unit
+def test_normalize_jira_created_timestamp_converts_z_suffix() -> None:
+    assert (
+        normalize_jira_created_timestamp("2026-05-29T11:00:00.000Z")
+        == "2026-05-29T11:00:00.000Z"
+    )
+
+
+@pytest.mark.unit
+def test_fetch_created_at_requests_only_created_field(
+    jira_app_settings: AppSettings,
+) -> None:
+    body = {
+        "key": "BC-99",
+        "fields": {"created": "2026-05-21T14:22:11.456+0000"},
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path.endswith("/rest/api/3/issue/BC-99")
+        assert request.url.params.get("fields") == "created"
+        return httpx.Response(200, json=body)
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        fetcher = JiraIssueFetcher(jira_app_settings, client=client)
+        created = fetcher.fetch_created_at("BC-99", run_id="run-test")
+    assert created == "2026-05-21T14:22:11.456+0000"
+
+
+@pytest.mark.unit
+def test_fetch_decision_metadata_returns_created_and_summary(
+    jira_app_settings: AppSettings,
+) -> None:
+    body = {
+        "key": "BC-88",
+        "fields": {
+            "created": "2026-05-21T14:22:11.456+0000",
+            "summary": "  Payment timeout  ",
+        },
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params.get("fields") == "created,summary"
+        return httpx.Response(200, json=body)
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        fetcher = JiraIssueFetcher(jira_app_settings, client=client)
+        meta = fetcher.fetch_decision_metadata("BC-88", run_id="run-meta")
+
+    assert meta.issue_created_at == "2026-05-21T14:22:11.456Z"
+    assert meta.issue_name == "Payment timeout"
 
 
 @pytest.mark.unit

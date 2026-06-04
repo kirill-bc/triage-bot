@@ -157,8 +157,8 @@ def main(argv: list[str] | None = None) -> int:
         project=project_arg,
         post_mismatch_comments=not ns.read_only,
         apply_to_jira=not ns.read_only,
-        auto_apply_deescalation=ns.auto_apply_deescalation,
-        auto_apply_bug_to_story=ns.auto_apply_bug_to_story,
+        auto_apply_deescalation=ns.auto_apply_deescalation or None,
+        auto_apply_bug_to_story=ns.auto_apply_bug_to_story or None,
     )
     image_context = build_cli_image_context_summary(
         enabled=settings.triage_image_context_enabled,

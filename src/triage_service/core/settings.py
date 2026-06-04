@@ -6,7 +6,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from dotenv import find_dotenv, load_dotenv
-from pydantic import AliasChoices, Field, computed_field, field_validator, model_validator
+from pydantic import Field, computed_field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing_extensions import Self
 
@@ -267,26 +267,6 @@ class AppSettings(BaseSettings):
         validation_alias="ZENDESK_BASE_URL",
         description="Zendesk subdomain base URL (e.g. https://acme.zendesk.com).",
     )
-    zendesk_user_email: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("ZENDESK_USER_EMAIL", "ZENDESK_AGENT_EMAIL"),
-        description=(
-            "Zendesk user email for API token auth "
-            "(ZENDESK_USER_EMAIL or ZENDESK_AGENT_EMAIL)."
-        ),
-    )
-    zendesk_api_token: str | None = Field(
-        default=None,
-        validation_alias="ZENDESK_API_TOKEN",
-        description="Zendesk API token for ticket enrichment.",
-    )
-    triage_zendesk_enable_oauth: bool = Field(
-        default=False,
-        validation_alias="TRIAGE_ZENDESK_ENABLE_OAUTH",
-        description=(
-            "Use Zendesk OAuth client_credentials flow instead of email/API token Basic auth."
-        ),
-    )
     zendesk_subdomain: str | None = Field(
         default=None,
         validation_alias="ZENDESK_SUBDOMAIN",
@@ -459,9 +439,7 @@ class AppSettings(BaseSettings):
 
     @property
     def zendesk_oauth_configured(self) -> bool:
-        """True when OAuth mode is on and confidential client credentials are present."""
-        if not self.triage_zendesk_enable_oauth:
-            return False
+        """True when confidential OAuth client credentials and base URL are present."""
         return bool(
             self.resolve_zendesk_base_url()
             and str(self.zendesk_identifier or "").strip()

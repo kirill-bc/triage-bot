@@ -463,7 +463,11 @@ def test_handler_emits_stage_timing_for_fetch_model_and_executor(
                 run_id="run-correlation-latency",
             )
 
-    stage_names = [call.kwargs["extra"]["stage"] for call in logger.info.call_args_list]
+    stage_names = [
+        call.kwargs["extra"]["stage"]
+        for call in logger.info.call_args_list
+        if call.kwargs.get("extra", {}).get("event_type") == "triage_stage_timing"
+    ]
     assert stage_names == [
         "jira_fetch",
         "image_context_extraction",
@@ -471,7 +475,7 @@ def test_handler_emits_stage_timing_for_fetch_model_and_executor(
         "priority_inference",
         "jira_action",
     ]
-    assert logger.info.call_count == 5
+    assert len(stage_names) == 5
 
 
 @pytest.mark.unit
@@ -1185,9 +1189,11 @@ class _RecordingAnalyticsClient:
         applied_type_change: bool,
         applied_priority_change: bool,
         inference_cost_usd: float | None,
-        occurred_at: object = None,
+        triaged_at: object = None,
+        issue_created_at: object = None,
+        issue_name: object = None,
     ) -> None:
-        _ = occurred_at
+        _ = (triaged_at, issue_created_at, issue_name)
         self.calls.append(
             {
                 "event": event,

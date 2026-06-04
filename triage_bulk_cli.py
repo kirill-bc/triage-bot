@@ -316,8 +316,8 @@ def main(argv: list[str] | None = None) -> int:
         settings=settings,
         apply_to_jira=apply_to_jira,
         post_mismatch_comments=post_mismatch_comments,
-        auto_apply_deescalation=ns.auto_apply_deescalation,
-        auto_apply_bug_to_story=ns.auto_apply_bug_to_story,
+        auto_apply_deescalation=ns.auto_apply_deescalation or None,
+        auto_apply_bug_to_story=ns.auto_apply_bug_to_story or None,
         show_progress=None if not ns.no_progress else False,
     )
     output_path = Path(ns.output)
