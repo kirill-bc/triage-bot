@@ -443,6 +443,41 @@ def test_latest_per_issue_keeps_latest_timestamp() -> None:
 
 
 @pytest.mark.unit
+def test_exclude_blacklisted_issues_drops_matching_keys() -> None:
+    from scripts.build_dashboard_seed import exclude_blacklisted_issues
+
+    rows = [
+        {"issue_key": "BC-22932", "run_id": "a"},
+        {"issue_key": "BC-100", "run_id": "b"},
+        {"issue_key": "bc-22932", "run_id": "c"},
+    ]
+    filtered = exclude_blacklisted_issues(rows, excluded_issues=frozenset({"BC-22932"}))
+    assert [row["run_id"] for row in filtered] == ["b"]
+
+
+@pytest.mark.unit
+def test_backfill_main_passes_default_excluded_issues(tmp_path: Path) -> None:
+    from scripts.build_dashboard_seed import main
+
+    output = tmp_path / "decisions.json"
+    with patch("scripts.build_dashboard_seed.export_backfill", return_value=[]) as mock_export:
+        rc = main(
+            [
+                "--env-file",
+                str(tmp_path / "missing.env"),
+                "backfill",
+                "--output",
+                str(output),
+                "--no-jira-created",
+                "--no-min-occurred-at",
+            ],
+        )
+
+    assert rc == 0
+    assert mock_export.call_args.kwargs["excluded_issues"] == frozenset({"BC-22932"})
+
+
+@pytest.mark.unit
 def test_main_writes_output_json(tmp_path: Path) -> None:
     from scripts.build_dashboard_seed import main
 

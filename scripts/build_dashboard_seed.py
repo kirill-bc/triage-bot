@@ -39,6 +39,7 @@ _PRIORITY_RE = re.compile(
 )
 _PROJECT_ISSUE_KEY_RE = re.compile(r"^[A-Z]+-\d+$")
 _DEFAULT_MIN_OCCURRED_AT = "2026-05-25"
+_DEFAULT_EXCLUDE_ISSUES = "BC-22932"
 _LANGFUSE_GET_RETRIES = 3
 _LANGFUSE_RETRYABLE_STATUSES = frozenset({429, 502, 503, 504})
 
@@ -729,7 +730,11 @@ def enrich_decision_file(
     return enriched
 
 
-def _add_common_langfuse_args(parser: argparse.ArgumentParser) -> None:
+def _add_common_langfuse_args(
+    parser: argparse.ArgumentParser,
+    *,
+    exclude_issues_default: str = _DEFAULT_EXCLUDE_ISSUES,
+) -> None:
     """Add flags shared by ``backfill`` and ``catchup`` subcommands."""
     parser.add_argument(
         "--page-size",
@@ -770,14 +775,17 @@ def _add_common_langfuse_args(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Skip Jira REST lookup for issue_created_at and issue_name.",
     )
+    exclude_help = (
+        "Comma-separated issue keys to exclude from export "
+        "(e.g. BC-22932,BC-12345). Case-insensitive."
+    )
+    if exclude_issues_default:
+        exclude_help += f" Default: {exclude_issues_default}."
     parser.add_argument(
         "--exclude-issues",
-        default="",
+        default=exclude_issues_default,
         metavar="KEYS",
-        help=(
-            "Comma-separated issue keys to exclude from export "
-            "(e.g. BC-22932,BC-12345). Case-insensitive."
-        ),
+        help=exclude_help,
     )
 
 

@@ -1,5 +1,10 @@
 # Project memory
 
+## 2026-06-05 (close — dashboard seed default issue exclude)
+
+- **Phase close (`/close-phase`):** From `.venv`, `pytest -m lint` (5 passed), `mypy .` (115 files), `pytest -m "unit or integration"` (**607 passed**, **1 skipped** `OPENROUTER_LIVE_SMOKE`, **6 deselected**). **Dashboard seed tooling:** `scripts/build_dashboard_seed.py` `backfill` / `catchup` now default `--exclude-issues` to **BC-22932** (known bad/outlier row for dashboard bootstrap); pass `--exclude-issues ""` to include it. `_add_common_langfuse_args` accepts `exclude_issues_default` for subcommand-specific defaults. Tests: `test_exclude_blacklisted_issues_drops_matching_keys`, `test_backfill_main_passes_default_excluded_issues`. Docs: `README.md` Analytics dashboard section.
+- **Next backlog:** §11 Post-MVP (Langfuse root trace cost, image inline placement, advisory formatting step, Zendesk benchmark stratification); §12 integration tests (deferred).
+
 ## 2026-06-04 (close — analytics emission hardening + intake priority default)
 
 - **Phase close (`/close-phase`):** From `.venv`, `pytest -m lint` (5 passed), `mypy .` (115 files), `pytest -m "unit or integration"` (**605 passed**, **1 skipped** `OPENROUTER_LIVE_SMOKE`, **6 deselected**). **Analytics client hardening:** `HttpAnalyticsDecisionClient` background POST threads are **daemon** so process shutdown is not blocked; `emit_completed_decision` wraps payload build/dispatch in try/except and logs `analytics_decision_emit_failed` without affecting triage. Tests: `test_start_background_task_uses_daemon_thread`, `test_http_client_swallows_payload_build_errors`. **Intake priority telemetry:** `_normalized_intake_priority` defaults Bug intake to **`P3`** when Jira priority is missing or not in `P0`–`P4` (Story intake still null); improves dashboard promoted/demoted accuracy. Tests: `test_triage_completed_telemetry_defaults_intake_priority_to_p3_*`, updated story-path audit expectation. Docs: `docs/specification.md` intake field note.
