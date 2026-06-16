@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+import json
 import logging
 import sys
 from time import perf_counter
+from typing import Any
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -13,10 +15,64 @@ from starlette.responses import Response
 
 LOGGER = logging.getLogger(__name__)
 
-_LOG_FORMAT = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
 _LOG_DATE_FORMAT = "%Y-%m-%dT%H:%M:%S%z"
 _QUIET_HTTP_CLIENT_LOGGERS = ("httpx", "httpcore", "urllib3")
 _RUNTIME_CONFIGURED = False
+
+# Standard ``LogRecord`` attributes that should not be re-emitted as ``extra`` fields.
+_RESERVED_LOG_RECORD_KEYS = frozenset(
+    {
+        "args",
+        "asctime",
+        "created",
+        "exc_info",
+        "exc_text",
+        "filename",
+        "funcName",
+        "levelname",
+        "levelno",
+        "lineno",
+        "module",
+        "msecs",
+        "msg",
+        "message",
+        "name",
+        "pathname",
+        "process",
+        "processName",
+        "relativeCreated",
+        "stack_info",
+        "taskName",
+        "thread",
+        "threadName",
+    }
+)
+
+
+class JsonLogFormatter(logging.Formatter):
+    """Render log records as single-line JSON, including ``extra`` fields.
+
+    Mirrors the dashboard service's JSON formatter so structured detail attached
+    via ``extra={...}`` (e.g. ``run_id``, ``url``, ``error``, ``status_code``)
+    reaches Loki instead of being dropped by a message-only text format.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload: dict[str, Any] = {
+            "timestamp": self.formatTime(record, self.datefmt),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        for key, value in record.__dict__.items():
+            if key in _RESERVED_LOG_RECORD_KEYS or key in payload:
+                continue
+            payload[key] = value
+        if record.exc_info:
+            payload["exc_info"] = self.formatException(record.exc_info)
+        if record.stack_info:
+            payload["stack_info"] = self.formatStack(record.stack_info)
+        return json.dumps(payload, default=str, ensure_ascii=False)
 
 
 def reset_runtime_logging_for_tests() -> None:
@@ -47,13 +103,9 @@ def configure_runtime_logging(
     level = getattr(logging, log_level.upper(), logging.INFO)
     client_level = getattr(logging, http_client_log_level.upper(), logging.WARNING)
 
-    logging.basicConfig(
-        level=level,
-        format=_LOG_FORMAT,
-        datefmt=_LOG_DATE_FORMAT,
-        stream=sys.stdout,
-        force=True,
-    )
+    handler = logging.StreamHandler(stream=sys.stdout)
+    handler.setFormatter(JsonLogFormatter(datefmt=_LOG_DATE_FORMAT))
+    logging.basicConfig(level=level, handlers=[handler], force=True)
     for name in _QUIET_HTTP_CLIENT_LOGGERS:
         logging.getLogger(name).setLevel(client_level)
     logging.getLogger("uvicorn.access").setLevel(level)

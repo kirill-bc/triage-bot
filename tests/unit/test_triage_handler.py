@@ -78,6 +78,8 @@ def _app_settings(monkeypatch: pytest.MonkeyPatch, **env: str) -> AppSettings:
     monkeypatch.setenv("JIRA_USER_EMAIL", "bot@example.com")
     if "TRIAGE_AUTO_APPLY_DEESCALATION" not in env:
         monkeypatch.setenv("TRIAGE_AUTO_APPLY_DEESCALATION", "false")
+    if "TRIAGE_AUTO_APPLY_ESCALATION" not in env:
+        monkeypatch.setenv("TRIAGE_AUTO_APPLY_ESCALATION", "false")
     if "TRIAGE_AUTO_APPLY_BUG_TO_STORY" not in env:
         monkeypatch.setenv("TRIAGE_AUTO_APPLY_BUG_TO_STORY", "false")
     for key, value in env.items():
@@ -706,6 +708,7 @@ def test_handler_bug_path_emits_classification_priority_and_triage_completed_aud
         "image_context_attachments_considered": 0,
         "image_context_attachments_extracted": 0,
         "auto_apply_deescalation_enabled": False,
+        "auto_apply_escalation_enabled": False,
         "auto_apply_bug_to_story_enabled": False,
         "priority_signal": "prioritize",
         "jira_priority": "P2",
@@ -774,6 +777,7 @@ def test_handler_story_path_emits_classification_and_triage_completed_without_pr
         "image_context_attachments_considered": 0,
         "image_context_attachments_extracted": 0,
         "auto_apply_deescalation_enabled": False,
+        "auto_apply_escalation_enabled": False,
         "auto_apply_bug_to_story_enabled": False,
         "would_post_jira_comment": True,
         "would_auto_apply_issue_type_change": False,
@@ -838,6 +842,66 @@ def test_handler_bug_deescalation_telemetry_respects_auto_apply_flag(
     assert event.telemetry["would_post_jira_comment"] is True
     assert event.telemetry["would_auto_apply_priority_change"] is True
     assert event.telemetry["auto_apply_deescalation_enabled"] is True
+
+
+@pytest.mark.unit
+def test_handler_bug_escalation_telemetry_respects_auto_apply_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _app_settings(monkeypatch, TRIAGE_AUTO_APPLY_ESCALATION="true")
+    issue = FetchedIssue(
+        issue_key="TJC-22",
+        summary="outage",
+        description="down",
+        issue_type="Bug",
+        priority="P3",
+        reporter="bob",
+    )
+
+    def jira_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_jira_payload_for(issue))
+
+    cls_json = '{"recommended_issue_type":"Bug","confidence":0.55,"reason":"Defect."}'
+    pri_json = '{"recommended_priority":"P1","confidence":0.88,"reason":"Critical impact."}'
+    responses = [cls_json, pri_json]
+    idx = {"i": 0}
+
+    def openrouter_handler(request: httpx.Request) -> httpx.Response:
+        i = idx["i"]
+        idx["i"] = i + 1
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": responses[i]}}]},
+        )
+
+    audit = _RecordingAuditStore()
+    with httpx.Client(transport=httpx.MockTransport(jira_handler)) as j_client:
+        with httpx.Client(transport=httpx.MockTransport(openrouter_handler)) as o_client:
+            fetcher = JiraIssueFetcher(settings, client=j_client)
+            inference = OpenRouterInferenceClient(settings, client=o_client)
+            handler = TriageHandler(
+                allowed_projects=("TJC",),
+                fetcher=fetcher,
+                inference=inference,
+                policy=_policy(),
+                executor=_RecordingExecutor(),
+                audit_store=audit,
+                settings=settings,
+            )
+            _ = handler.run_sync(
+                issue_key="TJC-22",
+                project="TJC",
+                source="bug_created",
+                run_id="run-audit-bug-escalate",
+            )
+
+    event = audit.events[2]
+    assert isinstance(event, TriageCompletedAuditEvent)
+    assert event.telemetry is not None
+    assert event.telemetry["priority_signal"] == "prioritize"
+    assert event.telemetry["would_post_jira_comment"] is True
+    assert event.telemetry["would_auto_apply_priority_change"] is True
+    assert event.telemetry["auto_apply_escalation_enabled"] is True
 
 
 @pytest.mark.unit

@@ -364,6 +364,14 @@ class AppSettings(BaseSettings):
             "priority (deescalation)."
         ),
     )
+    triage_auto_apply_escalation: bool = Field(
+        default=False,
+        validation_alias="TRIAGE_AUTO_APPLY_ESCALATION",
+        description=(
+            "Auto-apply Jira priority field changes when TriageBot recommends a more urgent "
+            "priority (escalation/prioritization)."
+        ),
+    )
     triage_auto_apply_bug_to_story: bool = Field(
         default=False,
         validation_alias="TRIAGE_AUTO_APPLY_BUG_TO_STORY",

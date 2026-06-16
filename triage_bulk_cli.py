@@ -113,6 +113,7 @@ def run_bulk_triage(
     apply_to_jira: bool = False,
     post_mismatch_comments: bool = False,
     auto_apply_deescalation: bool | None = None,
+    auto_apply_escalation: bool | None = None,
     auto_apply_bug_to_story: bool | None = None,
     show_progress: bool | None = None,
 ) -> list[BulkTriageIssueRow]:
@@ -124,6 +125,7 @@ def run_bulk_triage(
             post_mismatch_comments=post_mismatch_comments,
             apply_to_jira=apply_to_jira,
             auto_apply_deescalation=auto_apply_deescalation,
+            auto_apply_escalation=auto_apply_escalation,
             auto_apply_bug_to_story=auto_apply_bug_to_story,
         )
     rows: list[BulkTriageIssueRow] = []
@@ -144,6 +146,7 @@ def run_bulk_triage(
             post_mismatch_comments=post_mismatch_comments,
             apply_to_jira=apply_to_jira,
             auto_apply_deescalation=auto_apply_deescalation,
+            auto_apply_escalation=auto_apply_escalation,
             auto_apply_bug_to_story=auto_apply_bug_to_story,
         )
         image_context = build_cli_image_context_summary(
@@ -265,6 +268,14 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--auto-apply-escalation",
+        action="store_true",
+        help=(
+            "When --apply is set, directly update Jira priority for more-urgent "
+            "recommendations (escalations)."
+        ),
+    )
+    parser.add_argument(
         "--auto-apply-bug-to-story",
         action="store_true",
         help=(
@@ -317,6 +328,7 @@ def main(argv: list[str] | None = None) -> int:
         apply_to_jira=apply_to_jira,
         post_mismatch_comments=post_mismatch_comments,
         auto_apply_deescalation=ns.auto_apply_deescalation or None,
+        auto_apply_escalation=ns.auto_apply_escalation or None,
         auto_apply_bug_to_story=ns.auto_apply_bug_to_story or None,
         show_progress=None if not ns.no_progress else False,
     )

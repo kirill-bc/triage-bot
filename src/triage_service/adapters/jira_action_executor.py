@@ -316,6 +316,7 @@ class JiraTriageActionExecutor:
         client: httpx.Client | None = None,
         post_mismatch_comments: bool = True,
         auto_apply_deescalation: bool | None = None,
+        auto_apply_escalation: bool | None = None,
         auto_apply_bug_to_story: bool | None = None,
     ) -> None:
         self._settings = settings
@@ -325,6 +326,11 @@ class JiraTriageActionExecutor:
             settings.triage_auto_apply_deescalation
             if auto_apply_deescalation is None
             else auto_apply_deescalation
+        )
+        self._auto_apply_escalation = (
+            settings.triage_auto_apply_escalation
+            if auto_apply_escalation is None
+            else auto_apply_escalation
         )
         self._auto_apply_bug_to_story = (
             settings.triage_auto_apply_bug_to_story
@@ -478,11 +484,21 @@ class JiraTriageActionExecutor:
                 headers,
             )
             applied_type_change = True
-        if (
-            self._auto_apply_deescalation
-            and flags.priority_mismatch
-            and _priority_signal(issue, recommendation) == "deescalate"
-        ):
+        priority_signal = _priority_signal(issue, recommendation)
+        should_apply_priority = (
+            flags.priority_mismatch
+            and (
+                (
+                    priority_signal == "deescalate"
+                    and self._auto_apply_deescalation
+                )
+                or (
+                    priority_signal == "prioritize"
+                    and self._auto_apply_escalation
+                )
+            )
+        )
+        if should_apply_priority:
             rec_priority = recommendation.recommended_priority
             if rec_priority is not None:
                 self._update_issue_fields(

@@ -18,11 +18,10 @@
 - Trigger triage from a Jira Automation **scheduled rule** whose JQL selects unprocessed issues in a stabilization window (see `jira_automation_trigger` below). Jira owns delay, dedupe, and the backstop window so the service stays stateless.
 - Send issue key to AI Triage Service (service fetches latest issue state at analysis time).
 - AI service returns structured recommendation with confidence and reasoning (fields depend on which inference steps ran; see response contract).
-- The AI Triage Service applies an internal comment and the `triagebot-reviewed` label after every **successful** analysis, regardless of whether a mismatch was detected. Mismatch-specific labels (`triagebot-likely-story`, `triagebot-priority-mismatch`) and comment content trigger only on mismatch. Field mutations are opt-in via config: Bug deescalation priority updates and Bug -> Story issue-type updates can be auto-applied; Bug prioritization/escalation remains advisory-only.
+- The AI Triage Service applies an internal comment and the `triagebot-reviewed` label after every **successful** analysis, regardless of whether a mismatch was detected. Mismatch-specific labels (`triagebot-likely-story`, `triagebot-priority-mismatch`) and comment content trigger only on mismatch. Field mutations are opt-in via config: Bug deescalation, Bug escalation/prioritization, and Bug -> Story issue-type updates can each be auto-applied independently.
 - Persist audit logs of AI inputs/outputs and applied automation actions.
 
 ## Out-of-scope
-- Automatic Bug prioritization/escalation in Phase 1 (still advisory-only).
 - Zendesk intake integration.
 - Full Confluence-wide RAG implementation.
 - Enforcement workflows requiring manual override reason (future hard-enforcement phase).
@@ -91,8 +90,8 @@
       - `triagebot-priority-mismatch` when the Bug path predicted a priority that differs from the current Jira priority. N/A on the Story path (priority inference does not run).
     - Optional auto-apply mutations (feature flags, default off):
       - `TRIAGE_AUTO_APPLY_DEESCALATION=true`: apply Bug deescalation recommendation to Jira priority field.
+      - `TRIAGE_AUTO_APPLY_ESCALATION=true`: apply Bug escalation/prioritization recommendation to Jira priority field.
       - `TRIAGE_AUTO_APPLY_BUG_TO_STORY=true`: apply Bug -> Story recommendation to Jira issue type field.
-      - Escalation/prioritization (`P2 -> P1`) remains advisory-only.
   - When recommendation matches current state, apply `triagebot-reviewed` only — no comment, no mismatch labels.
   - When triage returns a `TriageFailure` (Jira fetch error, OpenRouter inference error, invalid model output, unexpected error), apply **no** labels and post **no** comment. The issue keeps matching the JQL and is retried automatically on the next scheduled run, until it succeeds or ages past the backstop window.
   - Re-triage policy: an operator may remove `triagebot-reviewed` on a Jira issue to force re-analysis on the next scheduled scan. There is no TTL or service-side state to clear.

@@ -155,7 +155,7 @@ def test_run_bulk_triage_forwards_auto_apply_flags_to_run_cli_triage() -> None:
     from triage_bulk_cli import run_bulk_triage
 
     refs = [JiraSearchIssueRef(issue_key="TJC-3", issue_type="Bug", priority="P2")]
-    forwarded: list[tuple[bool | None, bool | None]] = []
+    forwarded: list[tuple[bool | None, bool | None, bool | None]] = []
 
     class _Settings:
         triage_image_context_enabled = False
@@ -168,10 +168,13 @@ def test_run_bulk_triage_forwards_auto_apply_flags_to_run_cli_triage() -> None:
         post_mismatch_comments: bool = True,
         apply_to_jira: bool = True,
         auto_apply_deescalation: bool | None = None,
+        auto_apply_escalation: bool | None = None,
         auto_apply_bug_to_story: bool | None = None,
     ) -> TriageSyncResult:
         _ = (issue_key, project, runner, post_mismatch_comments, apply_to_jira)
-        forwarded.append((auto_apply_deescalation, auto_apply_bug_to_story))
+        forwarded.append(
+            (auto_apply_deescalation, auto_apply_escalation, auto_apply_bug_to_story),
+        )
         return TriageSyncResult(
             outcome=TriageRecommendation(
                 recommended_issue_type="Story",
@@ -191,4 +194,4 @@ def test_run_bulk_triage_forwards_auto_apply_flags_to_run_cli_triage() -> None:
             show_progress=False,
         )
 
-    assert forwarded == [(True, False)]
+    assert forwarded == [(True, None, False)]

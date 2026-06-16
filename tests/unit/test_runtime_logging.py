@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import sys
 
@@ -13,6 +14,7 @@ from fastapi.testclient import TestClient
 from triage_service.adapters.jira_http_retry import request_with_retries
 from triage_service.observability.runtime_logging import (
     HttpAccessLogMiddleware,
+    JsonLogFormatter,
     configure_runtime_logging,
     reset_runtime_logging_for_tests,
 )
@@ -21,6 +23,120 @@ from triage_service.observability.runtime_logging import (
 @pytest.fixture(autouse=True)
 def _reset_logging() -> None:
     reset_runtime_logging_for_tests()
+
+
+def _make_record(
+    *,
+    msg: str = "analytics_decision_post_failed",
+    extra: dict[str, object] | None = None,
+) -> logging.LogRecord:
+    record = logging.LogRecord(
+        name="triage_service.adapters.analytics_decision_client",
+        level=logging.WARNING,
+        pathname=__file__,
+        lineno=1,
+        msg=msg,
+        args=(),
+        exc_info=None,
+    )
+    for key, value in (extra or {}).items():
+        setattr(record, key, value)
+    return record
+
+
+@pytest.mark.unit
+def test_json_formatter_emits_extra_fields() -> None:
+    formatter = JsonLogFormatter()
+    record = _make_record(
+        extra={
+            "event_type": "analytics_decision_post_failed",
+            "run_id": "run-123",
+            "issue_key": "PROJ-1",
+            "url": "http://dashboard/decisions",
+            "error": "ConnectTimeout",
+        },
+    )
+
+    payload = json.loads(formatter.format(record))
+
+    assert payload["message"] == "analytics_decision_post_failed"
+    assert payload["event_type"] == "analytics_decision_post_failed"
+    assert payload["run_id"] == "run-123"
+    assert payload["issue_key"] == "PROJ-1"
+    assert payload["url"] == "http://dashboard/decisions"
+    assert payload["error"] == "ConnectTimeout"
+
+
+@pytest.mark.unit
+def test_json_formatter_includes_standard_fields() -> None:
+    formatter = JsonLogFormatter()
+    record = _make_record(msg="hello")
+
+    payload = json.loads(formatter.format(record))
+
+    assert payload["message"] == "hello"
+    assert payload["level"] == "WARNING"
+    assert payload["logger"] == "triage_service.adapters.analytics_decision_client"
+    assert isinstance(payload["timestamp"], str)
+    assert payload["timestamp"]
+
+
+@pytest.mark.unit
+def test_json_formatter_renders_message_args() -> None:
+    formatter = JsonLogFormatter()
+    record = logging.LogRecord(
+        name="t",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="http_request status=%d",
+        args=(200,),
+        exc_info=None,
+    )
+
+    payload = json.loads(formatter.format(record))
+
+    assert payload["message"] == "http_request status=200"
+
+
+@pytest.mark.unit
+def test_json_formatter_includes_exception_traceback() -> None:
+    formatter = JsonLogFormatter()
+    try:
+        raise RuntimeError("boom")
+    except RuntimeError:
+        record = logging.LogRecord(
+            name="t",
+            level=logging.ERROR,
+            pathname=__file__,
+            lineno=1,
+            msg="failed",
+            args=(),
+            exc_info=sys.exc_info(),
+        )
+
+    payload = json.loads(formatter.format(record))
+
+    assert "RuntimeError: boom" in payload["exc_info"]
+
+
+@pytest.mark.unit
+def test_json_formatter_coerces_non_serializable_values() -> None:
+    formatter = JsonLogFormatter()
+    record = _make_record(extra={"obj": object()})
+
+    payload = json.loads(formatter.format(record))
+
+    assert isinstance(payload["obj"], str)
+
+
+@pytest.mark.unit
+def test_configure_runtime_logging_uses_json_formatter() -> None:
+    configure_runtime_logging(log_level="INFO", force=True)
+
+    handlers = logging.getLogger().handlers
+    assert len(handlers) == 1
+    assert isinstance(handlers[0].formatter, JsonLogFormatter)
 
 
 @pytest.mark.unit

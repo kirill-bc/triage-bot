@@ -84,7 +84,7 @@ From repository root:
    - optional local smoke mode: `TRIAGE_LOCAL_MOCK_MODE` (`1`, `true`, `yes`, or `on`) switches triage into a deterministic local runner that skips Jira/OpenRouter calls. Intended only for local container smoke checks.
   - optional image attachment preprocessing (default **off**): `TRIAGE_IMAGE_CONTEXT_ENABLED` runs description-inline images first, then comment-referenced images (if slots remain) through a dedicated vision model before classification and priority. Uses `TRIAGE_VISION_MODEL` (independent from `TRIAGE_TEXT_MODEL`), `TRIAGE_IMAGE_CONTEXT_MAX_ATTACHMENTS` (default `5`), `TRIAGE_IMAGE_CONTEXT_MAX_BYTES_PER_IMAGE` (default 5 MiB), `TRIAGE_IMAGE_CONTEXT_TIMEOUT_SECONDS` (default `90`). Audit logs redact vision transcripts by default (`TRIAGE_AUDIT_REDACT_IMAGE_TRANSCRIPT=true`) because screenshots often contain PII. Each processed image is one billed OpenRouter vision call; failures degrade to placeholders and never abort triage.
   - optional issue comment context budget: `TRIAGE_COMMENTS_CHAR_BUDGET` (default `6000`) controls total Jira comment body characters included in `issue_block`; oldest comments are dropped first when over budget.
-  - optional Jira auto-apply controls (default **off**): `TRIAGE_AUTO_APPLY_DEESCALATION=true` applies Bug deescalation priority recommendations directly to Jira priority; `TRIAGE_AUTO_APPLY_BUG_TO_STORY=true` applies Bug -> Story recommendations directly to Jira issue type. Escalation (`P2 -> P1`) remains advisory-only.
+  - optional Jira auto-apply controls (default **off**): `TRIAGE_AUTO_APPLY_DEESCALATION=true` applies Bug deescalation priority recommendations directly to Jira priority; `TRIAGE_AUTO_APPLY_ESCALATION=true` applies Bug escalation/prioritization recommendations directly to Jira priority; `TRIAGE_AUTO_APPLY_BUG_TO_STORY=true` applies Bug -> Story recommendations directly to Jira issue type.
   - optional Zendesk enrichment (default **off**): when `TRIAGE_ZENDESK_CONTEXT_ENABLED=true` and Zendesk OAuth credentials are configured, triage reads Zendesk ticket ids from Jira custom fields (`TRIAGE_JIRA_ZENDESK_TICKET_IDS_FIELD_ID`, default `customfield_10158`; `TRIAGE_JIRA_IMPORTED_ZENDESK_TICKET_IDS_FIELD_ID`, default `customfield_10162`), fetches ticket metadata and comments from Zendesk API (`TRIAGE_ZENDESK_HTTP_TIMEOUT_SECONDS`, default `20`; `TRIAGE_ZENDESK_MAX_COMMENTS_PER_TICKET`, default `20`), and appends them to the issue block. **Auth:** OAuth client-credentials flow via `ZENDESK_IDENTIFIER`, `ZENDESK_SECRET`, `ZENDESK_BASE_URL` or `ZENDESK_SUBDOMAIN` (optional `ZENDESK_OAUTH_SCOPE`). The service mints short-lived Bearer tokens in memory on demand; no browser authorize step or token file is required. When `TRIAGE_ZENDESK_COMMENT_SUMMARY_ENABLED=true` (default **off**), one OpenRouter call per linked ticket condenses comments into resolution signals (`TRIAGE_ZENDESK_SUMMARY_MODEL`, `TRIAGE_ZENDESK_COMMENTS_CHAR_BUDGET`, `TRIAGE_ZENDESK_SUMMARY_TIMEOUT_SECONDS`) rendered instead of raw ticket descriptions; failures fall back to subject/description. Priority policy and prompts weigh current impact over historical peak severity when recovery is documented in those signals.
 3. Run quality gates:
    - `.venv/bin/pytest -m lint`
@@ -180,7 +180,7 @@ Optional `--project TJC` overrides the project key inferred from the issue key (
 
 ### Apply Jira changes + analytics dashboard
 
-To mirror production side effects on a single issue: write labels/comments, **auto-apply** deescalation priority and Bug→Story recommendations when the model suggests them, and **POST a decision row** to the analytics dashboard after a successful run.
+To mirror production side effects on a single issue: write labels/comments, **auto-apply** priority and Bug→Story recommendations when the model suggests them (each direction is opt-in), and **POST a decision row** to the analytics dashboard after a successful run.
 
 **Required in `.env` (or exported in the shell before the command):**
 
@@ -188,10 +188,11 @@ To mirror production side effects on a single issue: write labels/comments, **au
 |------|-----------|
 | Jira fetch + mutations | `JIRA_API_KEY`, `JIRA_CLOUD_ID`, `JIRA_USER_EMAIL` (without cloud id + email the CLI still triages but uses a no-op Jira executor — no labels, comments, or field updates) |
 | Auto-apply deescalation | `TRIAGE_AUTO_APPLY_DEESCALATION=true` **or** CLI `--auto-apply-deescalation` |
+| Auto-apply escalation | `TRIAGE_AUTO_APPLY_ESCALATION=true` **or** CLI `--auto-apply-escalation` |
 | Auto-apply Bug→Story | `TRIAGE_AUTO_APPLY_BUG_TO_STORY=true` **or** CLI `--auto-apply-bug-to-story` |
 | Analytics POST | `ANALYTICS_DASHBOARD_URL` (base URL including `/api/v1`), optional `ANALYTICS_TOKEN` (`X-Analytics-Token`) |
 
-Escalation (`P2 → P1` and similar) stays **advisory-only** even with auto-apply enabled. Do **not** pass `--read-only` when you want Jira writes. Analytics emission runs only on `status: completed`; failures do not POST.
+Enable the auto-apply flags you need in `.env` or on the CLI. Do **not** pass `--read-only` when you want Jira writes. Analytics emission runs only on `status: completed`; failures do not POST.
 
 **Example using `.env` at the repo root** (auto-apply flags in file, analytics URL/token in file):
 
@@ -205,6 +206,7 @@ cd /path/to/jira_triage
 ```bash
 .venv/bin/python scripts/run_triage_cli.py YOUR-123 \
   --auto-apply-deescalation \
+  --auto-apply-escalation \
   --auto-apply-bug-to-story
 ```
 
@@ -214,19 +216,20 @@ cd /path/to/jira_triage
 # Re-export everything from .env for this shell, then run
 set -a && source .env && set +a
 .venv/bin/python scripts/run_triage_cli.py YOUR-123 \
-  --auto-apply-deescalation --auto-apply-bug-to-story
+  --auto-apply-deescalation --auto-apply-escalation --auto-apply-bug-to-story
 ```
 
 ```bash
 # One-shot inline env (no dependency on .env loading)
 TRIAGE_AUTO_APPLY_DEESCALATION=true \
+TRIAGE_AUTO_APPLY_ESCALATION=true \
 TRIAGE_AUTO_APPLY_BUG_TO_STORY=true \
 ANALYTICS_DASHBOARD_URL=http://localhost:8080/api/v1 \
 ANALYTICS_TOKEN=your-token \
 JIRA_CLOUD_ID=your-cloud-id \
 JIRA_USER_EMAIL=you@example.com \
 .venv/bin/python scripts/run_triage_cli.py YOUR-123 \
-  --auto-apply-deescalation --auto-apply-bug-to-story
+  --auto-apply-deescalation --auto-apply-escalation --auto-apply-bug-to-story
 ```
 
 Unset conflicting shell values first if needed: `unset ANALYTICS_DASHBOARD_URL TRIAGE_AUTO_APPLY_DEESCALATION`. Check that the repo `.env` exists (copy from `.env.example`) and that `ANALYTICS_DASHBOARD_URL` is the API base (e.g. `http://host:8080/api/v1`), not the UI root. Transport errors to the dashboard are logged at warning and never fail triage.
@@ -245,7 +248,7 @@ Run the same inference pipeline for every issue returned by a JQL query and writ
 - `--jql-page-size N` — optional Jira API page size when paginating (default `min(50, --max-results)`; max `100`).
 - `-o` / `--output` — path to the JSON report (includes `current_issue_type`, `current_priority`, per-issue `recommendation` with `reason`, and step-level `classification` / `priority` when present).
 - By default **does not** apply labels or post comments in Jira (read-only triage). Pass `--apply` to apply `triagebot-reviewed` and mismatch labels; add `--comment` with `--apply` to post mismatch comments too.
-- With `--apply`, use `--auto-apply-deescalation` and/or `--auto-apply-bug-to-story` to apply those mismatch recommendations directly to Jira fields.
+- With `--apply`, use `--auto-apply-deescalation`, `--auto-apply-escalation`, and/or `--auto-apply-bug-to-story` to apply those mismatch recommendations directly to Jira fields.
 - Shows a **tqdm** progress bar on stderr when attached to a terminal (`--no-progress` to disable).
 
 Exit code `0` when every issue completed, `1` when any issue failed or the JQL matched nothing, `2` on settings/JQL errors.
@@ -322,7 +325,7 @@ Requests missing this header (or with the wrong value) receive `401 Unauthorized
 - Mismatch comments include a **Helpful resources** line linking to Confluence: bug-requirements guidance when recommending Story, priority-definitions guidance on Bug priority mismatches (URLs in `jira_comment_templates.json`).
 - Comment copy differs by path: advisory runs use "recommended action" wording, while auto-apply runs use "action taken" wording and acknowledge that Jira fields were updated.
 - `triagebot-priority-mismatch` is applied for any Bug priority mismatch (de-escalation and prioritization).
-- Optional auto-apply is available via env/CLI flags: Bug deescalation can update Jira priority and Bug->Story can update issue type. Prioritization/escalation stays advisory-only.
+- Optional auto-apply is available via env/CLI flags: Bug deescalation and escalation can update Jira priority (each direction is opt-in) and Bug->Story can update issue type.
 - On triage failure (`status: failed` / `TriageFailure`), no labels or comments are posted.
 - To force re-triage on an issue that already succeeded, remove `triagebot-reviewed` manually.
 - If an issue is older than the JQL window and still has no `triagebot-reviewed`, treat it as a
@@ -330,7 +333,7 @@ Requests missing this header (or with the wrong value) receive `401 Unauthorized
 
 ### MVP limitations
 
-- Auto-apply defaults are disabled. Without `TRIAGE_AUTO_APPLY_DEESCALATION` / `TRIAGE_AUTO_APPLY_BUG_TO_STORY` (or matching CLI flags), Jira mutations remain advisory-only.
+- Auto-apply defaults are disabled. Without `TRIAGE_AUTO_APPLY_DEESCALATION` / `TRIAGE_AUTO_APPLY_ESCALATION` / `TRIAGE_AUTO_APPLY_BUG_TO_STORY` (or matching CLI flags), Jira mutations remain advisory-only.
 - Confidence is metadata for operators and API/audit output; it is not used as a direct
   mutation threshold.
 - Retry/dedupe behavior is owned by Jira Automation JQL and labels, not by an internal queue.

@@ -28,6 +28,8 @@ def _settings(monkeypatch: pytest.MonkeyPatch, **env: str) -> AppSettings:
     monkeypatch.setenv("JIRA_USER_EMAIL", "bot@example.com")
     if "TRIAGE_AUTO_APPLY_DEESCALATION" not in env:
         monkeypatch.setenv("TRIAGE_AUTO_APPLY_DEESCALATION", "false")
+    if "TRIAGE_AUTO_APPLY_ESCALATION" not in env:
+        monkeypatch.setenv("TRIAGE_AUTO_APPLY_ESCALATION", "false")
     if "TRIAGE_AUTO_APPLY_BUG_TO_STORY" not in env:
         monkeypatch.setenv("TRIAGE_AUTO_APPLY_BUG_TO_STORY", "false")
     for key, value in env.items():
@@ -650,7 +652,48 @@ def test_executor_story_auto_apply_skips_non_bug_issue_types(
 
 
 @pytest.mark.unit
-def test_executor_prioritize_remains_advisory_when_auto_apply_flags_enabled(
+def test_executor_auto_applies_escalation_when_flag_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(monkeypatch, TRIAGE_AUTO_APPLY_ESCALATION="true")
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(201 if request.method == "POST" else 204, json={})
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        ex = JiraTriageActionExecutor(settings, client=client)
+        ex.apply_triage_outcome(
+            issue=_issue(priority="P3"),
+            issue_key="TJC-13",
+            project="TJC",
+            source="bug_created",
+            outcome=_rec(recommended_priority="P1", reason="critical"),
+            run_id="run-test",
+        )
+
+    assert len(requests) == 3
+    assert requests[0].method == "PUT"
+    assert requests[1].method == "PUT"
+    assert requests[1].url.path == "/ex/jira/cloud-id-test/rest/api/3/issue/TJC-13"
+    fields_body = json.loads(requests[1].content.decode())
+    assert fields_body == {"fields": {"priority": {"name": "P1"}}}
+    doc = json.loads(requests[2].content.decode())["body"]
+    intro = doc["content"][0]["content"][-1]["text"].lower()
+    assert "reviewed and adjusted with the following" in intro
+    assert doc["content"][1]["content"][0]["text"] == (
+        "- The ticket Priority was changed from P3 to P1."
+    )
+    assert doc["content"][2]["content"][0]["text"] == "TriageBot rationale: critical"
+    assert doc["content"][3]["content"][0]["text"] == (
+        "If you would like to keep it as P3, please explain your reasoning. Thanks."
+    )
+
+
+@pytest.mark.unit
+def test_executor_prioritize_remains_advisory_when_escalation_flag_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = _settings(

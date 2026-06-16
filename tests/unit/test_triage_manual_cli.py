@@ -281,9 +281,10 @@ def test_run_cli_triage_passes_apply_to_jira_to_handler_builder() -> None:
         post_mismatch_comments: bool = True,
         apply_to_jira: bool = True,
         auto_apply_deescalation: bool | None = None,
+        auto_apply_escalation: bool | None = None,
         auto_apply_bug_to_story: bool | None = None,
     ) -> object:
-        _ = (auto_apply_deescalation, auto_apply_bug_to_story)
+        _ = (auto_apply_deescalation, auto_apply_escalation, auto_apply_bug_to_story)
         build_calls.append(apply_to_jira)
 
         class _Runner:
@@ -327,9 +328,10 @@ def test_run_cli_triage_passes_post_mismatch_comments_to_handler_builder() -> No
         post_mismatch_comments: bool = True,
         apply_to_jira: bool = True,
         auto_apply_deescalation: bool | None = None,
+        auto_apply_escalation: bool | None = None,
         auto_apply_bug_to_story: bool | None = None,
     ) -> object:
-        _ = (apply_to_jira, auto_apply_deescalation, auto_apply_bug_to_story)
+        _ = (apply_to_jira, auto_apply_deescalation, auto_apply_escalation, auto_apply_bug_to_story)
         build_calls.append(post_mismatch_comments)
 
         class _Runner:
@@ -366,17 +368,20 @@ def test_run_cli_triage_passes_post_mismatch_comments_to_handler_builder() -> No
 def test_run_cli_triage_passes_auto_apply_flags_to_handler_builder() -> None:
     from triage_manual_cli import run_cli_triage
 
-    build_calls: list[tuple[bool | None, bool | None]] = []
+    build_calls: list[tuple[bool | None, bool | None, bool | None]] = []
 
     def _fake_build(
         *,
         post_mismatch_comments: bool = True,
         apply_to_jira: bool = True,
         auto_apply_deescalation: bool | None = None,
+        auto_apply_escalation: bool | None = None,
         auto_apply_bug_to_story: bool | None = None,
     ) -> object:
         _ = (post_mismatch_comments, apply_to_jira)
-        build_calls.append((auto_apply_deescalation, auto_apply_bug_to_story))
+        build_calls.append(
+            (auto_apply_deescalation, auto_apply_escalation, auto_apply_bug_to_story),
+        )
 
         class _Runner:
             def run_sync(
@@ -409,7 +414,7 @@ def test_run_cli_triage_passes_auto_apply_flags_to_handler_builder() -> None:
             auto_apply_bug_to_story=False,
         )
 
-    assert build_calls == [(True, False)]
+    assert build_calls == [(True, None, False)]
 
 
 @pytest.mark.unit
@@ -596,17 +601,20 @@ def test_main_omitted_auto_apply_flags_pass_none_to_handler() -> None:
     """CLI without --auto-apply-* should defer to TRIAGE_AUTO_APPLY_* in settings."""
     from triage_manual_cli import main
 
-    build_calls: list[tuple[bool | None, bool | None]] = []
+    build_calls: list[tuple[bool | None, bool | None, bool | None]] = []
 
     def _fake_build(
         *,
         post_mismatch_comments: bool = True,
         apply_to_jira: bool = True,
         auto_apply_deescalation: bool | None = None,
+        auto_apply_escalation: bool | None = None,
         auto_apply_bug_to_story: bool | None = None,
     ) -> object:
         _ = (post_mismatch_comments, apply_to_jira)
-        build_calls.append((auto_apply_deescalation, auto_apply_bug_to_story))
+        build_calls.append(
+            (auto_apply_deescalation, auto_apply_escalation, auto_apply_bug_to_story),
+        )
 
         class _Runner:
             def run_sync(
@@ -642,7 +650,7 @@ def test_main_omitted_auto_apply_flags_pass_none_to_handler() -> None:
         rc = main(["TJC-7"])
 
     assert rc == 0
-    assert build_calls == [(None, None)]
+    assert build_calls == [(None, None, None)]
 
 
 @pytest.mark.unit
@@ -656,9 +664,10 @@ def test_main_read_only_sets_read_only_mode() -> None:
         post_mismatch_comments: bool = True,
         apply_to_jira: bool = True,
         auto_apply_deescalation: bool | None = None,
+        auto_apply_escalation: bool | None = None,
         auto_apply_bug_to_story: bool | None = None,
     ) -> object:
-        _ = (auto_apply_deescalation, auto_apply_bug_to_story)
+        _ = (auto_apply_deescalation, auto_apply_escalation, auto_apply_bug_to_story)
         build_calls.append((post_mismatch_comments, apply_to_jira))
 
         class _Runner:
@@ -709,9 +718,10 @@ def test_main_no_comment_alias_sets_read_only_mode() -> None:
         post_mismatch_comments: bool = True,
         apply_to_jira: bool = True,
         auto_apply_deescalation: bool | None = None,
+        auto_apply_escalation: bool | None = None,
         auto_apply_bug_to_story: bool | None = None,
     ) -> object:
-        _ = (auto_apply_deescalation, auto_apply_bug_to_story)
+        _ = (auto_apply_deescalation, auto_apply_escalation, auto_apply_bug_to_story)
         build_calls.append((post_mismatch_comments, apply_to_jira))
 
         class _Runner:

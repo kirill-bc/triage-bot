@@ -107,6 +107,7 @@ def test_load_settings_optional_fields_default_when_omitted(
     _clear_zendesk_env(monkeypatch)
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("TRIAGE_AUTO_APPLY_DEESCALATION", raising=False)
+    monkeypatch.delenv("TRIAGE_AUTO_APPLY_ESCALATION", raising=False)
     monkeypatch.delenv("TRIAGE_AUTO_APPLY_BUG_TO_STORY", raising=False)
     (tmp_path / ".env").write_text(
         "JIRA_API_KEY=jira-token\nOPENROUTER_API_KEY=or-token\nTRIAGE_WEBHOOK_TOKEN=triage-token\n",
@@ -139,6 +140,7 @@ def test_load_settings_optional_fields_default_when_omitted(
     assert settings.jira_zendesk_ticket_count_field_id == "customfield_10157"
     assert settings.triage_comments_char_budget == 6000
     assert settings.triage_auto_apply_deescalation is False
+    assert settings.triage_auto_apply_escalation is False
     assert settings.triage_auto_apply_bug_to_story is False
     assert settings.analytics_dashboard_url is None
     assert settings.analytics_token is None

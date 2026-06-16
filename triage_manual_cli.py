@@ -48,6 +48,7 @@ def run_cli_triage(
     post_mismatch_comments: bool = True,
     apply_to_jira: bool = True,
     auto_apply_deescalation: bool | None = None,
+    auto_apply_escalation: bool | None = None,
     auto_apply_bug_to_story: bool | None = None,
 ) -> TriageSyncResult:
     """Run synchronous triage with ``source="manual_trigger"`` (same pipeline as the webhook)."""
@@ -60,6 +61,7 @@ def run_cli_triage(
             post_mismatch_comments=post_mismatch_comments,
             apply_to_jira=apply_to_jira,
             auto_apply_deescalation=auto_apply_deescalation,
+            auto_apply_escalation=auto_apply_escalation,
             auto_apply_bug_to_story=auto_apply_bug_to_story,
         )
     result = resolved.run_sync(key, proj, "manual_trigger", run_id=str(uuid.uuid4()))
@@ -131,6 +133,14 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--auto-apply-escalation",
+        action="store_true",
+        help=(
+            "When writing to Jira, apply more-urgent priority recommendations directly "
+            "instead of advisory-only comments."
+        ),
+    )
+    parser.add_argument(
         "--auto-apply-bug-to-story",
         action="store_true",
         help=(
@@ -158,6 +168,7 @@ def main(argv: list[str] | None = None) -> int:
         post_mismatch_comments=not ns.read_only,
         apply_to_jira=not ns.read_only,
         auto_apply_deescalation=ns.auto_apply_deescalation or None,
+        auto_apply_escalation=ns.auto_apply_escalation or None,
         auto_apply_bug_to_story=ns.auto_apply_bug_to_story or None,
     )
     image_context = build_cli_image_context_summary(

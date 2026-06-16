@@ -237,6 +237,7 @@ def _triage_completed_telemetry(
 ) -> dict[str, object] | None:
     auto_apply_flags: dict[str, object] = {
         "auto_apply_deescalation_enabled": settings.triage_auto_apply_deescalation,
+        "auto_apply_escalation_enabled": settings.triage_auto_apply_escalation,
         "auto_apply_bug_to_story_enabled": settings.triage_auto_apply_bug_to_story,
     }
     image_telemetry = _image_context_telemetry(image_extraction)
@@ -280,7 +281,8 @@ def _triage_completed_telemetry(
         "jira_priority": str(issue.priority).strip() if issue.priority is not None else "",
         "would_post_jira_comment": signal in ("prioritize", "deescalate"),
         "would_auto_apply_priority_change": (
-            signal == "deescalate" and settings.triage_auto_apply_deescalation
+            (signal == "deescalate" and settings.triage_auto_apply_deescalation)
+            or (signal == "prioritize" and settings.triage_auto_apply_escalation)
         ),
     }
     return _merge_telemetry(
@@ -1312,6 +1314,7 @@ def build_default_triage_handler(
     post_mismatch_comments: bool = True,
     apply_to_jira: bool = True,
     auto_apply_deescalation: bool | None = None,
+    auto_apply_escalation: bool | None = None,
     auto_apply_bug_to_story: bool | None = None,
 ) -> TriageRunner:
     """Build handler from settings, policy, and Jira executor if Jira env is set."""
@@ -1350,6 +1353,7 @@ def build_default_triage_handler(
             settings,
             post_mismatch_comments=post_mismatch_comments,
             auto_apply_deescalation=auto_apply_deescalation,
+            auto_apply_escalation=auto_apply_escalation,
             auto_apply_bug_to_story=auto_apply_bug_to_story,
         )
     else:
