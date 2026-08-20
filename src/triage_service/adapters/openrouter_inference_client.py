@@ -84,12 +84,14 @@ class OpenRouterInferenceClient:
         run_id: str,
         temperature: float = 0.2,
         max_tokens: int | None = None,
+        json_object_response: bool = False,
     ) -> str:
         return self.chat_completion_with_details(
             messages,
             run_id=run_id,
             temperature=temperature,
             max_tokens=max_tokens,
+            json_object_response=json_object_response,
         ).content
 
     def chat_completion_with_details(
@@ -99,6 +101,7 @@ class OpenRouterInferenceClient:
         run_id: str,
         temperature: float = 0.2,
         max_tokens: int | None = None,
+        json_object_response: bool = False,
     ) -> OpenRouterCompletionResult:
         _ = run_id
         headers = {
@@ -113,6 +116,12 @@ class OpenRouterInferenceClient:
         }
         if max_tokens is not None:
             body["max_tokens"] = max_tokens
+        if json_object_response:
+            # Ask providers for a bare JSON object; require_parameters keeps OpenRouter
+            # from routing to providers (e.g. under a `:nitro` alias) that ignore
+            # response_format and would otherwise wrap replies in prose or code fences.
+            body["response_format"] = {"type": "json_object"}
+            body["provider"] = {"require_parameters": True}
         if self._client is not None:
             return self._post(self._client, body, headers)
 

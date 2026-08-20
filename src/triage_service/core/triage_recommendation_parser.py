@@ -19,6 +19,7 @@ audit). Legacy model JSON that still includes ``recommended_action`` is ignored 
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
@@ -27,9 +28,17 @@ _BUG_PRIORITIES = frozenset({"P0", "P1", "P2", "P3", "P4"})
 
 IssueTypeLiteral = Literal["Bug", "Story"]
 
+_RAW_OUTPUT_MAX_CHARS = 2000
+
+_CODE_FENCE_PATTERN = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.DOTALL | re.IGNORECASE)
+
 
 class InvalidTriageRecommendationError(ValueError):
     """Raised when model output is not valid JSON or does not match the triage schema."""
+
+    def __init__(self, message: str, *, raw_output: str | None = None) -> None:
+        super().__init__(message)
+        self.raw_output = raw_output
 
 
 class TriageRecommendation(BaseModel):
@@ -76,26 +85,26 @@ class TriageRecommendation(BaseModel):
         return self
 
 
-def parse_triage_recommendation_json(data: dict[str, Any]) -> TriageRecommendation:
+def parse_triage_recommendation_json(
+    data: dict[str, Any],
+    *,
+    raw_output: str | None = None,
+) -> TriageRecommendation:
     """Validate a decoded JSON object against the merged triage schema."""
     try:
         return TriageRecommendation.model_validate(_without_legacy_llm_keys(data))
     except ValidationError as exc:
         detail = exc.errors(include_url=False, include_context=False)
-        raise InvalidTriageRecommendationError(f"Invalid triage recommendation: {detail}") from exc
+        raise InvalidTriageRecommendationError(
+            f"Invalid triage recommendation: {detail}",
+            raw_output=raw_output,
+        ) from exc
 
 
 def parse_triage_recommendation_text(text: str) -> TriageRecommendation:
-    """Parse non-empty JSON text (object) and return a validated ``TriageRecommendation``."""
-    stripped = text.strip()
-    try:
-        decoded: object = json.loads(stripped)
-    except json.JSONDecodeError as exc:
-        raise InvalidTriageRecommendationError("Model output is not valid JSON.") from exc
-    if not isinstance(decoded, dict):
-        msg = "Model output JSON must be an object at the top level."
-        raise InvalidTriageRecommendationError(msg)
-    return parse_triage_recommendation_json(decoded)
+    """Parse JSON text (optionally markdown-fenced or wrapped in prose) into a recommendation."""
+    data = _parse_json_object_text(text, label="Model output")
+    return parse_triage_recommendation_json(data, raw_output=_truncate_raw_output(text))
 
 
 class ClassificationStepOutput(BaseModel):
@@ -169,15 +178,48 @@ def _without_legacy_llm_keys(data: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in data.items() if k != "recommended_action"}
 
 
-def _parse_json_object_text(text: str, *, label: str) -> dict[str, Any]:
+def _truncate_raw_output(text: str) -> str:
+    """Bound the raw model text kept on the exception for audit/log payloads."""
     stripped = text.strip()
+    if len(stripped) <= _RAW_OUTPUT_MAX_CHARS:
+        return stripped
+    return stripped[:_RAW_OUTPUT_MAX_CHARS] + "... [truncated]"
+
+
+def _strip_code_fence(text: str) -> str:
+    """Strip a single wrapping markdown code fence (```` ``` ```` or ```` ```json ````).
+
+    Reasoning-heavy models sometimes present a valid JSON object wrapped in a fence despite
+    system-prompt instructions not to; this is presentation only, not a schema problem.
+    """
+    stripped = text.strip()
+    match = _CODE_FENCE_PATTERN.match(stripped)
+    return match.group(1).strip() if match else stripped
+
+
+def _extract_first_json_object(text: str) -> object:
+    """Best-effort extraction of the first JSON object embedded in surrounding prose."""
+    start = text.find("{")
+    if start == -1:
+        raise json.JSONDecodeError("No JSON object found in model output.", text, 0)
+    return json.JSONDecoder().raw_decode(text, start)[0]
+
+
+def _parse_json_object_text(text: str, *, label: str) -> dict[str, Any]:
+    unfenced = _strip_code_fence(text)
     try:
-        decoded: object = json.loads(stripped)
-    except json.JSONDecodeError as exc:
-        raise InvalidTriageRecommendationError(f"{label} is not valid JSON.") from exc
+        decoded: object = json.loads(unfenced)
+    except json.JSONDecodeError:
+        try:
+            decoded = _extract_first_json_object(unfenced)
+        except json.JSONDecodeError as exc:
+            raise InvalidTriageRecommendationError(
+                f"{label} is not valid JSON.",
+                raw_output=_truncate_raw_output(text),
+            ) from exc
     if not isinstance(decoded, dict):
         msg = f"{label} JSON must be an object at the top level."
-        raise InvalidTriageRecommendationError(msg)
+        raise InvalidTriageRecommendationError(msg, raw_output=_truncate_raw_output(text))
     return decoded
 
 
@@ -189,7 +231,10 @@ def parse_classification_step_text(text: str) -> ClassificationStepOutput:
         return ClassificationStepOutput.model_validate(data)
     except ValidationError as exc:
         detail = exc.errors(include_url=False, include_context=False)
-        raise InvalidTriageRecommendationError(f"Invalid classification step: {detail}") from exc
+        raise InvalidTriageRecommendationError(
+            f"Invalid classification step: {detail}",
+            raw_output=_truncate_raw_output(text),
+        ) from exc
 
 
 def parse_priority_step_text(text: str) -> PriorityStepOutput:
@@ -200,7 +245,10 @@ def parse_priority_step_text(text: str) -> PriorityStepOutput:
         return PriorityStepOutput.model_validate(data)
     except ValidationError as exc:
         detail = exc.errors(include_url=False, include_context=False)
-        raise InvalidTriageRecommendationError(f"Invalid priority step: {detail}") from exc
+        raise InvalidTriageRecommendationError(
+            f"Invalid priority step: {detail}",
+            raw_output=_truncate_raw_output(text),
+        ) from exc
 
 
 def classification_story_to_final(step: ClassificationStepOutput) -> TriageRecommendation:

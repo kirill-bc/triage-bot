@@ -482,6 +482,61 @@ def test_chat_completion_read_timeout_after_retries_sets_failure_category_timeou
 
 
 @pytest.mark.unit
+def test_chat_completion_omits_json_object_response_params_by_default(
+    openrouter_app_settings: AppSettings,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["json"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": "ok"}}]},
+        )
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        inference = OpenRouterInferenceClient(openrouter_app_settings, client=client)
+        inference.chat_completion(
+            messages=[{"role": "user", "content": "hi"}],
+            run_id="run-test",
+        )
+
+    payload = captured["json"]
+    assert isinstance(payload, dict)
+    assert "response_format" not in payload
+    assert "provider" not in payload
+
+
+@pytest.mark.unit
+def test_chat_completion_with_details_sets_json_object_response_format_when_requested(
+    openrouter_app_settings: AppSettings,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["json"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": "{}"}}]},
+        )
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        inference = OpenRouterInferenceClient(openrouter_app_settings, client=client)
+        inference.chat_completion_with_details(
+            messages=[{"role": "user", "content": "hi"}],
+            run_id="run-test",
+            json_object_response=True,
+        )
+
+    payload = captured["json"]
+    assert isinstance(payload, dict)
+    assert payload["response_format"] == {"type": "json_object"}
+    assert payload["provider"] == {"require_parameters": True}
+
+
+@pytest.mark.unit
 def test_chat_completion_zero_retries_fails_immediately_on_429(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

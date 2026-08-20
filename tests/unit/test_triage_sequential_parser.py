@@ -124,3 +124,73 @@ def test_parse_priority_step_rejects_invalid_priority_name() -> None:
     )
     with pytest.raises(InvalidTriageRecommendationError):
         parse_priority_step_text(raw)
+
+
+@pytest.mark.unit
+def test_parse_priority_step_strips_json_code_fence() -> None:
+    raw = "```json\n" + json.dumps(
+        {"recommended_priority": "P2", "confidence": 0.9, "reason": "Fenced."},
+    ) + "\n```"
+    pri = parse_priority_step_text(raw)
+    assert pri.recommended_priority == "P2"
+    assert pri.reason == "Fenced."
+
+
+@pytest.mark.unit
+def test_parse_priority_step_strips_bare_code_fence() -> None:
+    raw = "```\n" + json.dumps(
+        {"recommended_priority": "P1", "confidence": 0.8, "reason": "Bare fence."},
+    ) + "\n```"
+    pri = parse_priority_step_text(raw)
+    assert pri.recommended_priority == "P1"
+
+
+@pytest.mark.unit
+def test_parse_priority_step_extracts_json_from_surrounding_prose() -> None:
+    payload = json.dumps({"recommended_priority": "P3", "confidence": 0.7, "reason": "Prose."})
+    raw = f"Here is my assessment:\n{payload}\nHope that helps!"
+    pri = parse_priority_step_text(raw)
+    assert pri.recommended_priority == "P3"
+
+
+@pytest.mark.unit
+def test_parse_priority_step_invalid_json_raises_with_raw_output_attached() -> None:
+    raw = "I could not decide on a priority."
+    with pytest.raises(InvalidTriageRecommendationError) as exc:
+        parse_priority_step_text(raw)
+    assert exc.value.raw_output == raw
+
+
+@pytest.mark.unit
+def test_parse_priority_step_schema_violation_raises_with_raw_output_attached() -> None:
+    raw = json.dumps({"recommended_priority": "High", "confidence": 0.5, "reason": "x"})
+    with pytest.raises(InvalidTriageRecommendationError) as exc:
+        parse_priority_step_text(raw)
+    assert exc.value.raw_output == raw
+
+
+@pytest.mark.unit
+def test_parse_classification_step_strips_json_code_fence() -> None:
+    raw = "```json\n" + json.dumps(
+        {"recommended_issue_type": "Bug", "confidence": 0.5, "reason": "Fenced bug."},
+    ) + "\n```"
+    step = parse_classification_step_text(raw)
+    assert step.recommended_issue_type == "Bug"
+
+
+@pytest.mark.unit
+def test_parse_classification_step_extracts_json_from_surrounding_prose() -> None:
+    payload = json.dumps(
+        {"recommended_issue_type": "Story", "confidence": 0.6, "reason": "Feature ask."},
+    )
+    raw = f"My classification:\n{payload}\nThanks."
+    step = parse_classification_step_text(raw)
+    assert step.recommended_issue_type == "Story"
+
+
+@pytest.mark.unit
+def test_parse_classification_step_invalid_json_raises_with_raw_output_attached() -> None:
+    raw = "I am unsure whether this is a bug."
+    with pytest.raises(InvalidTriageRecommendationError) as exc:
+        parse_classification_step_text(raw)
+    assert exc.value.raw_output == raw

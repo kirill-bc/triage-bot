@@ -34,6 +34,7 @@ from triage_service.adapters.analytics_decision_client import (
     build_analytics_decision_client,
 )
 from triage_service.adapters.openrouter_inference_client import (
+    OpenRouterCompletionResult,
     OpenRouterInferenceClient,
     OpenRouterInferenceError,
 )
@@ -135,14 +136,33 @@ def _openrouter_error_telemetry(exc: OpenRouterInferenceError) -> dict[str, obje
     return meta
 
 
-def _audit_telemetry_for_exception(exc: BaseException) -> dict[str, object] | None:
+_AUDIT_MODEL_OUTPUT_SNIPPET_MAX_CHARS = 500
+
+
+def _truncate_for_audit_snippet(text: str) -> str:
+    if len(text) <= _AUDIT_MODEL_OUTPUT_SNIPPET_MAX_CHARS:
+        return text
+    return text[:_AUDIT_MODEL_OUTPUT_SNIPPET_MAX_CHARS] + "... [truncated]"
+
+
+def _audit_telemetry_for_exception(
+    exc: BaseException,
+    *,
+    redact_model_output: bool = False,
+) -> dict[str, object] | None:
     """Attach HTTP/retry hints for triage_failed audit events when available."""
     if isinstance(exc, JiraIssueFetchError):
         return _jira_fetch_error_telemetry(exc)
     if isinstance(exc, OpenRouterInferenceError):
         return _openrouter_error_telemetry(exc)
     if isinstance(exc, InvalidTriageRecommendationError):
-        return {"boundary": "model_output_parse", "failure_category": "invalid_model_output"}
+        telemetry: dict[str, object] = {
+            "boundary": "model_output_parse",
+            "failure_category": "invalid_model_output",
+        }
+        if not redact_model_output and exc.raw_output:
+            telemetry["model_output_snippet"] = _truncate_for_audit_snippet(exc.raw_output)
+        return telemetry
     if isinstance(exc, ProjectNotAllowedError):
         return {"boundary": "policy_validation", "failure_category": "project_not_allowed"}
     return None
@@ -308,6 +328,15 @@ class _TriageInferenceSteps:
     recommendation: TriageRecommendation
     completed_event: TriageCompletedAuditEvent
     inference_cost_usd: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _PriorityAttemptOutcome:
+    """Result of one priority-step inference+parse attempt (success xor error)."""
+
+    priority: PriorityStepOutput | None
+    completion: OpenRouterCompletionResult | None
+    error: InvalidTriageRecommendationError | None
 
 
 def _aggregate_run_inference_cost_usd(
@@ -973,7 +1002,14 @@ class TriageHandler:
         image_extraction: ImageContextExtractionResult | None = None,
         zendesk_context: ZendeskContextEnrichmentResult | None = None,
     ) -> None:
-        resilience = _audit_telemetry_for_exception(exc) if exc is not None else None
+        resilience = (
+            _audit_telemetry_for_exception(
+                exc,
+                redact_model_output=self._settings.audit_redact_model_output,
+            )
+            if exc is not None
+            else None
+        )
         telemetry = _merge_telemetry(
             _image_context_telemetry(image_extraction),
             _zendesk_context_telemetry(zendesk_context),
@@ -1116,9 +1152,18 @@ class TriageHandler:
                 cls_result = self._inference.chat_completion_with_details(
                     cls_messages,
                     run_id=run_id,
+                    json_object_response=True,
                 )
                 cls_text = cls_result.content
                 classification = parse_classification_step_text(cls_text)
+            except InvalidTriageRecommendationError:
+                finish_cls(
+                    cls_text,
+                    {"parse_failure": True},
+                    usage_details=cls_result.usage_details,
+                    cost_details=cls_result.cost_details,
+                )
+                raise
             finally:
                 self._log_stage_timing(
                     stage="classification_inference",
@@ -1180,35 +1225,14 @@ class TriageHandler:
             settings=self._settings,
             image_contexts=image_contexts,
         )
-        with tracer.model_generation(
-            step="priority",
-            model=model_id,
-            messages=pri_messages,
-            model_parameters={"temperature": 0.2},
-        ) as finish_pri:
-            pri_start = perf_counter()
-            try:
-                pri_result = self._inference.chat_completion_with_details(
-                    pri_messages,
-                    run_id=run_id,
-                )
-                pri_text = pri_result.content
-                priority = parse_priority_step_text(pri_text)
-            finally:
-                self._log_stage_timing(
-                    stage="priority_inference",
-                    run_id=run_id,
-                    issue_key=issue.issue_key,
-                    project=project,
-                    source=source,
-                    started_at=pri_start,
-                )
-            finish_pri(
-                pri_text,
-                {"parsed": priority.model_dump(mode="json")},
-                usage_details=pri_result.usage_details,
-                cost_details=pri_result.cost_details,
-            )
+        priority, priority_cost = self._run_priority_step_with_retry(
+            pri_messages=pri_messages,
+            model_id=model_id,
+            run_id=run_id,
+            issue=issue,
+            project=project,
+            source=source,
+        )
         self._audit_store.record(
             PriorityCompletedAuditEvent(
                 event_type="priority_completed",
@@ -1248,9 +1272,126 @@ class TriageHandler:
             completed_event=completed_event,
             inference_cost_usd=_sum_optional_costs(
                 _inference_cost_from_details(cls_result.cost_details),
-                _inference_cost_from_details(pri_result.cost_details),
+                priority_cost,
             ),
         )
+
+    def _run_priority_step_attempt(
+        self,
+        *,
+        pri_messages: list[dict[str, str]],
+        model_id: str,
+        run_id: str,
+        issue: FetchedIssue,
+        project: str,
+        source: str,
+        attempt: int,
+    ) -> _PriorityAttemptOutcome:
+        """Run one priority generation+parse attempt; never raises on bad JSON."""
+        tracer = self._inference_tracer
+        with tracer.model_generation(
+            step="priority",
+            model=model_id,
+            messages=pri_messages,
+            model_parameters={"temperature": 0.2},
+        ) as finish_pri:
+            pri_start = perf_counter()
+            try:
+                pri_result = self._inference.chat_completion_with_details(
+                    pri_messages,
+                    run_id=run_id,
+                    json_object_response=True,
+                )
+                pri_text = pri_result.content
+                try:
+                    priority = parse_priority_step_text(pri_text)
+                except InvalidTriageRecommendationError as parse_exc:
+                    finish_pri(
+                        pri_text,
+                        {"parse_failure": True, "attempt": attempt},
+                        usage_details=pri_result.usage_details,
+                        cost_details=pri_result.cost_details,
+                    )
+                    return _PriorityAttemptOutcome(
+                        priority=None,
+                        completion=pri_result,
+                        error=parse_exc,
+                    )
+            finally:
+                self._log_stage_timing(
+                    stage="priority_inference",
+                    run_id=run_id,
+                    issue_key=issue.issue_key,
+                    project=project,
+                    source=source,
+                    started_at=pri_start,
+                )
+            finish_pri(
+                pri_text,
+                {"parsed": priority.model_dump(mode="json"), "attempt": attempt},
+                usage_details=pri_result.usage_details,
+                cost_details=pri_result.cost_details,
+            )
+        return _PriorityAttemptOutcome(priority=priority, completion=pri_result, error=None)
+
+    def _run_priority_step_with_retry(
+        self,
+        *,
+        pri_messages: list[dict[str, str]],
+        model_id: str,
+        run_id: str,
+        issue: FetchedIssue,
+        project: str,
+        source: str,
+    ) -> tuple[PriorityStepOutput, float | None]:
+        """Run the priority step; retry once on invalid JSON before failing the run.
+
+        A single re-ask absorbs one-off formatting slips (e.g. a reasoning-heavy model
+        wrapping otherwise-valid JSON in prose or a fence) without discarding an
+        already-completed classification on the first bad sample.
+        """
+        first = self._run_priority_step_attempt(
+            pri_messages=pri_messages,
+            model_id=model_id,
+            run_id=run_id,
+            issue=issue,
+            project=project,
+            source=source,
+            attempt=1,
+        )
+        first_cost = _inference_cost_from_details(
+            first.completion.cost_details if first.completion is not None else None,
+        )
+        if first.priority is not None:
+            return first.priority, first_cost
+        LOGGER.warning(
+            "triage_priority_parse_retry",
+            extra={
+                "event_type": "triage_priority_parse_retry",
+                "run_id": run_id,
+                "issue_key": issue.issue_key,
+                "project": project,
+                "source": source,
+            },
+        )
+        second = self._run_priority_step_attempt(
+            pri_messages=pri_messages,
+            model_id=model_id,
+            run_id=run_id,
+            issue=issue,
+            project=project,
+            source=source,
+            attempt=2,
+        )
+        second_cost = _inference_cost_from_details(
+            second.completion.cost_details if second.completion is not None else None,
+        )
+        if second.priority is not None:
+            return second.priority, _sum_optional_costs(first_cost, second_cost)
+        if second.error is not None:
+            raise second.error
+        msg = "Priority retry attempt returned neither a result nor an error."
+        raise RuntimeError(msg)
 
     def _emit_analytics_decision(
         self,

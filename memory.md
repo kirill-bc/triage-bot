@@ -1,5 +1,58 @@
 # Project memory
 
+## 2026-08-20 (close — priority-step JSON parse failure fix)
+
+- **Root cause (investigated via Langfuse + live OpenRouter replay):** the intermittent
+  `InvalidTriageRecommendationError: Priority model output is not valid JSON.` came from
+  `TRIAGE_TEXT_MODEL=z-ai/glm-4.7:nitro` occasionally wrapping otherwise-valid JSON in a
+  ```` ```json ... ``` ```` fence after long reasoning episodes, despite the system prompt saying
+  not to. Priority failed far more often than classification (5.8% vs 0.25% of calls in
+  production) because its prompt requires comparative justification against the current Jira
+  priority, which triggers longer reasoning. Confirmed by replaying a stored failing prompt
+  against OpenRouter 4x: 3/4 attempts returned fenced JSON with `finish_reason: stop` (not
+  truncation) and reasoning tokens ranging 1.8k–7.7k.
+- **Fix (`triage_recommendation_parser.py`):** `_parse_json_object_text` now strips a single
+  wrapping code fence (`_strip_code_fence`) and, failing that, extracts the first balanced JSON
+  object from surrounding prose (`_extract_first_json_object` via `json.JSONDecoder().raw_decode`)
+  before falling back to a hard failure. `InvalidTriageRecommendationError` gained
+  `raw_output: str | None` (truncated ~2000 chars), populated by `parse_triage_recommendation_text`,
+  `parse_classification_step_text`, and `parse_priority_step_text` on both decode and schema
+  failures. `parse_triage_recommendation_text` now routes through the same fence/prose-tolerant
+  helper instead of a bare `json.loads`.
+- **Fix (`openrouter_inference_client.py`):** `chat_completion`/`chat_completion_with_details`
+  gained `json_object_response: bool = False`; when true the request body adds
+  `response_format={"type": "json_object"}` and `provider={"require_parameters": true}` so
+  OpenRouter only routes to providers honoring structured JSON (relevant for multi-provider
+  aliases like `:nitro`). Classification and priority calls in `triage_handler.py` set this flag;
+  vision/Zendesk-summary calls are untouched (plain-text section replies).
+- **Fix (observability):** on `InvalidTriageRecommendationError` during classification or a
+  priority attempt, the Langfuse `model_generation` finish callback now records the raw model
+  text plus `{"parse_failure": true}` (priority also carries `"attempt"`) and the attempt's
+  `usage_details`/`cost_details` before the exception re-raises — previously failed generations
+  had `output: null` and empty usage. `_audit_telemetry_for_exception` adds
+  `telemetry.model_output_snippet` (≤500 chars) to the `triage_failed` audit event for
+  `InvalidTriageRecommendationError`, suppressed when `TRIAGE_AUDIT_REDACT_MODEL_OUTPUT=true`.
+- **Fix (priority retry):** new `TriageHandler._run_priority_step_attempt` /
+  `_run_priority_step_with_retry`: on a priority parse failure, retry once with the same prompt
+  (fresh generation, `metadata.attempt=2`, logged as `triage_priority_parse_retry`) before failing
+  the run; a second failure still raises and surfaces as `TriageFailure(category=
+  "invalid_model_output")`. Both attempts' costs are summed into the run's `inference_cost_usd`.
+  Classification is unchanged (no retry) since it fails far less often and a bad classification
+  sample should not silently retry into a different issue-type verdict.
+  Deliberately out of scope: reasoning-token cap on the priority step (cost is ~1–2 cents/run and
+  judged acceptable), and any "Bug without priority" fallback contract change.
+- **Tests:** `test_triage_recommendation_parser.py`, `test_triage_sequential_parser.py` (fence/
+  prose tolerance, `raw_output` attached on both decode and schema failures for all three text
+  entrypoints); `test_openrouter_inference_client.py` (`json_object_response` body shape);
+  `test_triage_handler.py` (`_RecordingTracer` test double added; JSON-mode requested on both
+  steps; classification parse-failure raw-output + audit snippet capture and redaction; priority
+  fail-once-then-succeed with two traced generations and one `priority_completed` audit event;
+  priority fail-twice → `invalid_model_output` failure; cost aggregation across both priority
+  attempts). Gates: `pytest -m lint` (5 passed), `mypy .` (115 files), `pytest -m "unit or
+  integration"` (636 passed, 1 skipped, 6 deselected).
+- **Next backlog:** §11 Post-MVP (Langfuse root trace cost, image inline placement, advisory
+  formatting step, Zendesk benchmark stratification); §12 integration tests (deferred).
+
 ## 2026-06-16 (close — escalation auto-apply + JSON structured logs)
 
 - **Phase close (`/close-phase`):** From `.venv`, `pytest -m lint` (5 passed), `mypy .` (115 files), `pytest -m "unit or integration"` (**615 passed**, **1 skipped** `OPENROUTER_LIVE_SMOKE`, **6 deselected**). **Escalation auto-apply:** `TRIAGE_AUTO_APPLY_ESCALATION` (default off) enables opt-in Jira priority updates for Bug escalation/prioritization recommendations; independent from deescalation and Bug→Story toggles. `JiraTriageActionExecutor` accepts per-run overrides; `build_default_triage_handler` and CLIs forward flags (`--auto-apply-escalation` on `triage_manual_cli.py` / `triage_bulk_cli.py`). `triage_completed` telemetry adds `auto_apply_escalation_enabled` and `would_auto_apply_priority_change` respects escalation when enabled. Tests: extended `test_jira_action_executor.py`, `test_triage_handler.py`, `test_triage_manual_cli.py`, `test_triage_bulk_cli.py`, `test_settings.py`. **JSON runtime logging:** `JsonLogFormatter` in `runtime_logging.py` emits single-line JSON including `extra` fields (e.g. `run_id`, HTTP metadata) for Loki/CloudWatch queries; replaces message-only text format. Tests: `test_runtime_logging.py`. Docs: `README.md`, `.env.example`, `specification.md`, `TODO.md` (escalation no longer advisory-only when flag set).

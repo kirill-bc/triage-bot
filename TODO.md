@@ -77,6 +77,14 @@
 - [x] Add guardrails for oversized payload logging (truncate consistently and mark truncation).
 - [x] Add health endpoint (`GET /health`) and minimal readiness signal for hosted environments.
 - [x] Add unit tests for retry behavior, timeout mapping, and fallback category correctness.
+- [x] **Priority-step JSON parse failure fix:** investigated intermittent `InvalidTriageRecommendationError`
+  on the priority step (Langfuse + live OpenRouter replay traced it to the reasoning model
+  occasionally wrapping valid JSON in a markdown code fence). Parser now tolerates a wrapping
+  fence and prose around the JSON object; classification/priority requests set OpenRouter
+  `response_format=json_object` + `provider.require_parameters` so only compliant providers are
+  used; priority step retries once on a parse failure before failing the run; failed generations
+  now record raw model output/usage in Langfuse and a bounded snippet in the `triage_failed` audit
+  event (redactable via `TRIAGE_AUDIT_REDACT_MODEL_OUTPUT`). See `memory.md` 2026-08-20 entry.
 - Done when: transient failures are retried safely, permanent failures are observable, and hosting health checks are supported.
 
 ## 7. Image context extraction (vision-as-preprocessor)

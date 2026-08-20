@@ -159,3 +159,40 @@ def test_parse_strips_surrounding_whitespace_on_payload() -> None:
     raw = f"\n  {inner}  \n"
     rec = parse_triage_recommendation_text(raw)
     assert rec.recommended_issue_type == "Bug"
+
+
+@pytest.mark.unit
+def test_parse_from_text_strips_json_code_fence() -> None:
+    raw = f"```json\n{json.dumps(_bug_payload())}\n```"
+    rec = parse_triage_recommendation_text(raw)
+    assert rec.recommended_issue_type == "Bug"
+
+
+@pytest.mark.unit
+def test_parse_from_text_strips_bare_code_fence() -> None:
+    raw = f"```\n{json.dumps(_bug_payload())}\n```"
+    rec = parse_triage_recommendation_text(raw)
+    assert rec.recommended_issue_type == "Bug"
+
+
+@pytest.mark.unit
+def test_parse_from_text_extracts_json_from_surrounding_prose() -> None:
+    raw = f"Sure, here is the JSON:\n{json.dumps(_bug_payload())}\nLet me know if needed."
+    rec = parse_triage_recommendation_text(raw)
+    assert rec.recommended_issue_type == "Bug"
+
+
+@pytest.mark.unit
+def test_parse_from_text_raises_with_raw_output_attached_on_invalid_json() -> None:
+    raw = "not json at all"
+    with pytest.raises(InvalidTriageRecommendationError) as exc:
+        parse_triage_recommendation_text(raw)
+    assert exc.value.raw_output == raw
+
+
+@pytest.mark.unit
+def test_parse_from_text_raises_with_raw_output_attached_on_schema_violation() -> None:
+    raw = json.dumps(_bug_payload(recommended_priority="P9"))
+    with pytest.raises(InvalidTriageRecommendationError) as exc:
+        parse_triage_recommendation_text(raw)
+    assert exc.value.raw_output == raw
