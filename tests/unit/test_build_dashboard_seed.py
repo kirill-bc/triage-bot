@@ -159,6 +159,7 @@ def test_parse_occurred_at_bound_accepts_date_only() -> None:
 
 @pytest.mark.unit
 def test_iter_paginated_stops_when_observation_is_before_cutoff() -> None:
+    """v2 endpoint uses cursor-based pagination (no ``page`` param, no ``totalPages``)."""
     from datetime import datetime, timezone
 
     from scripts.build_dashboard_seed import _iter_paginated
@@ -170,11 +171,11 @@ def test_iter_paginated_stops_when_observation_is_before_cutoff() -> None:
                 {"traceId": "t-new", "startTime": "2026-05-26T10:00:00Z"},
                 {"traceId": "t-old", "startTime": "2026-05-24T10:00:00Z"},
             ],
-            "meta": {"totalPages": 2},
+            "meta": {"cursor": "next-page-cursor"},
         },
         {
             "data": [{"traceId": "t-never", "startTime": "2026-05-27T10:00:00Z"}],
-            "meta": {"totalPages": 2},
+            "meta": {"cursor": None},
         },
     ]
 
@@ -187,17 +188,51 @@ def test_iter_paginated_stops_when_observation_is_before_cutoff() -> None:
         ) -> _BackfillFakeResponse:
             del path, timeout
             assert isinstance(params, dict)
-            page = int(str(params["page"]))
-            return _BackfillFakeResponse(pages[page - 1])
+            assert "page" not in params
+            page_index = 1 if params.get("cursor") == "next-page-cursor" else 0
+            return _BackfillFakeResponse(pages[page_index])
 
     rows = _iter_paginated(
         _FakeClient(),  # type: ignore[arg-type]
-        "/api/public/observations",
+        "/api/public/v2/observations",
         base_params={"name": "triage_issue_pipeline"},
         page_size=100,
         stop_on_start_time_before=cutoff,
     )
     assert [row["traceId"] for row in rows] == ["t-new"]
+
+
+@pytest.mark.unit
+def test_iter_paginated_follows_cursor_across_pages() -> None:
+    from scripts.build_dashboard_seed import _iter_paginated
+
+    pages: list[dict[str, object]] = [
+        {"data": [{"id": "o-1"}], "meta": {"cursor": "c-1"}},
+        {"data": [{"id": "o-2"}], "meta": {"cursor": None}},
+    ]
+    calls: list[dict[str, object]] = []
+
+    class _FakeClient:
+        def get(
+            self,
+            path: str,
+            params: object = None,
+            timeout: float = 30.0,
+        ) -> _BackfillFakeResponse:
+            del path, timeout
+            assert isinstance(params, dict)
+            calls.append(dict(params))
+            return _BackfillFakeResponse(pages[len(calls) - 1])
+
+    rows = _iter_paginated(
+        _FakeClient(),  # type: ignore[arg-type]
+        "/api/public/v2/observations",
+        base_params={"traceId": "trace-1"},
+        page_size=50,
+    )
+    assert [row["id"] for row in rows] == ["o-1", "o-2"]
+    assert "cursor" not in calls[0]
+    assert calls[1]["cursor"] == "c-1"
 
 
 @pytest.mark.unit
@@ -234,10 +269,10 @@ def test_langfuse_get_retries_transient_gateway_errors() -> None:
 
 
 @pytest.mark.unit
-def test_collect_trace_ids_applies_client_side_min_occurred_at_cutoff() -> None:
+def test_collect_root_observations_uses_v2_endpoint_with_field_groups_and_cutoff() -> None:
     from datetime import datetime, timezone
 
-    from scripts.build_dashboard_seed import _collect_trace_ids_by_observation_name
+    from scripts.build_dashboard_seed import _collect_root_observations_by_name
 
     captured: dict[str, object] = {}
 
@@ -249,31 +284,78 @@ def test_collect_trace_ids_applies_client_side_min_occurred_at_cutoff() -> None:
         page_size: int = 100,
         stop_on_start_time_before: datetime | None = None,
     ) -> list[dict[str, object]]:
-        del client, path, page_size
+        del client, page_size
+        captured["path"] = path
         captured["base_params"] = base_params
         captured["stop_on_start_time_before"] = stop_on_start_time_before
-        return [{"traceId": "trace-1", "startTime": "2026-05-26T10:00:00Z"}]
+        return [
+            {
+                "traceId": "trace-1",
+                "startTime": "2026-05-26T10:00:00Z",
+                "metadata": {"run_id": "run-1", "issue_key": "BC-1", "project": "BC"},
+            },
+        ]
 
     cutoff = datetime(2026, 5, 25, tzinfo=timezone.utc)
     with patch(
         "scripts.build_dashboard_seed._iter_paginated",
         side_effect=fake_iter_paginated,
     ):
-        trace_ids = _collect_trace_ids_by_observation_name(
+        roots = _collect_root_observations_by_name(
             cast(httpx.Client, object()),
             observation_name="triage_issue_pipeline",
             page_size=50,
             min_occurred_at=cutoff,
         )
 
-    assert trace_ids == ["trace-1"]
+    assert [obs["traceId"] for obs in roots] == ["trace-1"]
+    assert captured["path"] == "/api/public/v2/observations"
     base_params = cast(dict[str, str], captured["base_params"])
-    assert base_params == {"name": "triage_issue_pipeline"}
+    assert base_params["name"] == "triage_issue_pipeline"
+    assert base_params["fields"] == "core,basic,metadata,trace_context"
+    assert base_params["fromStartTime"] == "2026-05-25T00:00:00Z"
     assert captured["stop_on_start_time_before"] == cutoff
 
 
 @pytest.mark.unit
+def test_collect_root_observations_dedupes_by_trace_id() -> None:
+    from scripts.build_dashboard_seed import _collect_root_observations_by_name
+
+    def fake_iter_paginated(
+        client: object,
+        path: str,
+        *,
+        base_params: dict[str, object] | None = None,
+        page_size: int = 100,
+        stop_on_start_time_before: object = None,
+    ) -> list[dict[str, object]]:
+        del client, path, base_params, page_size, stop_on_start_time_before
+        return [
+            {"traceId": "trace-1"},
+            {"traceId": "trace-1"},
+            {"traceId": "trace-2"},
+            {"traceId": None},
+        ]
+
+    with patch(
+        "scripts.build_dashboard_seed._iter_paginated",
+        side_effect=fake_iter_paginated,
+    ):
+        roots = _collect_root_observations_by_name(
+            cast(httpx.Client, object()),
+            observation_name="triage_issue_pipeline",
+            page_size=50,
+        )
+
+    assert [obs["traceId"] for obs in roots] == ["trace-1", "trace-2"]
+
+
+@pytest.mark.unit
 def test_export_backfill_skips_traces_before_min_occurred_at() -> None:
+    """``_collect_root_observations_by_name`` already applies the cutoff; the old trace
+    should never surface in the root-observation list, so its per-trace fetch (keyed by
+    ``traceId``) must never happen.
+    """
     from datetime import datetime, timezone
 
     from scripts import build_dashboard_seed as subject
@@ -288,12 +370,21 @@ def test_export_backfill_skips_traces_before_min_occurred_at() -> None:
     ) -> list[dict[str, object]]:
         del client, page_size, stop_on_start_time_before
         if (
-            path == "/api/public/observations"
+            path == "/api/public/v2/observations"
             and isinstance(base_params, dict)
             and base_params.get("name") == "triage_issue_pipeline"
         ):
-            return [{"traceId": "trace-new", "startTime": "2026-05-26T10:00:00Z"}]
-        if path == "/api/public/observations" and base_params == {"traceId": "trace-new"}:
+            return [
+                {
+                    "traceId": "trace-new",
+                    "startTime": "2026-05-26T10:00:00Z",
+                    "metadata": {"run_id": "run-new", "issue_key": "BC-1", "project": "BC"},
+                },
+            ]
+        if path == "/api/public/v2/observations" and base_params == {
+            "traceId": "trace-new",
+            "fields": "core,basic,metadata,io,usage",
+        }:
             return [
                 _story_cls_observation(
                     input_text="Current issue type: Bug\nCurrent priority: P2",
@@ -301,7 +392,7 @@ def test_export_backfill_skips_traces_before_min_occurred_at() -> None:
                     confidence=0.9,
                 ),
             ]
-        if path == "/api/public/observations" and base_params == {"traceId": "trace-old"}:
+        if isinstance(base_params, dict) and base_params.get("traceId") == "trace-old":
             raise AssertionError("trace-old should not be fetched after min_occurred_at filter")
         raise AssertionError(f"Unexpected pagination call: path={path}, base_params={base_params}")
 
@@ -310,27 +401,13 @@ def test_export_backfill_skips_traces_before_min_occurred_at() -> None:
         secret_key="sk",
         base_url="https://langfuse.example",
     )
-    fake_client = _BackfillFakeClient(
-        {
-            "trace-new": {
-                "id": "trace-new",
-                "timestamp": "2026-05-26T10:00:00Z",
-                "metadata": {"run_id": "run-new", "issue_key": "BC-1", "project": "BC"},
-            },
-            "trace-old": {
-                "id": "trace-old",
-                "timestamp": "2026-05-20T10:00:00Z",
-                "metadata": {"run_id": "run-old", "issue_key": "BC-2", "project": "BC"},
-            },
-        },
-    )
     with (
         patch("scripts.build_dashboard_seed._read_langfuse_credentials", return_value=creds),
         patch(
             "scripts.build_dashboard_seed._iter_paginated",
             side_effect=fake_iter_paginated,
         ),
-        patch("scripts.build_dashboard_seed.httpx.Client", return_value=fake_client),
+        patch("scripts.build_dashboard_seed.httpx.Client", return_value=_BackfillFakeClient()),
         patch("scripts.build_dashboard_seed.tqdm", side_effect=lambda it, **_: it),
     ):
         rows = subject.export_backfill(
@@ -345,7 +422,6 @@ def test_export_backfill_skips_traces_before_min_occurred_at() -> None:
 
     assert len(rows) == 1
     assert rows[0]["run_id"] == "run-new"
-    assert fake_client.trace_get_calls == ["/api/public/traces/trace-new"]
 
 
 @pytest.mark.unit
@@ -524,9 +600,9 @@ class _BackfillFakeResponse:
 
 
 class _BackfillFakeClient:
-    def __init__(self, trace_payloads: dict[str, dict[str, object]]) -> None:
-        self._trace_payloads = trace_payloads
-        self.trace_get_calls: list[str] = []
+    """Context-manager stand-in for ``httpx.Client``; ``_iter_paginated`` is mocked in
+    these tests, so no real HTTP call is ever made through this client.
+    """
 
     def __enter__(self) -> "_BackfillFakeClient":
         return self
@@ -536,12 +612,7 @@ class _BackfillFakeClient:
 
     def get(self, path: str, params: object = None, timeout: float = 30.0) -> _BackfillFakeResponse:
         del params, timeout
-        for trace_id, payload in self._trace_payloads.items():
-            expected = f"/api/public/traces/{trace_id}"
-            if path == expected:
-                self.trace_get_calls.append(path)
-                return _BackfillFakeResponse(payload)
-        raise AssertionError(f"Unexpected GET path: {path}")
+        raise AssertionError(f"Unexpected direct GET path (expected _iter_paginated mock): {path}")
 
 
 def _story_cls_observation(*, input_text: str, reason: str, confidence: float) -> dict[str, object]:
@@ -559,7 +630,7 @@ def _story_cls_observation(*, input_text: str, reason: str, confidence: float) -
 
 
 @pytest.mark.unit
-def test_export_backfill_collects_trace_ids_from_scoped_observations() -> None:
+def test_export_backfill_collects_rows_from_root_observations() -> None:
     from scripts import build_dashboard_seed as subject
 
     def fake_iter_paginated(
@@ -571,13 +642,20 @@ def test_export_backfill_collects_trace_ids_from_scoped_observations() -> None:
         stop_on_start_time_before: object = None,
     ) -> list[dict[str, object]]:
         del client, page_size, stop_on_start_time_before
-        if (
-            path == "/api/public/observations"
-            and isinstance(base_params, dict)
-            and base_params.get("name") == "triage_issue_pipeline"
-        ):
-            return [{"traceId": "trace-123", "startTime": "2026-06-02T15:53:16.037Z"}]
-        if path == "/api/public/observations" and base_params == {"traceId": "trace-123"}:
+        assert path == "/api/public/v2/observations"
+        if isinstance(base_params, dict) and base_params.get("name") == "triage_issue_pipeline":
+            return [
+                {
+                    "traceId": "trace-123",
+                    "startTime": "2026-06-02T15:53:16.037Z",
+                    "metadata": {
+                        "run_id": "run-123",
+                        "issue_key": "BC-123",
+                        "project": "BC",
+                    },
+                },
+            ]
+        if isinstance(base_params, dict) and base_params.get("traceId") == "trace-123":
             return [
                 _story_cls_observation(
                     input_text="Current issue type: Bug\nCurrent priority: P2",
@@ -592,27 +670,13 @@ def test_export_backfill_collects_trace_ids_from_scoped_observations() -> None:
         secret_key="sk",
         base_url="https://langfuse.example",
     )
-    fake_client = _BackfillFakeClient(
-        {
-            "trace-123": {
-                "id": "trace-123",
-                "timestamp": "2026-06-02T15:53:16.037Z",
-                "metadata": {
-                    "run_id": "run-123",
-                    "issue_key": "BC-123",
-                    "project": "BC",
-                },
-            },
-        },
-    )
-    patch_iter = patch(
-        "scripts.build_dashboard_seed._iter_paginated",
-        side_effect=fake_iter_paginated,
-    )
     with (
         patch("scripts.build_dashboard_seed._read_langfuse_credentials", return_value=creds),
-        patch_iter,
-        patch("scripts.build_dashboard_seed.httpx.Client", return_value=fake_client),
+        patch(
+            "scripts.build_dashboard_seed._iter_paginated",
+            side_effect=fake_iter_paginated,
+        ),
+        patch("scripts.build_dashboard_seed.httpx.Client", return_value=_BackfillFakeClient()),
     ):
         rows = subject.export_backfill(
             page_size=50,
@@ -641,13 +705,19 @@ def test_export_backfill_applies_max_records_limit() -> None:
         stop_on_start_time_before: object = None,
     ) -> list[dict[str, object]]:
         del client, page_size, stop_on_start_time_before
-        if (
-            path == "/api/public/observations"
-            and isinstance(base_params, dict)
-            and base_params.get("name") == "triage_issue_pipeline"
-        ):
-            return [{"traceId": "trace-1"}, {"traceId": "trace-2"}]
-        if path == "/api/public/observations" and base_params == {"traceId": "trace-1"}:
+        assert path == "/api/public/v2/observations"
+        if isinstance(base_params, dict) and base_params.get("name") == "triage_issue_pipeline":
+            return [
+                {
+                    "traceId": "trace-1",
+                    "metadata": {"run_id": "run-1", "issue_key": "BC-1", "project": "BC"},
+                },
+                {
+                    "traceId": "trace-2",
+                    "metadata": {"run_id": "run-2", "issue_key": "BC-2", "project": "BC"},
+                },
+            ]
+        if isinstance(base_params, dict) and base_params.get("traceId") == "trace-1":
             return [
                 _story_cls_observation(
                     input_text="Current Jira issue type: Bug\nCurrent Jira priority: P2",
@@ -655,14 +725,8 @@ def test_export_backfill_applies_max_records_limit() -> None:
                     confidence=0.9,
                 ),
             ]
-        if path == "/api/public/observations" and base_params == {"traceId": "trace-2"}:
-            return [
-                _story_cls_observation(
-                    input_text="Current Jira issue type: Bug\nCurrent Jira priority: P3",
-                    reason="r2",
-                    confidence=0.8,
-                ),
-            ]
+        if isinstance(base_params, dict) and base_params.get("traceId") == "trace-2":
+            raise AssertionError("trace-2 should not be fetched after max_records=1")
         raise AssertionError(f"Unexpected pagination call: path={path}, base_params={base_params}")
 
     creds = subject.LangfuseCredentials(
@@ -670,27 +734,13 @@ def test_export_backfill_applies_max_records_limit() -> None:
         secret_key="sk",
         base_url="https://langfuse.example",
     )
-    fake_client = _BackfillFakeClient(
-        {
-            "trace-1": {
-                "id": "trace-1",
-                "timestamp": "2026-06-02T15:53:16.037Z",
-                "metadata": {"run_id": "run-1", "issue_key": "BC-1", "project": "BC"},
-            },
-            "trace-2": {
-                "id": "trace-2",
-                "timestamp": "2026-06-02T15:54:16.037Z",
-                "metadata": {"run_id": "run-2", "issue_key": "BC-2", "project": "BC"},
-            },
-        },
-    )
     with (
         patch("scripts.build_dashboard_seed._read_langfuse_credentials", return_value=creds),
         patch(
             "scripts.build_dashboard_seed._iter_paginated",
             side_effect=fake_iter_paginated,
         ),
-        patch("scripts.build_dashboard_seed.httpx.Client", return_value=fake_client),
+        patch("scripts.build_dashboard_seed.httpx.Client", return_value=_BackfillFakeClient()),
         patch("scripts.build_dashboard_seed.tqdm", side_effect=lambda it, **_: it),
     ):
         rows = subject.export_backfill(
@@ -705,7 +755,6 @@ def test_export_backfill_applies_max_records_limit() -> None:
     assert len(rows) == 1
     assert rows[0]["run_id"] == "run-1"
     assert rows[0]["issue_key"] == "BC-1"
-    assert fake_client.trace_get_calls == ["/api/public/traces/trace-1"]
 
 
 @pytest.mark.unit
@@ -721,13 +770,16 @@ def test_export_backfill_filters_out_non_bc_traces() -> None:
         stop_on_start_time_before: object = None,
     ) -> list[dict[str, object]]:
         del client, page_size, stop_on_start_time_before
-        if (
-            path == "/api/public/observations"
-            and isinstance(base_params, dict)
-            and base_params.get("name") == "triage_issue_pipeline"
-        ):
-            return [{"traceId": "trace-tjc"}]
-        if path == "/api/public/observations" and base_params == {"traceId": "trace-tjc"}:
+        assert path == "/api/public/v2/observations"
+        if isinstance(base_params, dict) and base_params.get("name") == "triage_issue_pipeline":
+            return [
+                {
+                    "traceId": "trace-tjc",
+                    "timestamp": "2026-06-02T15:53:16.037Z",
+                    "metadata": {"run_id": "run-tjc", "issue_key": "TJC-9", "project": "TJC"},
+                },
+            ]
+        if isinstance(base_params, dict) and base_params.get("traceId") == "trace-tjc":
             return [
                 _story_cls_observation(
                     input_text="Current issue type: Bug\nCurrent priority: P2",
@@ -742,22 +794,13 @@ def test_export_backfill_filters_out_non_bc_traces() -> None:
         secret_key="sk",
         base_url="https://langfuse.example",
     )
-    fake_client = _BackfillFakeClient(
-        {
-            "trace-tjc": {
-                "id": "trace-tjc",
-                "timestamp": "2026-06-02T15:53:16.037Z",
-                "metadata": {"run_id": "run-tjc", "issue_key": "TJC-9", "project": "TJC"},
-            },
-        },
-    )
     with (
         patch("scripts.build_dashboard_seed._read_langfuse_credentials", return_value=creds),
         patch(
             "scripts.build_dashboard_seed._iter_paginated",
             side_effect=fake_iter_paginated,
         ),
-        patch("scripts.build_dashboard_seed.httpx.Client", return_value=fake_client),
+        patch("scripts.build_dashboard_seed.httpx.Client", return_value=_BackfillFakeClient()),
         patch("scripts.build_dashboard_seed.tqdm", side_effect=lambda it, **_: it),
     ):
         rows = subject.export_backfill(

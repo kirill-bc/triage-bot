@@ -1,5 +1,50 @@
 # Project memory
 
+## 2026-08-20 (Langfuse v4 project migration — code-only)
+
+- **Scope:** ran the Langfuse v4 project-migration workflow in code-only mode (no
+  Langfuse CLI/MCP project interface configured in this environment; instructed not to
+  install one or request credentials). Findings and changes below; evaluator/export/
+  live-ingestion checks that require the Evaluators UI or a non-prod project are
+  reported as blocked in the readiness report (see chat), not silently skipped.
+- **SDK/instrumentation (already v4-native, upgraded further):** `langfuse_inference_tracing.py`,
+  `langfuse_audit_store.py`, and `langfuse_prompt_config.py` already used only v4 APIs
+  (`start_as_current_observation`, `propagate_attributes`, `create_event`,
+  `get_client().get_prompt`) — no `update_current_trace`, `start_span`/`start_generation`,
+  `set_current_trace_io`, or other deprecated v3 calls found anywhere in `src/`. Bumped the
+  installed SDK `.venv` from `4.6.1` → `4.14.4` (latest) and the `pyproject.toml` floor
+  `langfuse>=4.0` → `langfuse>=4.14`, mainly to pick up real-time OTEL ingestion
+  (`langfuse-python>=4.7.0` avoids the up-to-15-minute v2-API data delay for older SDKs).
+  No `release`/`environment` constructor params to migrate to env vars (none were passed).
+- **Deprecated direct REST APIs (found and migrated):** `scripts/build_dashboard_seed.py`
+  called the deprecated v1 `GET /api/public/observations` (trace-id discovery + per-trace
+  observation list) and `GET /api/public/traces/{id}` (trace metadata) directly via `httpx`
+  — these two endpoints are the ones actually documented as sunsetting 2026-11-16.
+  Migrated both to `GET /api/public/v2/observations`: `_iter_paginated` now does
+  cursor-based pagination (`meta.cursor`) instead of `page`/`totalPages`; a new
+  `_collect_root_observations_by_name` fetches the `triage_issue_pipeline` **root
+  observation** per trace (fields `core,basic,metadata,trace_context`, plus
+  `fromStartTime` when a cutoff is set) as the trace-object substitute — v4 has no
+  trace-read endpoint, but the root observation already carries the same `metadata`
+  (`run_id`/`issue_key`/`project`), `sessionId`, and `startTime` the old trace object did,
+  so this also removes one HTTP call per trace (no more separate `/traces/{id}` fetch).
+  Per-trace observations for `build_decision_row` now come from
+  `/api/public/v2/observations?traceId=...&fields=core,basic,metadata,io,usage`.
+  `build_decision_row(trace, observations, ...)` is unchanged in signature/behavior
+  (duck-typed dict), just documented that `trace` is now the root observation.
+- **Tests:** rewrote `tests/unit/test_build_dashboard_seed.py` pagination/export tests
+  for cursor semantics and the new v2 path/params (`_collect_root_observations_by_name`
+  replaces `_collect_trace_ids_by_observation_name`); confirmed red against the
+  pre-migration code, then green after the implementation. Gates: `pytest -m lint` (5
+  passed), `mypy .` (115 files clean), `pytest -m "unit or integration"` (638 passed, 1
+  skipped `OPENROUTER_LIVE_SMOKE`, 6 deselected).
+- **Not touched (blocked without project access):** Evaluators (Legacy rows in the
+  Evaluators UI), Blob Storage / Mixpanel / PostHog export migration (Project Settings →
+  Integrations), and live ingestion verification against a non-prod Langfuse project
+  (mocked unit tests don't prove backend ingestion). `ANALYTICS_DASHBOARD_URL` is this
+  app's own custom decision-export POST, not a native Langfuse export feature, so it is
+  out of scope for the Langfuse export-migration checklist.
+
 ## 2026-08-20 (close — priority-step JSON parse failure fix)
 
 - **Root cause (investigated via Langfuse + live OpenRouter replay):** the intermittent

@@ -206,6 +206,8 @@ only — no DB, no outcome / revert tracking, and no triage hot-path blocking.
 - [ ] Inject image context INSIDE description/comment body at the place where they were inserted, not as bulk attachments by the end.
 - [ ] Add advisory step post triage to add to reasoning / additional comment when ticket formatting / description could be improved.
 - [ ] Benchmark / bulk-triage stratification: accuracy breakdown for issues with vs without linked Zendesk context (and with vs without Zendesk-only images once vision path lands).
+- [x] **Langfuse v4 project migration (code-only):** SDK bumped `4.6.1` → `4.14.4` (`langfuse>=4.14` in `pyproject.toml`); `src/triage_service/observability/*` already used only v4 APIs (no deprecated calls found). Migrated `scripts/build_dashboard_seed.py` off the deprecated v1 `GET /api/public/observations` / `GET /api/public/traces/{id}` (sunset 2026-11-16) onto `GET /api/public/v2/observations` (cursor pagination, field groups, root-observation-as-trace reconstruction). See `memory.md` 2026-08-20 entry for details.
+- [ ] **Langfuse v4 migration — project-dependent follow-up:** requires Langfuse project/CLI access (not configured in this environment). Check the Evaluators UI for active **Legacy** rows and migrate any found; audit Project Settings → Integrations for Blob Storage/Mixpanel/PostHog exports; send a representative triage run to a non-prod Langfuse project to confirm v4 ingestion end-to-end (mocked unit tests do not prove backend ingestion).
 
 Out of scope (do not pull in):
 - Full Zendesk intake / ticket creation from triage.

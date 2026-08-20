@@ -166,6 +166,11 @@ def _langfuse_get(
     raise RuntimeError(msg)
 
 
+def _iso_z(value: datetime) -> str:
+    """Format a UTC ``datetime`` as ISO-8601 with a ``Z`` suffix for v2 query params."""
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 def _iter_paginated(
     client: httpx.Client,
     path: str,
@@ -174,11 +179,19 @@ def _iter_paginated(
     page_size: int = 100,
     stop_on_start_time_before: datetime | None = None,
 ) -> list[dict[str, Any]]:
+    """Page through a Langfuse v2 endpoint using cursor-based pagination.
+
+    Results are sorted by ``startTime`` descending; when ``stop_on_start_time_before``
+    is set, stop as soon as a row older than the cutoff is seen (client-side bound,
+    complementing any server-side ``fromStartTime`` filter in ``base_params``).
+    """
     params = dict(base_params or {})
-    page = 1
+    cursor: str | None = None
     rows: list[dict[str, Any]] = []
     while True:
-        req_params = {**params, "page": page, "limit": page_size}
+        req_params = {**params, "limit": page_size}
+        if cursor:
+            req_params["cursor"] = cursor
         response = _langfuse_get(client, path, params=req_params)
         payload = cast(dict[str, Any], response.json())
         data = payload.get("data")
@@ -200,20 +213,9 @@ def _iter_paginated(
         else:
             rows.extend(batch)
         meta = payload.get("meta")
-        if len(batch) < page_size:
+        cursor = meta.get("cursor") if isinstance(meta, dict) else None
+        if not cursor:
             break
-        if isinstance(meta, dict):
-            total_pages = meta.get("totalPages")
-            if isinstance(total_pages, int) and page >= total_pages:
-                break
-            next_page = meta.get("nextPage")
-            if next_page is None:
-                page += 1
-                continue
-            if isinstance(next_page, int):
-                page = next_page
-                continue
-        page += 1
     return rows
 
 
@@ -358,6 +360,12 @@ def build_decision_row(
     *,
     default_source: str,
 ) -> tuple[dict[str, Any] | None, str]:
+    """Build a dashboard decision row from a trace surrogate and its observations.
+
+    ``trace`` is the root ``triage_issue_pipeline`` observation (v2 Observations API);
+    Langfuse v4 has no separate trace-read endpoint, so trace-level metadata,
+    ``sessionId``, and timestamp are read from this observation instead.
+    """
     run_id = _extract_run_id(trace)
     issue_key = _extract_issue_key(trace)
     project = _extract_project(trace)
@@ -613,23 +621,35 @@ def export_catchup(
     return exclude_rows_with_run_ids(rows, known_run_ids=known_run_ids)
 
 
-def _collect_trace_ids_by_observation_name(
+def _collect_root_observations_by_name(
     client: httpx.Client,
     *,
     observation_name: str,
     page_size: int,
     min_occurred_at: datetime | None = None,
-) -> list[str]:
-    # Client-side cutoff only: Langfuse v1 observations + fromStartTime 502s on US cloud.
+) -> list[dict[str, Any]]:
+    """Fetch root observations (trace surrogates) via the v2 Observations API.
+
+    v4 has no dedicated trace-read endpoint; the root observation (the
+    ``triage_issue_pipeline`` span) carries the same ``metadata``, ``sessionId``, and
+    ``startTime`` that the deprecated ``/api/public/traces/{id}`` endpoint returned, so
+    one query replaces both the trace-id discovery and the per-trace metadata fetch.
+    """
+    base_params: dict[str, Any] = {
+        "name": observation_name,
+        "fields": "core,basic,metadata,trace_context",
+    }
+    if min_occurred_at is not None:
+        base_params["fromStartTime"] = _iso_z(min_occurred_at)
     observations = _iter_paginated(
         client,
-        "/api/public/observations",
-        base_params={"name": observation_name},
+        "/api/public/v2/observations",
+        base_params=base_params,
         page_size=page_size,
         stop_on_start_time_before=min_occurred_at,
     )
     seen: set[str] = set()
-    trace_ids: list[str] = []
+    roots: list[dict[str, Any]] = []
     for obs in observations:
         trace_id_raw = obs.get("traceId") or obs.get("trace_id")
         if not isinstance(trace_id_raw, str):
@@ -638,8 +658,8 @@ def _collect_trace_ids_by_observation_name(
         if not trace_id or trace_id in seen:
             continue
         seen.add(trace_id)
-        trace_ids.append(trace_id)
-    return trace_ids
+        roots.append(obs)
+    return roots
 
 
 def export_backfill(
@@ -658,32 +678,32 @@ def export_backfill(
     creds = _read_langfuse_credentials()
     auth = (creds.public_key, creds.secret_key)
     with httpx.Client(base_url=creds.base_url, auth=auth) as client:
-        trace_ids = _collect_trace_ids_by_observation_name(
+        root_observations = _collect_root_observations_by_name(
             client,
             observation_name=trace_name,
             page_size=page_size,
             min_occurred_at=min_occurred_at,
         )
-        processing_trace_ids = trace_ids
+        processing_roots = root_observations
         if max_records is not None:
-            processing_trace_ids = trace_ids[:max_records]
+            processing_roots = root_observations[:max_records]
         rows: list[dict[str, Any]] = []
-        iterator = tqdm(processing_trace_ids, desc="Exporting traces", unit="trace", disable=False)
-        for trace_id in iterator:
-            trace_response = _langfuse_get(client, f"/api/public/traces/{trace_id}")
-            trace = cast(dict[str, Any], trace_response.json())
-            if not isinstance(trace, dict):
+        iterator = tqdm(processing_roots, desc="Exporting traces", unit="trace", disable=False)
+        for root_obs in iterator:
+            trace_id_raw = root_obs.get("traceId") or root_obs.get("trace_id")
+            if not isinstance(trace_id_raw, str) or not trace_id_raw.strip():
                 continue
-            if min_occurred_at is not None and _trace_occurred_at_datetime(trace) < min_occurred_at:
+            trace_id = trace_id_raw.strip()
+            if min_occurred_at is not None and _trace_occurred_at_datetime(root_obs) < min_occurred_at:
                 continue
             observations = _iter_paginated(
                 client,
-                "/api/public/observations",
-                base_params={"traceId": trace_id},
+                "/api/public/v2/observations",
+                base_params={"traceId": trace_id, "fields": "core,basic,metadata,io,usage"},
                 page_size=page_size,
             )
             row, _ = build_decision_row(
-                trace,
+                root_obs,
                 observations,
                 default_source=default_source,
             )
