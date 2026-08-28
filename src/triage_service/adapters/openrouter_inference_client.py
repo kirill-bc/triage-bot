@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from typing import Any
 
@@ -65,17 +68,30 @@ class OpenRouterInferenceClient:
         client: httpx.Client | None = None,
         model_override: str | None = None,
         http_timeout_seconds: float | None = None,
+        client_factory: Callable[[], httpx.Client] | None = None,
     ) -> None:
         self._settings = settings
         self._client = client
         stripped = model_override.strip() if model_override else ""
         self._model_override = stripped or None
         self._http_timeout_seconds = http_timeout_seconds
+        self._client_factory = client_factory
 
     @property
     def effective_model_id(self) -> str:
         """Resolved OpenRouter model id (override or configured default)."""
         return self._model_override or self._settings.triage_text_model
+
+    @property
+    def _effective_http_timeout_seconds(self) -> float:
+        if self._http_timeout_seconds is not None:
+            return self._http_timeout_seconds
+        return self._settings.openrouter_http_timeout_seconds
+
+    def _new_client(self) -> httpx.Client:
+        if self._client_factory is not None:
+            return self._client_factory()
+        return httpx.Client(timeout=httpx.Timeout(self._effective_http_timeout_seconds))
 
     def chat_completion(
         self,
@@ -124,15 +140,61 @@ class OpenRouterInferenceClient:
             body["provider"] = {"require_parameters": True}
         if self._client is not None:
             return self._post(self._client, body, headers)
+        return self._post_within_deadline(body, headers)
 
-        timeout_seconds = (
-            self._http_timeout_seconds
-            if self._http_timeout_seconds is not None
-            else self._settings.openrouter_http_timeout_seconds
-        )
-        timeout = httpx.Timeout(timeout_seconds)
-        with httpx.Client(timeout=timeout) as client:
-            return self._post(client, body, headers)
+    def _post_within_deadline(
+        self,
+        body: dict[str, Any],
+        headers: dict[str, str],
+    ) -> OpenRouterCompletionResult:
+        """POST with a hard wall-clock ceiling and one fresh-connection retry.
+
+        The httpx read timeout only bounds the gap between received chunks, so it cannot
+        bound a call that OpenRouter keeps alive with padding while an upstream provider
+        stalls. A watchdog closes the connection once the deadline passes, which unblocks
+        the in-flight read.
+        """
+        deadline = self._settings.openrouter_call_deadline_seconds
+        max_outer_attempts = 2
+        for attempt in range(max_outer_attempts):
+            client = self._new_client()
+            pool = ThreadPoolExecutor(max_workers=1)
+            future = pool.submit(self._post, client, body, headers)
+            try:
+                result = future.result(timeout=deadline)
+            except FutureTimeoutError:
+                self._abandon(client, pool)
+                if attempt + 1 >= max_outer_attempts:
+                    raise OpenRouterInferenceError(
+                        f"OpenRouter call exceeded the {deadline}s wall-clock deadline on "
+                        f"{max_outer_attempts} attempts.",
+                        attempts=max_outer_attempts,
+                        transport_timeout=True,
+                        transport_error_kind="deadline_exceeded",
+                        failure_category="timeout",
+                    ) from None
+                continue
+            except OpenRouterInferenceError as exc:
+                self._abandon(client, pool)
+                retriable = exc.failure_category == "invalid_upstream_payload"
+                if retriable and attempt + 1 < max_outer_attempts:
+                    continue
+                raise
+            except Exception:
+                self._abandon(client, pool)
+                raise
+            self._abandon(client, pool)
+            return result
+        raise RuntimeError("_post_within_deadline: unreachable")
+
+    @staticmethod
+    def _abandon(client: httpx.Client, pool: ThreadPoolExecutor) -> None:
+        """Close the connection (unblocking any stalled read) and release the worker."""
+        try:
+            client.close()
+        except Exception:  # pragma: no cover - close is best-effort
+            pass
+        pool.shutdown(wait=False)
 
     def _post(
         self,
@@ -178,35 +240,7 @@ class OpenRouterInferenceClient:
                 http_status=response.status_code,
                 failure_category=fc,
             )
-        payload = response.json()
-        choices = payload.get("choices")
-        if not isinstance(choices, list) or not choices:
-            raise OpenRouterInferenceError(
-                "OpenRouter response missing choices.",
-                attempts=attempts,
-                failure_category="invalid_upstream_payload",
-            )
-        first = choices[0]
-        if not isinstance(first, dict):
-            raise OpenRouterInferenceError(
-                "OpenRouter response has invalid choice shape.",
-                attempts=attempts,
-                failure_category="invalid_upstream_payload",
-            )
-        message = first.get("message")
-        if not isinstance(message, dict):
-            raise OpenRouterInferenceError(
-                "OpenRouter response missing message object.",
-                attempts=attempts,
-                failure_category="invalid_upstream_payload",
-            )
-        content = message.get("content")
-        if not isinstance(content, str) or not content.strip():
-            raise OpenRouterInferenceError(
-                "OpenRouter response missing non-empty assistant content.",
-                attempts=attempts,
-                failure_category="invalid_upstream_payload",
-            )
+        payload, content = _parse_completion_payload(response, attempts)
         usage_details = _extract_usage_details(payload)
         cost_details = _extract_cost_details(payload)
         return OpenRouterCompletionResult(
@@ -214,6 +248,43 @@ class OpenRouterInferenceClient:
             usage_details=usage_details,
             cost_details=cost_details,
         )
+
+
+def _parse_completion_payload(
+    response: httpx.Response,
+    attempts: int,
+) -> tuple[dict[str, Any], str]:
+    """Return ``(payload, assistant_content)`` or raise for an unusable HTTP 200 body."""
+    payload = response.json()
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise OpenRouterInferenceError(
+            "OpenRouter response missing choices.",
+            attempts=attempts,
+            failure_category="invalid_upstream_payload",
+        )
+    first = choices[0]
+    if not isinstance(first, dict):
+        raise OpenRouterInferenceError(
+            "OpenRouter response has invalid choice shape.",
+            attempts=attempts,
+            failure_category="invalid_upstream_payload",
+        )
+    message = first.get("message")
+    if not isinstance(message, dict):
+        raise OpenRouterInferenceError(
+            "OpenRouter response missing message object.",
+            attempts=attempts,
+            failure_category="invalid_upstream_payload",
+        )
+    content = message.get("content")
+    if not isinstance(content, str) or not content.strip():
+        raise OpenRouterInferenceError(
+            "OpenRouter response missing non-empty assistant content.",
+            attempts=attempts,
+            failure_category="invalid_upstream_payload",
+        )
+    return payload, content
 
 
 def _extract_usage_details(payload: dict[str, Any]) -> dict[str, int] | None:

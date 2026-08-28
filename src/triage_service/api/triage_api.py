@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import threading
 import uuid
 from contextlib import asynccontextmanager
 from hmac import compare_digest
@@ -165,9 +166,99 @@ def _resolve_log_level() -> str:
     return token if token in allowed else "INFO"
 
 
+def _resolve_max_concurrent_runs() -> int:
+    """Read ``TRIAGE_MAX_CONCURRENT_RUNS``; mirrors ``AppSettings`` default/bounds."""
+    token = os.environ.get("TRIAGE_MAX_CONCURRENT_RUNS", "").strip()
+    if not token:
+        return 4
+    try:
+        value = int(token)
+    except ValueError:
+        return 4
+    return value if 1 <= value <= 64 else 4
+
+
+def _resolve_concurrency_wait_seconds() -> float:
+    """Read ``TRIAGE_CONCURRENCY_WAIT_SECONDS``; mirrors ``AppSettings`` default/bounds."""
+    token = os.environ.get("TRIAGE_CONCURRENCY_WAIT_SECONDS", "").strip()
+    if not token:
+        return 900.0
+    try:
+        value = float(token)
+    except ValueError:
+        return 900.0
+    return value if 0.0 < value <= 3600.0 else 900.0
+
+
+def _run_triage_within_capacity(
+    body: TriageRequest,
+    runner: TriageRunner,
+    *,
+    triage_slots: threading.Semaphore,
+    concurrency_wait_seconds: float,
+    max_concurrent_runs: int,
+) -> TriagePostResponse:
+    """Acquire a concurrency slot, run triage, and shape the response (or 503 if full)."""
+    if not triage_slots.acquire(timeout=concurrency_wait_seconds):
+        LOGGER.warning(
+            "triage_api_busy issue_key=%s project=%s source=%s "
+            "max_concurrent_runs=%d wait_seconds=%s",
+            body.issue_key,
+            body.project,
+            body.source,
+            max_concurrent_runs,
+            concurrency_wait_seconds,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Triage service is at capacity; retry later.",
+        )
+    try:
+        run_id = str(uuid.uuid4())
+        outcome = runner.run_sync(
+            body.issue_key,
+            body.project,
+            body.source,
+            run_id=run_id,
+        ).outcome
+        _flush_inference_telemetry_if_supported(runner)
+    finally:
+        triage_slots.release()
+    if isinstance(outcome, TriageFailure):
+        LOGGER.warning(
+            "triage_api_failed run_id=%s issue_key=%s project=%s source=%s "
+            "category=%s message=%s",
+            run_id,
+            body.issue_key,
+            body.project,
+            body.source,
+            outcome.category,
+            outcome.message,
+        )
+        return TriagePostResponse(
+            run_id=run_id,
+            issue_key=body.issue_key,
+            project=body.project,
+            source=body.source,
+            status="failed",
+            failure=outcome,
+        )
+    return TriagePostResponse(
+        run_id=run_id,
+        issue_key=body.issue_key,
+        project=body.project,
+        source=body.source,
+        status="completed",
+        recommendation=outcome,
+    )
+
+
 def create_app(*, triage_handler_factory: Callable[[], TriageRunner] | None = None) -> FastAPI:
     """Build the FastAPI app. Override ``triage_handler_factory`` in tests."""
     factory: Callable[[], TriageRunner] = triage_handler_factory or build_default_triage_handler
+    max_concurrent_runs = _resolve_max_concurrent_runs()
+    concurrency_wait_seconds = _resolve_concurrency_wait_seconds()
+    triage_slots = threading.Semaphore(max_concurrent_runs)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -195,8 +286,12 @@ def create_app(*, triage_handler_factory: Callable[[], TriageRunner] | None = No
     app = FastAPI(title="Jira Triage", version="0.1.0", lifespan=lifespan)
 
     @app.get("/health", response_model=None)
-    def health() -> HealthResponse | JSONResponse:
-        """Process liveness; ``ready`` is true only when :func:`load_settings` succeeds."""
+    async def health() -> HealthResponse | JSONResponse:
+        """Process liveness; ``ready`` is true only when :func:`load_settings` succeeds.
+
+        Async so readiness probes are served directly on the event loop and are never
+        starved by the sync worker thread pool when triage slots are saturated.
+        """
         try:
             settings = load_settings()
         except Exception:
@@ -213,40 +308,12 @@ def create_app(*, triage_handler_factory: Callable[[], TriageRunner] | None = No
         runner: TriageRunner = Depends(get_triage_runner),
         _: None = Depends(require_triage_token),
     ) -> TriagePostResponse:
-        run_id = str(uuid.uuid4())
-        outcome = runner.run_sync(
-            body.issue_key,
-            body.project,
-            body.source,
-            run_id=run_id,
-        ).outcome
-        _flush_inference_telemetry_if_supported(runner)
-        if isinstance(outcome, TriageFailure):
-            LOGGER.warning(
-                "triage_api_failed run_id=%s issue_key=%s project=%s source=%s "
-                "category=%s message=%s",
-                run_id,
-                body.issue_key,
-                body.project,
-                body.source,
-                outcome.category,
-                outcome.message,
-            )
-            return TriagePostResponse(
-                run_id=run_id,
-                issue_key=body.issue_key,
-                project=body.project,
-                source=body.source,
-                status="failed",
-                failure=outcome,
-            )
-        return TriagePostResponse(
-            run_id=run_id,
-            issue_key=body.issue_key,
-            project=body.project,
-            source=body.source,
-            status="completed",
-            recommendation=outcome,
+        return _run_triage_within_capacity(
+            body,
+            runner,
+            triage_slots=triage_slots,
+            concurrency_wait_seconds=concurrency_wait_seconds,
+            max_concurrent_runs=max_concurrent_runs,
         )
 
     app.add_middleware(HttpAccessLogMiddleware)

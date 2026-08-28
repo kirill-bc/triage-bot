@@ -14,7 +14,8 @@ Primary goal: keep triage reliable, observable, and easy to operate while preser
 - Image-context preprocessing for Jira inline description attachments is implemented (feature-flagged).
 - Zendesk linked-ticket enrichment is implemented end-to-end (fetch, resolution summarization, dedupe, Zendesk-only vision, OAuth client_credentials with 401 retry, observability); benchmark stratification for Zendesk context is still open in `TODO.md` §11.
 - Triage analytics decision emission is implemented (`ANALYTICS_DASHBOARD_URL` fire-and-forget POST after successful triage); Langfuse decision-row tooling in `scripts/build_dashboard_seed.py` subcommands `backfill`, `catchup` (seed → `catchup.json`, idempotent on `run_id`), and `enrich` for dashboard bootstrap.
-- Integration-test expansion remains deferred in `TODO.md` §12.
+- Concurrency is bounded in-process (no message broker): a semaphore on `POST /triage` and a bounded worker pool in `triage_bulk_cli.py`; see `TODO.md` §12.
+- Integration-test expansion remains deferred in `TODO.md` §13.
 
 ## Non-Negotiable Workflow
 
@@ -99,7 +100,7 @@ Reference `.env.example` for the full set.
 Highest-priority unfinished area in `TODO.md`:
 
 - **§11 Post-MVP:** benchmark / bulk-triage stratification for issues with vs without linked Zendesk context (and Zendesk-only images); Langfuse root trace cost display; optional image-context inline placement and post-triage formatting advisory.
-- **§12:** integration tests (deferred until post-deploy stabilization).
+- **§13:** integration tests (deferred until post-deploy stabilization).
 
 Zendesk enrichment remains soft-fail-safe: fetch/summary/vision failures must not abort triage.
 

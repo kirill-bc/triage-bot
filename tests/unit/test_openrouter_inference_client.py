@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import time
+from collections.abc import Callable
 
 import httpx
 import pytest
@@ -534,6 +536,141 @@ def test_chat_completion_with_details_sets_json_object_response_format_when_requ
     assert isinstance(payload, dict)
     assert payload["response_format"] == {"type": "json_object"}
     assert payload["provider"] == {"require_parameters": True}
+
+
+def _stalling_client_factory(
+    *,
+    stall_seconds: float,
+    stall_first_n: int,
+    calls: dict[str, int],
+) -> Callable[[], httpx.Client]:
+    """Client factory whose first ``stall_first_n`` requests sleep past the deadline."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] <= stall_first_n:
+            time.sleep(stall_seconds)
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": "ok"}}]},
+        )
+
+    def factory() -> httpx.Client:
+        calls["clients"] = calls.get("clients", 0) + 1
+        return httpx.Client(transport=httpx.MockTransport(handler))
+
+    return factory
+
+
+@pytest.mark.unit
+def test_chat_completion_raises_timeout_when_call_exceeds_wall_clock_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-secret")
+    monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
+    monkeypatch.setenv("TRIAGE_OPENROUTER_CALL_DEADLINE_SECONDS", "0.3")
+    settings = AppSettings()
+    calls: dict[str, int] = {"n": 0}
+    factory = _stalling_client_factory(stall_seconds=2.0, stall_first_n=99, calls=calls)
+
+    inference = OpenRouterInferenceClient(settings, client_factory=factory)
+    started = time.perf_counter()
+    with pytest.raises(OpenRouterInferenceError) as exc:
+        inference.chat_completion(
+            messages=[{"role": "user", "content": "x"}],
+            run_id="run-deadline",
+        )
+    elapsed = time.perf_counter() - started
+
+    assert exc.value.failure_category == "timeout"
+    assert exc.value.transport_timeout is True
+    # Two bounded 0.3s attempts, so we never waited out even one 2s stall.
+    assert elapsed < 1.5
+
+
+@pytest.mark.unit
+def test_chat_completion_retries_once_on_fresh_connection_after_deadline_kill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-secret")
+    monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
+    monkeypatch.setenv("TRIAGE_OPENROUTER_CALL_DEADLINE_SECONDS", "0.3")
+    settings = AppSettings()
+    calls: dict[str, int] = {"n": 0}
+    factory = _stalling_client_factory(stall_seconds=1.5, stall_first_n=1, calls=calls)
+
+    inference = OpenRouterInferenceClient(settings, client_factory=factory)
+    text = inference.chat_completion(
+        messages=[{"role": "user", "content": "x"}],
+        run_id="run-deadline-retry",
+    )
+
+    assert text == "ok"
+    assert calls["clients"] == 2
+
+
+@pytest.mark.unit
+def test_chat_completion_retries_once_when_upstream_returns_unusable_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-secret")
+    monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
+    settings = AppSettings()
+    calls: dict[str, int] = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(200, json={"choices": [{"message": {"content": "  "}}]})
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": "recovered"}}]},
+        )
+
+    def factory() -> httpx.Client:
+        calls["clients"] = calls.get("clients", 0) + 1
+        return httpx.Client(transport=httpx.MockTransport(handler))
+
+    inference = OpenRouterInferenceClient(settings, client_factory=factory)
+    text = inference.chat_completion(
+        messages=[{"role": "user", "content": "x"}],
+        run_id="run-empty-body-retry",
+    )
+
+    assert text == "recovered"
+    assert calls["n"] == 2
+    assert calls["clients"] == 2
+
+
+@pytest.mark.unit
+def test_chat_completion_gives_up_when_unusable_body_persists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-secret")
+    monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
+    settings = AppSettings()
+    calls: dict[str, int] = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, json={"choices": []})
+
+    def factory() -> httpx.Client:
+        return httpx.Client(transport=httpx.MockTransport(handler))
+
+    inference = OpenRouterInferenceClient(settings, client_factory=factory)
+    with pytest.raises(OpenRouterInferenceError) as exc:
+        inference.chat_completion(
+            messages=[{"role": "user", "content": "x"}],
+            run_id="run-empty-body-persist",
+        )
+
+    assert exc.value.failure_category == "invalid_upstream_payload"
+    assert calls["n"] == 2
 
 
 @pytest.mark.unit

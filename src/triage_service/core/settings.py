@@ -224,6 +224,38 @@ class AppSettings(BaseSettings):
         validation_alias="TRIAGE_OPENROUTER_HTTP_MAX_RETRIES",
         description="Extra attempts after first transient failure (429/502/503/504 or transport).",
     )
+    openrouter_call_deadline_seconds: float = Field(
+        default=150.0,
+        gt=0.0,
+        le=600.0,
+        validation_alias="TRIAGE_OPENROUTER_CALL_DEADLINE_SECONDS",
+        description=(
+            "Hard wall-clock ceiling for one chat completion attempt (including transport "
+            "retries). Required because OpenRouter sends keep-alive padding during upstream "
+            "stalls, which keeps resetting the httpx read timeout."
+        ),
+    )
+
+    triage_max_concurrent_runs: int = Field(
+        default=4,
+        ge=1,
+        le=64,
+        validation_alias="TRIAGE_MAX_CONCURRENT_RUNS",
+        description=(
+            "Max concurrent triage executions in the API process (semaphore-bounded). "
+            "Default is just under the measured OpenRouter latency-degradation knee."
+        ),
+    )
+    triage_concurrency_wait_seconds: float = Field(
+        default=900.0,
+        gt=0.0,
+        le=3600.0,
+        validation_alias="TRIAGE_CONCURRENCY_WAIT_SECONDS",
+        description=(
+            "Max seconds a POST /triage request waits for a concurrency slot before "
+            "returning 503. Jira Automation's scheduled JQL sweep retries later."
+        ),
+    )
 
     triage_image_context_enabled: bool = Field(
         default=False,

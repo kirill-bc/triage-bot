@@ -5,10 +5,12 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from pydantic import ValidationError
 from tqdm import tqdm
@@ -105,6 +107,106 @@ def _issue_row_from_triage(
     )
 
 
+@dataclass(frozen=True)
+class _BulkTriageWorkerConfig:
+    """Loop-invariant settings shared read-only across worker threads."""
+
+    settings: AppSettings
+    runner: TriageRunner | None
+    apply_to_jira: bool
+    post_mismatch_comments: bool
+    auto_apply_deescalation: bool | None
+    auto_apply_escalation: bool | None
+    auto_apply_bug_to_story: bool | None
+
+
+class _BulkTriageRunnerPool:
+    """Resolves one ``TriageRunner`` per worker thread (or reuses an injected runner).
+
+    An explicitly injected ``runner`` (tests, single-process reuse) is shared across
+    workers as-is. Otherwise each worker thread lazily builds and keeps its own full
+    runner (own Jira/OpenRouter/Zendesk clients) -- the same pattern already proven
+    safe under concurrent load by ``scripts/debug_concurrent_triage_probe.py``.
+    """
+
+    def __init__(self, config: _BulkTriageWorkerConfig) -> None:
+        self._config = config
+        self._thread_local = threading.local()
+        self._built: list[TriageRunner] = []
+        self._lock = threading.Lock()
+
+    def resolve(self) -> TriageRunner:
+        if self._config.runner is not None:
+            return self._config.runner
+        cached = getattr(self._thread_local, "runner", None)
+        if cached is not None:
+            return cast(TriageRunner, cached)
+        built = build_default_triage_handler(
+            post_mismatch_comments=self._config.post_mismatch_comments,
+            apply_to_jira=self._config.apply_to_jira,
+            auto_apply_deescalation=self._config.auto_apply_deescalation,
+            auto_apply_escalation=self._config.auto_apply_escalation,
+            auto_apply_bug_to_story=self._config.auto_apply_bug_to_story,
+        )
+        self._thread_local.runner = built
+        with self._lock:
+            self._built.append(built)
+        return built
+
+    def flush_all(self) -> None:
+        runners: list[TriageRunner] = (
+            [self._config.runner] if self._config.runner is not None else self._built
+        )
+        for candidate in runners:
+            flush = getattr(candidate, "flush_inference_telemetry", None)
+            if callable(flush):
+                flush()
+
+
+def _process_bulk_triage_ref(
+    ref: JiraSearchIssueRef,
+    *,
+    config: _BulkTriageWorkerConfig,
+    runner_pool: _BulkTriageRunnerPool,
+) -> BulkTriageIssueRow:
+    project = infer_project_from_issue_key(ref.issue_key)
+    active_runner = runner_pool.resolve()
+    result = run_cli_triage(
+        ref.issue_key,
+        project=project,
+        runner=active_runner,
+        post_mismatch_comments=config.post_mismatch_comments,
+        apply_to_jira=config.apply_to_jira,
+        auto_apply_deescalation=config.auto_apply_deescalation,
+        auto_apply_escalation=config.auto_apply_escalation,
+        auto_apply_bug_to_story=config.auto_apply_bug_to_story,
+    )
+    image_context = build_cli_image_context_summary(
+        enabled=config.settings.triage_image_context_enabled,
+        extraction=result.image_extraction,
+    )
+    zendesk_context = build_cli_zendesk_context_summary(
+        enabled=bool(getattr(config.settings, "triage_zendesk_context_enabled", False)),
+        enrichment=result.zendesk_context,
+    )
+    outcome = result.outcome
+    if isinstance(outcome, TriageFailure):
+        payload: dict[str, Any] = {
+            "status": "failed",
+            "failure": outcome.model_dump(),
+            "image_context": image_context,
+            "zendesk_context": zendesk_context,
+        }
+    else:
+        payload = build_triage_cli_result_payload(
+            result,
+            image_context=image_context,
+            zendesk_context=zendesk_context,
+        )
+    row = _issue_row_from_triage(ref, project=project, payload=payload)
+    return row
+
+
 def run_bulk_triage(
     refs: list[JiraSearchIssueRef],
     *,
@@ -116,68 +218,51 @@ def run_bulk_triage(
     auto_apply_escalation: bool | None = None,
     auto_apply_bug_to_story: bool | None = None,
     show_progress: bool | None = None,
+    concurrency: int = 1,
 ) -> list[BulkTriageIssueRow]:
-    """Triage each issue ref and return structured rows (no file I/O)."""
+    """Triage each issue ref (bounded worker pool) and return rows in input order."""
     progress = sys.stderr.isatty() if show_progress is None else show_progress
-    resolved = runner
-    if resolved is None:
-        resolved = build_default_triage_handler(
-            post_mismatch_comments=post_mismatch_comments,
-            apply_to_jira=apply_to_jira,
-            auto_apply_deescalation=auto_apply_deescalation,
-            auto_apply_escalation=auto_apply_escalation,
-            auto_apply_bug_to_story=auto_apply_bug_to_story,
-        )
-    rows: list[BulkTriageIssueRow] = []
-    ref_iter = tqdm(
-        refs,
+    worker_count = max(1, concurrency)
+    config = _BulkTriageWorkerConfig(
+        settings=settings,
+        runner=runner,
+        apply_to_jira=apply_to_jira,
+        post_mismatch_comments=post_mismatch_comments,
+        auto_apply_deescalation=auto_apply_deescalation,
+        auto_apply_escalation=auto_apply_escalation,
+        auto_apply_bug_to_story=auto_apply_bug_to_story,
+    )
+    runner_pool = _BulkTriageRunnerPool(config)
+    rows: list[BulkTriageIssueRow | None] = [None] * len(refs)
+    progress_bar = tqdm(
+        total=len(refs),
         desc="Triage",
         unit="issue",
         disable=not progress,
         file=sys.stderr,
         dynamic_ncols=True,
     )
-    for ref in ref_iter:
-        project = infer_project_from_issue_key(ref.issue_key)
-        result = run_cli_triage(
-            ref.issue_key,
-            project=project,
-            runner=resolved,
-            post_mismatch_comments=post_mismatch_comments,
-            apply_to_jira=apply_to_jira,
-            auto_apply_deescalation=auto_apply_deescalation,
-            auto_apply_escalation=auto_apply_escalation,
-            auto_apply_bug_to_story=auto_apply_bug_to_story,
-        )
-        image_context = build_cli_image_context_summary(
-            enabled=settings.triage_image_context_enabled,
-            extraction=result.image_extraction,
-        )
-        zendesk_context = build_cli_zendesk_context_summary(
-            enabled=bool(getattr(settings, "triage_zendesk_context_enabled", False)),
-            enrichment=result.zendesk_context,
-        )
-        outcome = result.outcome
-        if isinstance(outcome, TriageFailure):
-            payload: dict[str, Any] = {
-                "status": "failed",
-                "failure": outcome.model_dump(),
-                "image_context": image_context,
-                "zendesk_context": zendesk_context,
+    try:
+        with ThreadPoolExecutor(max_workers=worker_count) as pool:
+            future_to_index = {
+                pool.submit(
+                    _process_bulk_triage_ref,
+                    ref,
+                    config=config,
+                    runner_pool=runner_pool,
+                ): index
+                for index, ref in enumerate(refs)
             }
-        else:
-            payload = build_triage_cli_result_payload(
-                result,
-                image_context=image_context,
-                zendesk_context=zendesk_context,
-            )
-        rows.append(_issue_row_from_triage(ref, project=project, payload=payload))
-        if progress:
-            ref_iter.set_postfix_str(ref.issue_key, refresh=False)
-    flush = getattr(resolved, "flush_inference_telemetry", None)
-    if callable(flush):
-        flush()
-    return rows
+            for future in as_completed(future_to_index):
+                index = future_to_index[future]
+                rows[index] = future.result()
+                if progress:
+                    progress_bar.set_postfix_str(refs[index].issue_key, refresh=False)
+                progress_bar.update(1)
+    finally:
+        progress_bar.close()
+    runner_pool.flush_all()
+    return [row for row in rows if row is not None]
 
 
 def _write_report(
@@ -288,10 +373,23 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Disable the tqdm progress bar (default: on when stderr is a TTY).",
     )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=4,
+        metavar="N",
+        help=(
+            "Number of issues to triage in parallel (default: 4). Each worker thread "
+            "builds its own Jira/OpenRouter/Zendesk clients; use 1 for sequential."
+        ),
+    )
     ns = parser.parse_args(argv)
 
     if ns.max_results < 1:
         print("--max-results must be at least 1.", file=sys.stderr)
+        return 2
+    if ns.concurrency < 1:
+        print("--concurrency must be at least 1.", file=sys.stderr)
         return 2
 
     dotenv_path = _ROOT / ".env"
@@ -331,6 +429,7 @@ def main(argv: list[str] | None = None) -> int:
         auto_apply_escalation=ns.auto_apply_escalation or None,
         auto_apply_bug_to_story=ns.auto_apply_bug_to_story or None,
         show_progress=None if not ns.no_progress else False,
+        concurrency=ns.concurrency,
     )
     output_path = Path(ns.output)
     _write_report(

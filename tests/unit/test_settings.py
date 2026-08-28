@@ -208,6 +208,57 @@ def test_load_settings_reads_openrouter_http_timeout_and_max_retries(
 
 
 @pytest.mark.unit
+def test_load_settings_defaults_concurrency_limits_when_omitted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("TRIAGE_MAX_CONCURRENT_RUNS", raising=False)
+    monkeypatch.delenv("TRIAGE_CONCURRENCY_WAIT_SECONDS", raising=False)
+    (tmp_path / ".env").write_text(
+        "JIRA_API_KEY=jira-token\nOPENROUTER_API_KEY=or-token\nTRIAGE_WEBHOOK_TOKEN=triage-token\n",
+        encoding="utf-8",
+    )
+    settings = load_settings()
+    assert settings.triage_max_concurrent_runs == 4
+    assert settings.triage_concurrency_wait_seconds == 900.0
+
+
+@pytest.mark.unit
+def test_load_settings_reads_concurrency_limits_from_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text(
+        "JIRA_API_KEY=jira-token\n"
+        "OPENROUTER_API_KEY=or-token\n"
+        "TRIAGE_WEBHOOK_TOKEN=triage-token\n"
+        "TRIAGE_MAX_CONCURRENT_RUNS=8\n"
+        "TRIAGE_CONCURRENCY_WAIT_SECONDS=30\n",
+        encoding="utf-8",
+    )
+    settings = load_settings()
+    assert settings.triage_max_concurrent_runs == 8
+    assert settings.triage_concurrency_wait_seconds == 30.0
+
+
+@pytest.mark.unit
+def test_load_settings_rejects_zero_max_concurrent_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("TRIAGE_MAX_CONCURRENT_RUNS", raising=False)
+    (tmp_path / ".env").write_text(
+        "JIRA_API_KEY=jira-token\n"
+        "OPENROUTER_API_KEY=or-token\n"
+        "TRIAGE_WEBHOOK_TOKEN=triage-token\n"
+        "TRIAGE_MAX_CONCURRENT_RUNS=0\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValidationError):
+        load_settings()
+
+
+@pytest.mark.unit
 def test_load_settings_reads_optional_zendesk_enrichment_settings(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
