@@ -24,7 +24,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from typing_extensions import Self
 
-from triage_service.core.settings import load_settings
+from triage_service.core.settings import AppSettings, load_settings
 from triage_service.core.triage_fallback import TriageFailure
 from triage_service.core.triage_handler import TriageRunner, build_default_triage_handler
 from triage_service.core.triage_recommendation_parser import TriageRecommendation
@@ -166,28 +166,20 @@ def _resolve_log_level() -> str:
     return token if token in allowed else "INFO"
 
 
-def _resolve_max_concurrent_runs() -> int:
-    """Read ``TRIAGE_MAX_CONCURRENT_RUNS``; mirrors ``AppSettings`` default/bounds."""
-    token = os.environ.get("TRIAGE_MAX_CONCURRENT_RUNS", "").strip()
-    if not token:
-        return 4
-    try:
-        value = int(token)
-    except ValueError:
-        return 4
-    return value if 1 <= value <= 64 else 4
+def _concurrency_limits_from_settings() -> tuple[int, float]:
+    """Return semaphore size and wait timeout from ``AppSettings``.
 
-
-def _resolve_concurrency_wait_seconds() -> float:
-    """Read ``TRIAGE_CONCURRENCY_WAIT_SECONDS``; mirrors ``AppSettings`` default/bounds."""
-    token = os.environ.get("TRIAGE_CONCURRENCY_WAIT_SECONDS", "").strip()
-    if not token:
-        return 900.0
+    ``create_app`` must succeed even when required credentials are missing so
+    ``GET /health`` can report ``ready: false``. In that case fall back to the
+    same Field defaults as ``AppSettings``.
+    """
+    default_runs = AppSettings.model_fields["triage_max_concurrent_runs"].default
+    default_wait = AppSettings.model_fields["triage_concurrency_wait_seconds"].default
     try:
-        value = float(token)
-    except ValueError:
-        return 900.0
-    return value if 0.0 < value <= 3600.0 else 900.0
+        settings = load_settings()
+    except Exception:
+        return int(default_runs), float(default_wait)
+    return settings.triage_max_concurrent_runs, settings.triage_concurrency_wait_seconds
 
 
 def _run_triage_within_capacity(
@@ -256,8 +248,7 @@ def _run_triage_within_capacity(
 def create_app(*, triage_handler_factory: Callable[[], TriageRunner] | None = None) -> FastAPI:
     """Build the FastAPI app. Override ``triage_handler_factory`` in tests."""
     factory: Callable[[], TriageRunner] = triage_handler_factory or build_default_triage_handler
-    max_concurrent_runs = _resolve_max_concurrent_runs()
-    concurrency_wait_seconds = _resolve_concurrency_wait_seconds()
+    max_concurrent_runs, concurrency_wait_seconds = _concurrency_limits_from_settings()
     triage_slots = threading.Semaphore(max_concurrent_runs)
 
     @asynccontextmanager

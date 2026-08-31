@@ -51,7 +51,7 @@ See `TODO.md` for the active implementation backlog.
 
 ## Current implemented components
 
-- **API layer**: `GET /health` returns JSON including `observability` when `ready` is true: Langfuse key presence, **`langfuse_export_env_ready`** (keys plus SDK export env: not `LANGFUSE_TRACING_ENABLED=false`, not `OTEL_SDK_DISABLED=true`), and audit flags. That does not prove traces reached Langfuse (use UI + `LANGFUSE_DEBUG` for export failures). HTTP 503 with `ready:false` when validation fails (use for Kubernetes readiness). `POST /triage` accepts `issue_key`, `project`, `source` (`bug_created` or `priority_changed` for Jira Automation; `manual_trigger` for the local runner; closed `Literal`) and requires header `X-Triage-Token` matching `TRIAGE_WEBHOOK_TOKEN`; JSON responses include a generated `run_id` for correlation with downstream observability
+- **API layer**: `GET /health` returns JSON including `observability` when `ready` is true: Langfuse key presence, **`langfuse_export_env_ready`** (keys plus SDK export env: not `LANGFUSE_TRACING_ENABLED=false`, not `OTEL_SDK_DISABLED=true`), and audit flags. That does not prove traces reached Langfuse (use UI + `LANGFUSE_DEBUG` for export failures). HTTP 503 with `ready:false` when validation fails (use for Kubernetes readiness). `POST /triage` accepts `issue_key`, `project`, `source` (`bug_created` or `priority_changed` for Jira Automation; `manual_trigger` for the local runner; closed `Literal`) and requires header `X-Triage-Token` matching `TRIAGE_WEBHOOK_TOKEN`. If all in-process triage slots stay busy longer than `TRIAGE_CONCURRENCY_WAIT_SECONDS`, the endpoint returns `503` (see [Concurrency](#concurrency)). JSON responses include a generated `run_id` for correlation with downstream observability. On success the recommendation is a merged `TriageRecommendation` (issue type, optional P0–P4, confidence, reason). Invalid model JSON (classification parse failure, or priority parse failure after one retry) surfaces as `TriageFailure(category="invalid_model_output")`.
 - **Validation**: rejects missing fields and unsupported `source` values; rejects projects outside `TRIAGE_ALLOWED_PROJECTS` with `TriageFailure` category `project_not_allowed`
 - **Jira adapter**: fetches and flattens selected Jira issue fields, including optional reproduction steps
 - **OpenRouter adapter**: `OpenRouterInferenceClient` posts chat completions using the configured model id
@@ -74,6 +74,7 @@ From repository root:
    - `JIRA_API_KEY`
    - `OPENROUTER_API_KEY`
    - `TRIAGE_WEBHOOK_TOKEN` (shared secret expected in inbound `X-Triage-Token` header on `POST /triage`)
+   - `TRIAGE_ALLOWED_PROJECTS` (comma-separated Jira project keys; defaults to `TJC,BC` if unset)
    - optional: `TRIAGE_TEXT_MODEL` (defaults to `openai/gpt-4o-mini` if unset)
   - optional: `TRIAGE_PROMPT_TEMPLATES_PATH` (path to local JSON prompt templates fallback; defaults to `src/triage_service/core/prompt_templates.json`)
    - optional: `JIRA_CLOUD_ID`, `JIRA_USER_EMAIL`, logging values
@@ -83,14 +84,14 @@ From repository root:
    - optional: `TRIAGE_OPENROUTER_CALL_DEADLINE_SECONDS` (hard wall-clock ceiling per chat completion attempt, default `150`, max `600`). The HTTP timeout above only bounds the gap between received chunks, so it cannot stop a call that OpenRouter holds open with keep-alive padding while an upstream provider stalls; this deadline closes the connection and retries once on a fresh one.
    - optional: `TRIAGE_MAX_CONCURRENT_RUNS` (max concurrent `POST /triage` executions in-process, default `4`, max `64`) and `TRIAGE_CONCURRENCY_WAIT_SECONDS` (max seconds a request waits for a slot before `503`, default `900`, max `3600`) — see Concurrency below.
   - optional: `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, and `LANGFUSE_BASE_URL` (when the first two are set, OpenRouter steps are traced in Langfuse: each triage `run_id` is the Langfuse **session** id (Sessions UI replay), with root span `triage_issue_pipeline` and nested `inference_*` generations; token usage and any cost fields returned by OpenRouter are forwarded onto those generation observations when present. Lifecycle audit events attach under that span when emitted during triage. Use `run_id` from the API or CLI response and the span metadata to correlate with logs. `POST /triage` and the manual CLI call `flush_inference_telemetry()` after each run so buffers are not stuck in short-lived processes)
-  - optional Langfuse prompt management (defaults shown; Langfuse project `triagebot`): `TRIAGE_LANGFUSE_PROMPTS_ENABLED=true`, user prompts `TRIAGE_LANGFUSE_CLASSIFICATION_PROMPT_NAME=triagebot/classification-user` and `TRIAGE_LANGFUSE_PRIORITY_PROMPT_NAME=triagebot/priority-user` (policies and reason guidance are embedded in Langfuse; only `{{issue_block}}` is compiled at runtime), system prompts `TRIAGE_LANGFUSE_CLASSIFICATION_SYSTEM_PROMPT_NAME=triagebot/classification-system` / `TRIAGE_LANGFUSE_PRIORITY_SYSTEM_PROMPT_NAME=triagebot/priority-system`, optional `TRIAGE_LANGFUSE_REASON_FOR_HUMANS_PROMPT_NAME=triagebot/reason-for-humans` (local fallback only), shared `TRIAGE_LANGFUSE_PROMPT_LABEL=production`, `TRIAGE_LANGFUSE_PROMPT_CACHE_TTL_SECONDS` (unset uses SDK default). When Langfuse is unavailable, `prompt_templates.json` and `src/triage_service/core/policy/*.md` (`load_policy_context`) are composed locally.
+  - optional Langfuse prompt management (defaults shown; Langfuse project `triagebot`): `TRIAGE_LANGFUSE_PROMPTS_ENABLED=true`, optional `TRIAGE_LANGFUSE_PROMPT_LABEL` (for example `production`; empty uses the SDK default), `TRIAGE_LANGFUSE_PROMPT_CACHE_TTL_SECONDS` (unset uses SDK default), and optional payload clipping via `TRIAGE_LANGFUSE_TRUNCATE_PAYLOADS` + `TRIAGE_LANGFUSE_MAX_STRING_CHARS`. Prompt names and fallback behavior are listed under [Langfuse prompt management](#langfuse-prompt-management).
    - optional audit routing and redaction (defaults: structured JSON logs **on**, Langfuse audit mirror **on** when Langfuse keys exist, model input redaction **off**, model output redaction **off**): `TRIAGE_AUDIT_STRUCTURED_LOG_ENABLED`, `TRIAGE_AUDIT_LANGFUSE_ENABLED`, `TRIAGE_AUDIT_REDACT_MODEL_INPUT`, `TRIAGE_AUDIT_REDACT_MODEL_OUTPUT`. Filter JSON log lines by `run_id` (API response field or CLI-generated UUID); in Langfuse, open **Sessions** and search by `run_id` (session id) or use `run_id` on the root span metadata to align traces, generations, and audit events.
    - optional analytics dashboard (default **off**): when `ANALYTICS_DASHBOARD_URL` is set (base URL including `/api/v1`), each successful triage run fire-and-forgets a `POST` to `{ANALYTICS_DASHBOARD_URL}/decisions` with the dashboard decision payload (`run_id`, intake/recommended state, applied flags, confidence, `triaged_at`, optional `issue_created_at` from Jira `fields.created`, optional `issue_name` from Jira summary, optional `inference_cost_usd`). Send `ANALYTICS_TOKEN` as header `X-Analytics-Token`. Uses `ANALYTICS_HTTP_TIMEOUT_SECONDS` (default `2`); transport failures are logged at warning and never fail triage.
    - optional local smoke mode: `TRIAGE_LOCAL_MOCK_MODE` (`1`, `true`, `yes`, or `on`) switches triage into a deterministic local runner that skips Jira/OpenRouter calls. Intended only for local container smoke checks.
   - optional image attachment preprocessing (default **off**): `TRIAGE_IMAGE_CONTEXT_ENABLED` runs description-inline images first, then comment-referenced images (if slots remain) through a dedicated vision model before classification and priority. Uses `TRIAGE_VISION_MODEL` (independent from `TRIAGE_TEXT_MODEL`), `TRIAGE_IMAGE_CONTEXT_MAX_ATTACHMENTS` (default `5`), `TRIAGE_IMAGE_CONTEXT_MAX_BYTES_PER_IMAGE` (default 5 MiB), `TRIAGE_IMAGE_CONTEXT_TIMEOUT_SECONDS` (default `90`). Audit logs redact vision transcripts by default (`TRIAGE_AUDIT_REDACT_IMAGE_TRANSCRIPT=true`) because screenshots often contain PII. Each processed image is one billed OpenRouter vision call; failures degrade to placeholders and never abort triage.
-  - optional issue comment context budget: `TRIAGE_COMMENTS_CHAR_BUDGET` (default `6000`) controls total Jira comment body characters included in `issue_block`; oldest comments are dropped first when over budget.
+  - optional issue comment context budget: `TRIAGE_COMMENTS_CHAR_BUDGET` (default `6000`) controls total Jira comment body characters included in `issue_block`; oldest comments are dropped first when over budget (`0` omits comment bodies).
   - optional Jira auto-apply controls (default **off**): `TRIAGE_AUTO_APPLY_DEESCALATION=true` applies Bug deescalation priority recommendations directly to Jira priority; `TRIAGE_AUTO_APPLY_ESCALATION=true` applies Bug escalation/prioritization recommendations directly to Jira priority; `TRIAGE_AUTO_APPLY_BUG_TO_STORY=true` applies Bug -> Story recommendations directly to Jira issue type.
-  - optional Zendesk enrichment (default **off**): when `TRIAGE_ZENDESK_CONTEXT_ENABLED=true` and Zendesk OAuth credentials are configured, triage reads Zendesk ticket ids from Jira custom fields (`TRIAGE_JIRA_ZENDESK_TICKET_IDS_FIELD_ID`, default `customfield_10158`; `TRIAGE_JIRA_IMPORTED_ZENDESK_TICKET_IDS_FIELD_ID`, default `customfield_10162`), fetches ticket metadata and comments from Zendesk API (`TRIAGE_ZENDESK_HTTP_TIMEOUT_SECONDS`, default `20`; `TRIAGE_ZENDESK_MAX_COMMENTS_PER_TICKET`, default `20`), and appends them to the issue block. **Auth:** OAuth client-credentials flow via `ZENDESK_IDENTIFIER`, `ZENDESK_SECRET`, `ZENDESK_BASE_URL` or `ZENDESK_SUBDOMAIN` (optional `ZENDESK_OAUTH_SCOPE`). The service mints short-lived Bearer tokens in memory on demand; no browser authorize step or token file is required. When `TRIAGE_ZENDESK_COMMENT_SUMMARY_ENABLED=true` (default **off**), one OpenRouter call per linked ticket condenses comments into resolution signals (`TRIAGE_ZENDESK_SUMMARY_MODEL`, `TRIAGE_ZENDESK_COMMENTS_CHAR_BUDGET`, `TRIAGE_ZENDESK_SUMMARY_TIMEOUT_SECONDS`) rendered instead of raw ticket descriptions; failures fall back to subject/description. Priority policy and prompts weigh current impact over historical peak severity when recovery is documented in those signals.
+  - optional Zendesk enrichment (default **off**): when `TRIAGE_ZENDESK_CONTEXT_ENABLED=true` and Zendesk OAuth credentials are configured, triage discovers linked ticket IDs from Jira custom fields (`TRIAGE_JIRA_ZENDESK_TICKET_IDS_FIELD_ID`, default `customfield_10158`; `TRIAGE_JIRA_IMPORTED_ZENDESK_TICKET_IDS_FIELD_ID`, default `customfield_10162`) and issue text (`ZD-123`, `ZD #123`, or Zendesk ticket URLs), then fetches up to `TRIAGE_ZENDESK_MAX_TICKETS` (default `3`) tickets plus comments (`TRIAGE_ZENDESK_HTTP_TIMEOUT_SECONDS`, default `20`; `TRIAGE_ZENDESK_MAX_COMMENTS_PER_TICKET`, default `20`). Optional `TRIAGE_JIRA_ZENDESK_TICKET_COUNT_FIELD_ID` (default `customfield_10157`) is informational only. Duplicate IDs across fields and text are deduplicated before fetch. **Auth:** OAuth client-credentials (`POST /oauth/tokens`) via `ZENDESK_IDENTIFIER`, `ZENDESK_SECRET`, `ZENDESK_BASE_URL` or `ZENDESK_SUBDOMAIN` (optional `ZENDESK_OAUTH_SCOPE`, default `read`). Access tokens are cached in memory and refreshed before expiry. When `TRIAGE_ZENDESK_COMMENT_SUMMARY_ENABLED=true` (default **off**), one OpenRouter call per linked ticket condenses comments into resolution signals (`INITIAL_IMPACT`, `LATEST_STATUS`, `RESOLUTION_HINTS`, `OPEN_RISKS`) using `TRIAGE_ZENDESK_SUMMARY_MODEL`, `TRIAGE_ZENDESK_COMMENTS_CHAR_BUDGET` (newest comments kept first), and `TRIAGE_ZENDESK_SUMMARY_TIMEOUT_SECONDS`; sections that verbatim-echo Jira summary/description/repro are replaced with a short placeholder, and duplicate resolution hints across tickets are collapsed. Failures fall back to subject/description. Priority prompts weigh latest status over historical peak severity when recovery is confirmed. See [Issue context for inference](#issue-context-for-inference).
 3. Run quality gates:
    - `.venv/bin/pytest -m lint`
    - `.venv/bin/mypy .`
@@ -101,6 +102,15 @@ From repository root:
 5. Local container smoke check (build image, run container, POST fixture payload to `/triage`, validate response shape):
    - `./scripts/run_container_smoke.sh`
    - Requires Docker daemon access.
+   - Manual build/run (secrets at runtime only; do not bake API keys into the image):
+
+     ```bash
+     docker build -t jira-triage:local .
+     docker run --rm --env-file .env -p 8000:8000 jira-triage:local
+     curl -sS http://127.0.0.1:8000/health
+     ```
+
+     The container starts `uvicorn triage_service.api.triage_api:app --app-dir src --host 0.0.0.0 --port 8000`. A ready process returns `ready: true` on `GET /health`.
 6. Optional live OpenRouter check (uses your `.env` keys, network, and a small billed call). Uses
    `max_tokens=256` so reasoning-heavy models still emit `content`:
    - `OPENROUTER_LIVE_SMOKE=1 .venv/bin/pytest tests/integration/test_openrouter_live_smoke.py -m integration`
@@ -117,7 +127,9 @@ The script calls Jira REST and prints normalized JSON for the issue, including `
 
 ### Image attachment preprocessing
 
-When `TRIAGE_IMAGE_CONTEXT_ENABLED=true`, triage downloads image attachments referenced in issue context with this priority: (1) description-inline images, then (2) comment-referenced images if attachment slots remain (`TRIAGE_IMAGE_CONTEXT_MAX_ATTACHMENTS`). It transcribes each selected image once via `TRIAGE_VISION_MODEL` and injects the result into the shared `{{issue_block}}` used by both classification and priority. Per-image failures become placeholders in the issue block; triage continues.
+When `TRIAGE_IMAGE_CONTEXT_ENABLED=true` (default **off**), triage downloads image attachments referenced in the issue description first, then images referenced in comments (within `TRIAGE_IMAGE_CONTEXT_MAX_ATTACHMENTS`), transcribes each via `TRIAGE_VISION_MODEL` (independent from the text triage model), and injects short summaries into the shared `issue_block` used by classification and priority. Per-image failures become placeholders; triage continues.
+
+If Zendesk enrichment is enabled and linked tickets include images, triage can also process Zendesk inline/comment images in the same shared image budget after Jira attachments. Duplicates already present as Jira attachments are skipped to avoid repeated vision calls. The `image_context_extracted` audit event includes `zendesk_skipped` details for those deduped Zendesk images.
 
 Example excerpt as models see it inside `issue_block`:
 
@@ -138,7 +150,7 @@ Vision-only smoke (no classification):
 .venv/bin/python scripts/fetch_jira_issue_image_context.py YOUR-123 --show-issue-block
 ```
 
-**Cost / PII:** one OpenRouter vision request per selected image (description-inline first, then comment-referenced; capped by `TRIAGE_IMAGE_CONTEXT_MAX_ATTACHMENTS`). Prefer a fast/cheap vision model for preprocessing; keep `TRIAGE_TEXT_MODEL` on your main triage model. Transcripts can include names, emails, or tokens visible in screenshots — keep `TRIAGE_AUDIT_REDACT_IMAGE_TRANSCRIPT=true` in shared logs and Langfuse unless you have a controlled debugging window.
+**Cost / PII:** each processed image is one billed OpenRouter vision call (description-inline first, then comment-referenced, then remaining Zendesk images; capped by `TRIAGE_IMAGE_CONTEXT_MAX_ATTACHMENTS`). Prefer a fast/cheap vision model for preprocessing; keep `TRIAGE_TEXT_MODEL` on your main triage model. Classification and priority prompts receive an `Attached images:` section with per-file summaries, not full transcripts. Transcripts can include names, emails, or tokens visible in screenshots — keep `TRIAGE_AUDIT_REDACT_IMAGE_TRANSCRIPT=true` in shared logs and Langfuse unless you have a controlled debugging window.
 
 ## Benchmark dataset (optional)
 
@@ -264,13 +276,53 @@ Exit code `0` when every issue completed, `1` when any issue failed or the JQL m
 No message broker is used. Two independent, in-process bounds keep triage reliable under concurrent load instead:
 
 - **`POST /triage` webhook path**: a process-wide semaphore (`TRIAGE_MAX_CONCURRENT_RUNS`, default `4`) bounds concurrent triage executions. A request that cannot acquire a slot within `TRIAGE_CONCURRENCY_WAIT_SECONDS` (default `900`) gets HTTP `503` instead of queuing indefinitely; Jira Automation webhooks here are fire-and-forget, and a scheduled Jira Automation JQL sweep re-picks-up any issue that hasn't been triaged yet, so shedding under a burst is safe. `GET /health` is served on the event loop (not the sync worker thread pool) so readiness probes stay responsive even when all triage slots are busy.
+
+  The handler is **sync**, so FastAPI runs it on the anyio/Uvicorn thread pool. Waiting for a semaphore slot occupies an OS thread (not a coroutine) until a slot is acquired or the wait times out. The semaphore `503` logs `triage_api_busy`; if in-flight triage plus waiters exceed the thread pool, later requests can fail from pool exhaustion instead, with no `triage_api_busy` log. Effective waiters ≈ thread-pool size − `TRIAGE_MAX_CONCURRENT_RUNS`. This service keeps the sync handler; size the thread pool or Uvicorn `--limit-concurrency` so that ceiling is intentional.
 - **Bulk CLI**: `triage_bulk_cli.py` / `scripts/run_bulk_triage_cli.py` uses a bounded `ThreadPoolExecutor` (`--concurrency`, default `4`) instead of a fully sequential loop.
 
 This design was chosen over adding a queue/broker (e.g. RabbitMQ) because the measured bottleneck is upstream OpenRouter model throughput degrading 2-4x past roughly 5-6 concurrent calls on the configured text model, not request intake; a broker would not increase that throughput ceiling, only relocate the wait. `TRIAGE_OPENROUTER_CALL_DEADLINE_SECONDS` (see above) already bounds a single stalled call so one slow request cannot hang a worker indefinitely.
 
+## Issue context for inference
+
+On each run the service loads summary, description, issue type, priority, reporter, reproduction steps, and Jira comments. Reproduction steps come from `TRIAGE_JIRA_REPRODUCTION_STEPS_FIELD_ID` when that field is present on the issue; otherwise the fetcher looks for a "Steps to reproduce" or "Reproduction steps" heading in the description. Comments are fetched via the Jira REST API and appended as a `Comments:` section (author, timestamp, body per line). When `TRIAGE_COMMENTS_CHAR_BUDGET` is exceeded, the oldest comment bodies are dropped first; attachment-only comments are kept when they fit.
+
+When `TRIAGE_ZENDESK_CONTEXT_ENABLED=true` and Zendesk credentials are present, the service also discovers linked Zendesk ticket IDs from the configured Jira custom fields and issue text references, then fetches up to `TRIAGE_ZENDESK_MAX_TICKETS` linked tickets plus comments. If `TRIAGE_ZENDESK_COMMENT_SUMMARY_ENABLED=true`, each linked ticket can be summarized into structured resolution signals and those signals are injected into the same issue block.
+
+All of these fields are passed to the model as one issue block, including dedicated reproduction-steps, comments, and linked-Zendesk sections.
+
+### Zendesk authentication
+
+When Zendesk context is enabled, configure OAuth client credentials: `ZENDESK_IDENTIFIER`, `ZENDESK_SECRET`, plus `ZENDESK_BASE_URL` or `ZENDESK_SUBDOMAIN`; optional `ZENDESK_OAUTH_SCOPE` (default `read`).
+
+The service uses the Zendesk client-credentials flow (`POST /oauth/tokens`); access tokens are cached in memory and refreshed before expiry. Fetch, summary, and Zendesk vision failures are soft-fail-safe and must not abort triage.
+
+## Langfuse prompt management
+
+When `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` are set, OpenRouter classification and priority steps are traced in Langfuse (`run_id` is the session id). Each step is a separate generation. A priority parse retry starts a second generation with the same prompt and `metadata.attempt=2`. With `TRIAGE_LANGFUSE_PROMPTS_ENABLED=true` (default when keys are present), user and system prompts are loaded from the Langfuse project **`triagebot`** instead of bundling policy text at runtime.
+
+Default prompt names (override via env):
+
+| Role | Default name | Env override |
+|------|--------------|--------------|
+| Classification user | `triagebot/classification-user` | `TRIAGE_LANGFUSE_CLASSIFICATION_PROMPT_NAME` |
+| Classification system | `triagebot/classification-system` | `TRIAGE_LANGFUSE_CLASSIFICATION_SYSTEM_PROMPT_NAME` |
+| Priority user | `triagebot/priority-user` | `TRIAGE_LANGFUSE_PRIORITY_PROMPT_NAME` |
+| Priority system | `triagebot/priority-system` | `TRIAGE_LANGFUSE_PRIORITY_SYSTEM_PROMPT_NAME` |
+| Vision user (image preprocessing) | `triagebot/vision-user` | `TRIAGE_LANGFUSE_VISION_USER_PROMPT_NAME` |
+| Vision system | `triagebot/vision-system` | `TRIAGE_LANGFUSE_VISION_SYSTEM_PROMPT_NAME` |
+| Zendesk summary user | `triagebot/zendesk-summary-user` | `TRIAGE_LANGFUSE_ZENDESK_SUMMARY_USER_PROMPT_NAME` |
+| Zendesk summary system | `triagebot/zendesk-summary-system` | `TRIAGE_LANGFUSE_ZENDESK_SUMMARY_SYSTEM_PROMPT_NAME` |
+| Reason-for-humans (local fallback only) | `triagebot/reason-for-humans` | `TRIAGE_LANGFUSE_REASON_FOR_HUMANS_PROMPT_NAME` |
+
+Langfuse user prompts embed policies and guidance; only `{{issue_block}}` is compiled at runtime. Set `TRIAGE_LANGFUSE_PROMPTS_ENABLED=false` to force local `prompt_templates.json` and `src/triage_service/core/policy/*.md` even when Langfuse keys exist.
+
+If Langfuse is unavailable or a fetch fails, the service falls back to `src/triage_service/core/prompt_templates.json` and policy Markdown under `src/triage_service/core/policy/`. Local bug classification policy treats likely intentional product/UI/workflow changes as Story by default (Bug only when explicit requirement or required parity is violated). Local priority prompts ask the model to compare the recommended P0–P4 to the issue’s current Jira priority and justify changes, especially downgrades.
+
 ## Analytics dashboard (optional)
 
-When `ANALYTICS_DASHBOARD_URL` is set, each **successful** triage run POSTs a decision row to `{ANALYTICS_DASHBOARD_URL}/decisions` (see `docs/specification.md`). Transport errors are logged and never fail triage.
+When `ANALYTICS_DASHBOARD_URL` is set, each **successful** triage run POSTs a decision row to `{ANALYTICS_DASHBOARD_URL}/decisions` on a background thread (fire-and-forget; see `docs/specification.md`). Optional `ANALYTICS_TOKEN` is sent as `X-Analytics-Token`. Payloads include run metadata, intake vs recommended type/priority, whether auto-apply changed fields, inference cost, and Jira issue enrichment when available. Transport errors are logged and never fail the triage response.
+
+Structured log events for this path include `analytics_decision_dispatch`, `analytics_decision_posted`, `analytics_decision_post_failed`, `analytics_decision_post_rejected`, `analytics_decision_emit_failed`, and `analytics_decision_skipped` (when the URL is unset).
 
 All three decision-row operations live in one script with subcommands. `--env-file` goes before the subcommand name.
 
@@ -317,7 +369,14 @@ The production integration model is Jira Cloud Automation running on a schedule 
   - `labels not in (triagebot-reviewed)`: dedupe marker so successful issues drop out.
   - `created >= -30m`: retry backstop window for temporary failures.
 
-For the **Send web request** action, use custom JSON data:
+In the **Send web request** action, add a custom header so the service can authenticate the caller:
+
+- **Name:** `X-Triage-Token`
+- **Value:** the same secret you set as `TRIAGE_WEBHOOK_TOKEN` in the triage service environment (paste the literal token; Jira does not resolve env vars from your container).
+
+Omitting this header or sending the wrong value results in **`401 Unauthorized`**.
+
+Use custom JSON data (the endpoint expects this exact shape; default Jira payloads such as `{"issues":[]}` are rejected by request validation):
 
 ```json
 {
@@ -330,17 +389,35 @@ For the **Send web request** action, use custom JSON data:
 Use `"source": "bug_created"` for a newly-created Bug rule and `"source": "priority_changed"`
 for a priority-change rule.
 
-Set request header `X-Triage-Token: <TRIAGE_WEBHOOK_TOKEN>` in the Jira Automation action.
-Requests missing this header (or with the wrong value) receive `401 Unauthorized`.
+### Jira side effects
+
+After a successful triage, the service always applies the `triagebot-reviewed` label. Additional labels, optional field updates, and internal comments depend on how the recommendation compares to current Jira state:
+
+| Condition | Label | Auto-apply (when enabled) | Comment |
+|-----------|-------|---------------------------|---------|
+| Recommended type is Story but Jira type differs | `triagebot-likely-story` | Bug → Story if `TRIAGE_AUTO_APPLY_BUG_TO_STORY=true` | Yes |
+| Bug path: recommended P0–P4 differs from current (prioritize or de-escalate) | `triagebot-priority-mismatch` | Priority field on de-escalate if `TRIAGE_AUTO_APPLY_DEESCALATION=true`; on prioritize if `TRIAGE_AUTO_APPLY_ESCALATION=true` | Yes |
+| Types and priorities align | — | — | No |
+
+Comments use ADF templates from `src/triage_service/adapters/jira_comment_templates.json` (factual support tone; model confidence is not shown in Jira):
+
+- **Advisory** — no issue-type or priority field was changed on this run. Opening copy states that no modifications were made.
+- **Applied** — `TRIAGE_AUTO_APPLY_*` updated issue type and/or priority. Opening copy states the ticket was reviewed and adjusted; action lines describe what changed.
+
+Every mismatch comment ends with a closing paragraph asking the reporter to explain if they want to keep the current / pre-edit value. Mismatch comments also include a **Helpful resources** line linking to Confluence (URLs in `jira_comment_templates.json`).
+
+Structured `triage_completed` audit events may include:
+
+- `priority_signal` (`prioritize`, `deescalate`, or `aligned`) and `jira_priority` on Bug outcomes
+- `would_post_jira_comment` — `true` when priority signal is `prioritize` or `deescalate`, or when a Story type mismatch would get a comment
+- `would_auto_apply_priority_change` — `true` on de-escalation when `TRIAGE_AUTO_APPLY_DEESCALATION=true`, or on prioritize when `TRIAGE_AUTO_APPLY_ESCALATION=true`
+- `would_auto_apply_issue_type_change` — `true` on Story mismatch when `TRIAGE_AUTO_APPLY_BUG_TO_STORY=true`
+- `auto_apply_deescalation_enabled`, `auto_apply_escalation_enabled`, and `auto_apply_bug_to_story_enabled` reflecting runtime flags
+- `zendesk_tickets_considered`, `zendesk_tickets_fetched`, `zendesk_tickets_summarized` when Zendesk enrichment runs
 
 ### `triagebot-reviewed` lifecycle
 
 - On successful triage (mismatch or not), the executor applies `triagebot-reviewed`.
-- Jira mismatch comments are posted for Story reclassification and for Bug priority mismatches (both **de-escalation** and **prioritization**, for example `P2 -> P1`).
-- Mismatch comments include a **Helpful resources** line linking to Confluence: bug-requirements guidance when recommending Story, priority-definitions guidance on Bug priority mismatches (URLs in `jira_comment_templates.json`).
-- Comment copy differs by path: advisory runs use "recommended action" wording, while auto-apply runs use "action taken" wording and acknowledge that Jira fields were updated.
-- `triagebot-priority-mismatch` is applied for any Bug priority mismatch (de-escalation and prioritization).
-- Optional auto-apply is available via env/CLI flags: Bug deescalation and escalation can update Jira priority (each direction is opt-in) and Bug->Story can update issue type.
 - On triage failure (`status: failed` / `TriageFailure`), no labels or comments are posted.
 - To force re-triage on an issue that already succeeded, remove `triagebot-reviewed` manually.
 - If an issue is older than the JQL window and still has no `triagebot-reviewed`, treat it as a
@@ -418,6 +495,7 @@ Use this when you want Jira Cloud **Send web request** to hit `POST /triage` on 
    ```bash
    curl -sS -X POST 'https://YOUR-TUNNEL-HOST/triage' \
      -H 'Content-Type: application/json' \
+     -H "X-Triage-Token: ${TRIAGE_WEBHOOK_TOKEN}" \
      -d '{"issue_key":"TJC-123","project":"TJC","source":"bug_created"}' | jq .
    ```
 
@@ -460,4 +538,10 @@ After the first real triage request, container logs should include `triage_obser
 
 ### Container / runtime logging
 
-The API configures process-wide stdout logging at startup from `LOG_LEVEL` (default `INFO`). Inbound requests emit `http_request` / `http_request_failed` lines with method, path, status, and latency; Jira and OpenRouter calls emit `outbound_http` lines from `jira_http_retry` (including attempt count). The Docker image runs uvicorn with `--no-access-log` so access lines come from the structured middleware instead of uvicorn’s default format. Set `LOG_LEVEL=DEBUG` for deeper service logs; `httpx` / `httpcore` / `urllib3` stay at `WARNING` unless you change the runtime logging helper.
+The API configures process-wide stdout logging at startup from `LOG_LEVEL` (default `INFO`; invalid values fall back to `INFO`). Log lines are single-line JSON objects with `timestamp`, `level`, `logger`, `message`, and any fields passed via `extra={...}` (for example `run_id`, `url`, `status_code`, `error`) so structured detail reaches Loki. Inbound requests emit `http_request` / `http_request_failed` events with method, path, status, and latency. Outbound Jira and OpenRouter HTTP calls emit per-attempt `outbound_http` events with method, URL, status, attempt number, and request duration. A first-time priority parse failure emits `triage_priority_parse_retry` before the second attempt. The Docker image runs uvicorn with `--no-access-log` so access lines come from the structured middleware instead of uvicorn’s default format. Set `LOG_LEVEL=DEBUG` for deeper service logs; third-party HTTP client libraries (`httpx`, `httpcore`, `urllib3`) stay at `WARNING` unless you change the runtime logging helper.
+
+When enabled, additional structured audit events are emitted for Zendesk enrichment stages:
+
+- `zendesk_context_fetched` — linked ticket IDs requested, fetched count, dedupe count (`ticket_ids_deduped`), and per-ticket fetch failures
+- `zendesk_context_summarized` — tickets considered/summarized, summary inference cost, and per-ticket summary status
+- `image_context_extracted` includes `zendesk_skipped` details for Zendesk images deduped against Jira attachments

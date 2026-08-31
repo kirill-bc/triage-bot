@@ -70,6 +70,11 @@ class OpenRouterInferenceClient:
         http_timeout_seconds: float | None = None,
         client_factory: Callable[[], httpx.Client] | None = None,
     ) -> None:
+        """Build a client. ``client`` and ``client_factory`` are test-injection hooks.
+
+        If both are set, ``client`` wins: ``chat_completion_with_details`` posts on
+        that instance and skips the deadline wrapper, so ``client_factory`` is unused.
+        """
         self._settings = settings
         self._client = client
         stripped = model_override.strip() if model_override else ""
@@ -163,7 +168,7 @@ class OpenRouterInferenceClient:
             try:
                 result = future.result(timeout=deadline)
             except FutureTimeoutError:
-                self._abandon(client, pool)
+                self._release(client, pool)
                 if attempt + 1 >= max_outer_attempts:
                     raise OpenRouterInferenceError(
                         f"OpenRouter call exceeded the {deadline}s wall-clock deadline on "
@@ -175,21 +180,21 @@ class OpenRouterInferenceClient:
                     ) from None
                 continue
             except OpenRouterInferenceError as exc:
-                self._abandon(client, pool)
+                self._release(client, pool)
                 retriable = exc.failure_category == "invalid_upstream_payload"
                 if retriable and attempt + 1 < max_outer_attempts:
                     continue
                 raise
             except Exception:
-                self._abandon(client, pool)
+                self._release(client, pool)
                 raise
-            self._abandon(client, pool)
+            self._release(client, pool)
             return result
         raise RuntimeError("_post_within_deadline: unreachable")
 
     @staticmethod
-    def _abandon(client: httpx.Client, pool: ThreadPoolExecutor) -> None:
-        """Close the connection (unblocking any stalled read) and release the worker."""
+    def _release(client: httpx.Client, pool: ThreadPoolExecutor) -> None:
+        """Close the HTTP client and shut down the watchdog pool (success or error)."""
         try:
             client.close()
         except Exception:  # pragma: no cover - close is best-effort
