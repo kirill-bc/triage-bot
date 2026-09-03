@@ -9,7 +9,7 @@ Primary goal: keep triage reliable, observable, and easy to operate while preser
 ## Current State (May 2026)
 
 - Main flow is implemented and production-shaped: `POST /triage` and local CLIs are functional.
-- Sequential triage contract is implemented: classify `Bug|Story` first; run priority (`P0..P4`) only when classification is `Bug`.
+- Sequential triage contract is implemented: classify `Bug|Story` first; run priority (`P0..P4`) only when classification is `Bug`. Projects in `TRIAGE_PRIORITY_ONLY_PROJECTS` (e.g. CLOSM) skip classification and run the priority step only.
 - Observability baseline is in place: structured audit logs, Langfuse tracing hooks, `run_id` correlation.
 - Image-context preprocessing for Jira inline description attachments is implemented (feature-flagged).
 - Zendesk linked-ticket enrichment is implemented end-to-end (fetch, resolution summarization, dedupe, Zendesk-only vision, OAuth client_credentials with 401 retry, observability); benchmark stratification for Zendesk context is still open in `TODO.md` §11.
@@ -85,6 +85,7 @@ Commonly relevant optional flags:
 
 - `TRIAGE_TEXT_MODEL`
 - `TRIAGE_ALLOWED_PROJECTS`
+- `TRIAGE_PRIORITY_ONLY_PROJECTS`
 - `TRIAGE_IMAGE_CONTEXT_ENABLED`, `TRIAGE_VISION_MODEL`
 - `TRIAGE_ZENDESK_CONTEXT_ENABLED`
 - `ZENDESK_IDENTIFIER`, `ZENDESK_SECRET`, `ZENDESK_BASE_URL` or `ZENDESK_SUBDOMAIN` (OAuth client_credentials)

@@ -1,6 +1,6 @@
 # Jira Triage MVP
 
-Jira Triage is an MVP service that accepts a triage trigger, fetches Jira issue data, and prepares the codebase for AI-assisted recommendations on issue type and priority for **Bug** issues. Planned analysis is **sequential**: classify Bug vs Story first (bug policy only); run priority suggestion only when the model says Bug (see `specification.md` and `TODO.md`).
+Jira Triage is an MVP service that accepts a triage trigger, fetches Jira issue data, and prepares the codebase for AI-assisted recommendations on issue type and priority for **Bug** issues. Default analysis is **sequential**: classify Bug vs Story first (bug policy only); run priority suggestion only when the model says Bug. Projects listed in `TRIAGE_PRIORITY_ONLY_PROJECTS` skip classification and run the priority step only (see `specification.md` and `TODO.md`).
 
 ## Project status
 
@@ -75,6 +75,7 @@ From repository root:
    - `OPENROUTER_API_KEY`
    - `TRIAGE_WEBHOOK_TOKEN` (shared secret expected in inbound `X-Triage-Token` header on `POST /triage`)
    - `TRIAGE_ALLOWED_PROJECTS` (comma-separated Jira project keys; defaults to `TJC,BC` if unset)
+   - optional: `TRIAGE_PRIORITY_ONLY_PROJECTS` (comma-separated project keys that skip classification and run priority only; default empty). Those projects use the same priority prompt resolution as the default Bug path (`TRIAGE_LANGFUSE_PRIORITY_PROMPT_NAME`, then local templates). Add `CLOSM` to `TRIAGE_ALLOWED_PROJECTS` as well when enabling this path.
    - optional: `TRIAGE_TEXT_MODEL` (defaults to `openai/gpt-4o-mini` if unset)
   - optional: `TRIAGE_PROMPT_TEMPLATES_PATH` (path to local JSON prompt templates fallback; defaults to `src/triage_service/core/prompt_templates.json`)
    - optional: `JIRA_CLOUD_ID`, `JIRA_USER_EMAIL`, logging values
@@ -284,7 +285,7 @@ This design was chosen over adding a queue/broker (e.g. RabbitMQ) because the me
 
 ## Issue context for inference
 
-On each run the service loads summary, description, issue type, priority, reporter, reproduction steps, and Jira comments. Reproduction steps come from `TRIAGE_JIRA_REPRODUCTION_STEPS_FIELD_ID` when that field is present on the issue; otherwise the fetcher looks for a "Steps to reproduce" or "Reproduction steps" heading in the description. Comments are fetched via the Jira REST API and appended as a `Comments:` section (author, timestamp, body per line). When `TRIAGE_COMMENTS_CHAR_BUDGET` is exceeded, the oldest comment bodies are dropped first; attachment-only comments are kept when they fit.
+On each run the service loads summary, description, issue type, priority, reporter, reproduction steps, and Jira comments, and prefixes the issue block with **Triage date (UTC)** (`YYYY-MM-DD`, wall-clock UTC at composition time) so models can compare dated comments and Zendesk signals against today. The same block includes Jira **Created** (`issue_created_at` when fetch returned it), Zendesk ticket **created**, and a single Zendesk **Last activity** line (newest comment's timestamp and public/internal flag, no comment bodies—those stay in the summarizer). Reproduction steps come from `TRIAGE_JIRA_REPRODUCTION_STEPS_FIELD_ID` when that field is present on the issue; otherwise the fetcher looks for a "Steps to reproduce" or "Reproduction steps" heading in the description. Comments are fetched via the Jira REST API and appended as a `Comments:` section (author, timestamp, body per line). When `TRIAGE_COMMENTS_CHAR_BUDGET` is exceeded, the oldest comment bodies are dropped first; attachment-only comments are kept when they fit.
 
 When `TRIAGE_ZENDESK_CONTEXT_ENABLED=true` and Zendesk credentials are present, the service also discovers linked Zendesk ticket IDs from the configured Jira custom fields and issue text references, then fetches up to `TRIAGE_ZENDESK_MAX_TICKETS` linked tickets plus comments. If `TRIAGE_ZENDESK_COMMENT_SUMMARY_ENABLED=true`, each linked ticket can be summarized into structured resolution signals and those signals are injected into the same issue block.
 
@@ -315,6 +316,8 @@ Default prompt names (override via env):
 | Reason-for-humans (local fallback only) | `triagebot/reason-for-humans` | `TRIAGE_LANGFUSE_REASON_FOR_HUMANS_PROMPT_NAME` |
 
 Langfuse user prompts embed policies and guidance; only `{{issue_block}}` is compiled at runtime. Set `TRIAGE_LANGFUSE_PROMPTS_ENABLED=false` to force local `prompt_templates.json` and `src/triage_service/core/policy/*.md` even when Langfuse keys exist.
+
+Projects in `TRIAGE_PRIORITY_ONLY_PROJECTS` skip classification and reuse the same priority prompt resolution as the default Bug path: `triagebot/priority-user` (or `TRIAGE_LANGFUSE_PRIORITY_PROMPT_NAME`) → local `priority_template` + `priority_definition.md`. There is no per-project prompt override today; a chained/placeholder-based prompt for priority-only projects is deferred until that need is concrete (see `TODO.md`). Local Markdown is last-resort only (Langfuse disabled or fetch fails).
 
 If Langfuse is unavailable or a fetch fails, the service falls back to `src/triage_service/core/prompt_templates.json` and policy Markdown under `src/triage_service/core/policy/`. Local bug classification policy treats likely intentional product/UI/workflow changes as Story by default (Bug only when explicit requirement or required parity is violated). Local priority prompts ask the model to compare the recommended P0–P4 to the issue’s current Jira priority and justify changes, especially downgrades.
 
@@ -362,8 +365,11 @@ The production integration model is Jira Cloud Automation running on a schedule 
 `POST /triage` once per matching issue.
 
 - Rule cadence: every 5 minutes (or similar), aligned to the JQL window.
-- Reference JQL:
+- Reference JQL (full classify-then-priority path, e.g. BC/TJC):
   `project = TJC AND issuetype = Bug AND labels not in (triagebot-reviewed) AND created >= -30m AND created <= -5m`
+- Reference JQL (priority-only path, e.g. CLOSM; requires `CLOSM` in `TRIAGE_ALLOWED_PROJECTS` and `TRIAGE_PRIORITY_ONLY_PROJECTS`):
+  `project = CLOSM AND issuetype = Bug AND labels not in (triagebot-reviewed) AND created >= -30m AND created <= -5m`
+  Use a **second** Automation rule for CLOSM rather than mixing projects in one JQL. The webhook JSON body is unchanged (`issue_key`, `project`, `source`).
 - Rationale:
   - `created <= -5m`: stabilization delay before first triage attempt.
   - `labels not in (triagebot-reviewed)`: dedupe marker so successful issues drop out.

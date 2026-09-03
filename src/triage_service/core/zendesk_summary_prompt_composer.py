@@ -51,8 +51,10 @@ def format_jira_context_for_zendesk_summary(issue: FetchedIssue) -> str:
     reproduction_steps = (
         issue.reproduction_steps if issue.reproduction_steps is not None else "(none)"
     )
+    created = (issue.issue_created_at or "").strip() or "(none)"
     return (
         f"Issue key: {issue.issue_key}\n"
+        f"Created: {created}\n"
         f"Summary:\n{issue.summary}\n"
         f"Description:\n{description}\n"
         f"Reproduction steps:\n{reproduction_steps}"
@@ -90,6 +92,7 @@ def compose_zendesk_summary_user_instruction(
 ) -> str:
     jira_context = format_jira_context_for_zendesk_summary(issue)
     ticket_comments = format_zendesk_comments_for_summary(comments)
+    ticket_created_at = (ticket.created_at or "").strip() or "(none)"
     langfuse_text = fetch_langfuse_text_prompt(
         settings,
         settings.triage_langfuse_zendesk_summary_user_prompt_name,
@@ -98,6 +101,7 @@ def compose_zendesk_summary_user_instruction(
         ticket_subject=ticket.subject,
         ticket_status=ticket.status or "(none)",
         ticket_priority=ticket.priority or "(none)",
+        ticket_created_at=ticket_created_at,
         ticket_description=ticket.description or "(none)",
         ticket_comments=ticket_comments,
     )
@@ -109,6 +113,7 @@ def compose_zendesk_summary_user_instruction(
         ticket_subject=ticket.subject,
         ticket_status=ticket.status or "(none)",
         ticket_priority=ticket.priority or "(none)",
+        ticket_created_at=ticket_created_at,
         ticket_description=ticket.description or "(none)",
         ticket_comments=ticket_comments,
     )

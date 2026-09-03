@@ -447,11 +447,24 @@ class AppSettings(BaseSettings):
         validation_alias="TRIAGE_ALLOWED_PROJECTS",
         description="Comma-separated Jira project keys eligible for triage.",
     )
+    priority_only_projects_csv: str = Field(
+        default="",
+        validation_alias="TRIAGE_PRIORITY_ONLY_PROJECTS",
+        description=(
+            "Comma-separated Jira project keys that skip classification and run "
+            "priority inference only."
+        ),
+    )
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def allowed_projects(self) -> list[str]:
         return [p.strip() for p in self.allowed_projects_csv.split(",") if p.strip()]
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def priority_only_projects(self) -> list[str]:
+        return [p.strip() for p in self.priority_only_projects_csv.split(",") if p.strip()]
 
     @property
     def langfuse_prompt_management_enabled(self) -> bool:

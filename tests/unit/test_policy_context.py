@@ -46,6 +46,9 @@ def test_bundled_priority_definition_weighs_current_impact_over_historical_peak(
     lowered = ctx.priority_definition.lower()
     assert "recovery" in lowered or "recovered" in lowered
     assert "historical" in lowered or "older severe" in lowered
+    assert "triage date" in lowered
+    assert "created=" in lowered
+    assert "last activity" in lowered
 
 
 @pytest.mark.unit

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import logging
 import os
 from time import perf_counter
-from typing import Protocol, cast
+from typing import Literal, Protocol, cast
 
 from triage_service.adapters.image_context_extractor import (
     ImageContext,
@@ -254,6 +254,7 @@ def _triage_completed_telemetry(
     settings: AppSettings,
     image_extraction: ImageContextExtractionResult | None = None,
     zendesk_context: ZendeskContextEnrichmentResult | None = None,
+    pipeline: Literal["full", "priority_only"] = "full",
 ) -> dict[str, object] | None:
     auto_apply_flags: dict[str, object] = {
         "auto_apply_deescalation_enabled": settings.triage_auto_apply_deescalation,
@@ -263,6 +264,7 @@ def _triage_completed_telemetry(
     image_telemetry = _image_context_telemetry(image_extraction)
     zendesk_telemetry = _zendesk_context_telemetry(zendesk_context)
     intake_fields = _intake_telemetry(issue)
+    pipeline_fields: dict[str, object] = {"triage_pipeline": pipeline}
     if recommendation.recommended_issue_type != "Bug":
         flags = compute_mismatch_flags(issue, recommendation)
         story_mismatch = (
@@ -282,14 +284,27 @@ def _triage_completed_telemetry(
             zendesk_telemetry,
             auto_apply_flags,
             issue_type_telemetry,
+            pipeline_fields,
         )
     rec_pri = recommendation.recommended_priority
     if rec_pri is None:
-        return _merge_telemetry(intake_fields, image_telemetry, zendesk_telemetry, auto_apply_flags)
+        return _merge_telemetry(
+            intake_fields,
+            image_telemetry,
+            zendesk_telemetry,
+            auto_apply_flags,
+            pipeline_fields,
+        )
     orig_rank = _p0_p4_rank(issue.priority)
     rec_rank = _p0_p4_rank(str(rec_pri))
     if orig_rank is None or rec_rank is None:
-        return _merge_telemetry(intake_fields, image_telemetry, zendesk_telemetry, auto_apply_flags)
+        return _merge_telemetry(
+            intake_fields,
+            image_telemetry,
+            zendesk_telemetry,
+            auto_apply_flags,
+            pipeline_fields,
+        )
     if rec_rank < orig_rank:
         signal = "prioritize"
     elif rec_rank > orig_rank:
@@ -311,6 +326,7 @@ def _triage_completed_telemetry(
         zendesk_telemetry,
         auto_apply_flags,
         priority_telemetry,
+        pipeline_fields,
     )
 
 
@@ -323,7 +339,7 @@ class _ZendeskFetchOutcome:
 
 @dataclass(frozen=True, slots=True)
 class _TriageInferenceSteps:
-    classification: ClassificationStepOutput
+    classification: ClassificationStepOutput | None
     priority: PriorityStepOutput | None
     recommendation: TriageRecommendation
     completed_event: TriageCompletedAuditEvent
@@ -1121,6 +1137,82 @@ class TriageHandler:
             )
         return result
 
+    def _is_priority_only_project(self, project: str) -> bool:
+        return project.strip() in set(self._settings.priority_only_projects)
+
+    def _priority_only_inference_steps(
+        self,
+        issue: FetchedIssue,
+        *,
+        run_id: str,
+        project: str,
+        source: str,
+        image_contexts: list[ImageContext] | None,
+        image_extraction: ImageContextExtractionResult | None,
+        zendesk_context: ZendeskContextEnrichmentResult | None,
+    ) -> _TriageInferenceSteps:
+        audit_source = cast(TriageSourceLiteral, source)
+        model_id = self._inference.effective_model_id
+        pri_messages = _priority_messages(
+            issue,
+            self._policy,
+            settings=self._settings,
+            image_contexts=image_contexts,
+        )
+        priority, priority_cost = self._run_priority_step_with_retry(
+            pri_messages=pri_messages,
+            model_id=model_id,
+            run_id=run_id,
+            issue=issue,
+            project=project,
+            source=source,
+        )
+        self._audit_store.record(
+            PriorityCompletedAuditEvent(
+                event_type="priority_completed",
+                run_id=run_id,
+                issue_key=issue.issue_key,
+                project=project,
+                source=audit_source,
+                recommended_priority=priority.recommended_priority,
+                confidence=priority.confidence,
+                reason=priority.reason,
+            ),
+        )
+        recommendation = TriageRecommendation(
+            recommended_issue_type="Bug",
+            recommended_priority=priority.recommended_priority,
+            confidence=priority.confidence,
+            reason=priority.reason,
+        )
+        completed_event = TriageCompletedAuditEvent(
+            event_type="triage_completed",
+            run_id=run_id,
+            issue_key=issue.issue_key,
+            project=project,
+            source=audit_source,
+            recommended_issue_type=recommendation.recommended_issue_type,
+            recommended_priority=recommendation.recommended_priority,
+            confidence=recommendation.confidence,
+            reason=recommendation.reason,
+            telemetry=_triage_completed_telemetry(
+                issue=issue,
+                recommendation=recommendation,
+                settings=self._settings,
+                image_extraction=image_extraction,
+                zendesk_context=zendesk_context,
+                pipeline="priority_only",
+            ),
+        )
+        self._audit_store.record(completed_event)
+        return _TriageInferenceSteps(
+            classification=None,
+            priority=priority,
+            recommendation=recommendation,
+            completed_event=completed_event,
+            inference_cost_usd=priority_cost,
+        )
+
     def _triage_fetched_issue(
         self,
         issue: FetchedIssue,
@@ -1132,6 +1224,16 @@ class TriageHandler:
         image_extraction: ImageContextExtractionResult | None = None,
         zendesk_context: ZendeskContextEnrichmentResult | None = None,
     ) -> _TriageInferenceSteps:
+        if self._is_priority_only_project(project):
+            return self._priority_only_inference_steps(
+                issue,
+                run_id=run_id,
+                project=project,
+                source=source,
+                image_contexts=image_contexts,
+                image_extraction=image_extraction,
+                zendesk_context=zendesk_context,
+            )
         audit_source = cast(TriageSourceLiteral, source)
         tracer = self._inference_tracer
         model_id = self._inference.effective_model_id
@@ -1209,6 +1311,7 @@ class TriageHandler:
                     settings=self._settings,
                     image_extraction=image_extraction,
                     zendesk_context=zendesk_context,
+                    pipeline="full",
                 ),
             )
             self._audit_store.record(completed_event)
@@ -1262,6 +1365,7 @@ class TriageHandler:
                 settings=self._settings,
                 image_extraction=image_extraction,
                 zendesk_context=zendesk_context,
+                pipeline="full",
             ),
         )
         self._audit_store.record(completed_event)

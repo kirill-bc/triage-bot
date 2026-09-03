@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 
 from triage_service.adapters.image_context_extractor import ImageContext
@@ -9,6 +11,7 @@ from triage_service.adapters.jira_issue_fetcher import (
     CommentRef,
     FetchedIssue,
     LinkedZendeskTicket,
+    ZendeskCommentRef,
     ZendeskResolutionSummary,
 )
 from triage_service.core.issue_text_block import format_issue_text_block, is_zendesk_image_context
@@ -55,6 +58,80 @@ def test_format_issue_text_block_includes_comments_when_present() -> None:
     assert "Comments:" in text
     assert "Bob" in text
     assert "I can reproduce this issue" in text
+
+
+@pytest.mark.unit
+def test_format_issue_text_block_includes_jira_issue_created_at() -> None:
+    issue = FetchedIssue(
+        issue_key="TJC-304",
+        summary="Login fails",
+        description="Cannot log in",
+        issue_type="Bug",
+        priority="P2",
+        reporter="Alice",
+        issue_created_at="2026-08-01T12:55:00.123Z",
+    )
+
+    text = format_issue_text_block(issue, triage_date=date(2026, 9, 2))
+
+    assert "Created: 2026-08-01T12:55:00.123Z" in text
+
+
+@pytest.mark.unit
+def test_format_issue_text_block_uses_none_when_jira_created_at_missing() -> None:
+    issue = FetchedIssue(
+        issue_key="TJC-305",
+        summary="Login fails",
+        description="Cannot log in",
+        issue_type="Bug",
+        reporter="Alice",
+    )
+
+    text = format_issue_text_block(issue, triage_date=date(2026, 9, 2))
+
+    assert "Created: (none)" in text
+
+
+@pytest.mark.unit
+def test_format_issue_text_block_includes_injected_triage_date_utc() -> None:
+    from datetime import date
+
+    issue = FetchedIssue(
+        issue_key="TJC-302",
+        summary="Login fails",
+        description="Cannot log in",
+        issue_type="Bug",
+        priority="P2",
+        reporter="Alice",
+    )
+
+    text = format_issue_text_block(issue, triage_date=date(2026, 9, 2))
+
+    assert text.startswith("Triage date (UTC): 2026-09-02\n")
+    assert "Issue key: TJC-302" in text
+
+
+@pytest.mark.unit
+def test_format_issue_text_block_defaults_triage_date_to_utc_today(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from datetime import date
+
+    monkeypatch.setattr(
+        "triage_service.core.issue_text_block._utc_today",
+        lambda: date(2026, 4, 15),
+    )
+    issue = FetchedIssue(
+        issue_key="TJC-303",
+        summary="Login fails",
+        description="Cannot log in",
+        issue_type="Bug",
+        reporter="Alice",
+    )
+
+    text = format_issue_text_block(issue)
+
+    assert "Triage date (UTC): 2026-04-15" in text
 
 
 @pytest.mark.unit
@@ -257,6 +334,109 @@ def test_format_issue_text_block_falls_back_to_description_without_resolution_su
 
     assert "Zendesk resolution signals:" not in text
     assert "Description:\nMFA loop after password reset." in text
+
+
+@pytest.mark.unit
+def test_format_issue_text_block_includes_zendesk_ticket_created_and_last_activity() -> None:
+    issue = FetchedIssue(
+        issue_key="TJC-406",
+        summary="Login issue",
+        issue_type="Bug",
+        reporter="support",
+        zendesk_tickets=[
+            LinkedZendeskTicket(
+                ticket_id="88",
+                subject="Cannot sign in",
+                description="MFA loop after password reset.",
+                status="open",
+                priority="normal",
+                created_at="2026-01-01T10:00:00Z",
+                comments=[
+                    ZendeskCommentRef(
+                        comment_id="3",
+                        body="newest recovery update",
+                        public=True,
+                        created_at="2026-01-03T15:00:00Z",
+                    ),
+                    ZendeskCommentRef(
+                        comment_id="2",
+                        body="internal root-cause note",
+                        public=False,
+                        created_at="2026-01-02T12:00:00Z",
+                    ),
+                ],
+            ),
+        ],
+    )
+
+    text = format_issue_text_block(issue)
+
+    assert (
+        "[Zendesk 1: #88 | status=open | priority=normal | created=2026-01-01T10:00:00Z]"
+        in text
+    )
+    assert "Last activity: 2026-01-03T15:00:00Z (public)" in text
+    assert "2026-01-02T12:00:00Z" not in text
+    assert "newest recovery update" not in text
+
+
+@pytest.mark.unit
+def test_format_issue_text_block_last_activity_picks_newest_regardless_of_input_order() -> None:
+    issue = FetchedIssue(
+        issue_key="TJC-407",
+        summary="Login issue",
+        issue_type="Bug",
+        reporter="support",
+        zendesk_tickets=[
+            LinkedZendeskTicket(
+                ticket_id="88",
+                subject="Cannot sign in",
+                status="open",
+                priority="normal",
+                comments=[
+                    ZendeskCommentRef(
+                        comment_id="2",
+                        body="older public comment",
+                        public=True,
+                        created_at="2026-01-02T12:00:00Z",
+                    ),
+                    ZendeskCommentRef(
+                        comment_id="3",
+                        body="newest internal note",
+                        public=False,
+                        created_at="2026-01-03T15:00:00Z",
+                    ),
+                ],
+            ),
+        ],
+    )
+
+    text = format_issue_text_block(issue)
+
+    assert "Last activity: 2026-01-03T15:00:00Z (internal)" in text
+    assert "2026-01-02T12:00:00Z" not in text
+
+
+@pytest.mark.unit
+def test_format_issue_text_block_omits_last_activity_when_no_comments() -> None:
+    issue = FetchedIssue(
+        issue_key="TJC-408",
+        summary="Login issue",
+        issue_type="Bug",
+        reporter="support",
+        zendesk_tickets=[
+            LinkedZendeskTicket(
+                ticket_id="88",
+                subject="Cannot sign in",
+                status="open",
+                priority="normal",
+            ),
+        ],
+    )
+
+    text = format_issue_text_block(issue)
+
+    assert "Last activity:" not in text
 
 
 @pytest.mark.unit

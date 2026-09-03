@@ -405,6 +405,34 @@ def test_fetch_ticket_includes_comments_newest_first(settings: AppSettings) -> N
 
 
 @pytest.mark.unit
+def test_fetch_ticket_parses_created_at_from_api(settings: AppSettings) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/comments.json"):
+            return httpx.Response(200, json={"comments": []})
+        assert request.url.path == "/api/v2/tickets/555.json"
+        return httpx.Response(
+            200,
+            json={
+                "ticket": {
+                    "id": 555,
+                    "subject": "Created ticket",
+                    "description": "Body",
+                    "status": "open",
+                    "priority": "normal",
+                    "created_at": "2026-01-15T08:30:00Z",
+                },
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        fetcher = _fetcher(settings, client=client)
+        tickets = fetcher.fetch_tickets_by_ids(["555"])
+
+    assert tickets[0].created_at == "2026-01-15T08:30:00Z"
+
+
+@pytest.mark.unit
 def test_fetch_ticket_comments_capped_by_max_comments_per_ticket(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

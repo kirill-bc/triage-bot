@@ -408,6 +408,193 @@ def test_handler_bug_path_calls_inference_twice_and_merges_priority(
 
 
 @pytest.mark.unit
+def test_handler_priority_only_project_skips_classification_and_runs_priority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _app_settings(monkeypatch, TRIAGE_PRIORITY_ONLY_PROJECTS="CLOSM")
+    issue = FetchedIssue(
+        issue_key="CLOSM-10",
+        summary="crash",
+        description="segfault",
+        issue_type="Bug",
+        priority="P2",
+        reporter="bob",
+    )
+
+    def jira_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_jira_payload_for(issue))
+
+    pri_json = '{"recommended_priority":"P1","confidence":0.88,"reason":"Data loss risk."}'
+    idx = {"i": 0}
+
+    def openrouter_handler(request: httpx.Request) -> httpx.Response:
+        idx["i"] += 1
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": pri_json}}]},
+        )
+
+    audit = _RecordingAuditStore()
+    transport_j = httpx.MockTransport(jira_handler)
+    transport_o = httpx.MockTransport(openrouter_handler)
+    with httpx.Client(transport=transport_j) as j_client:
+        with httpx.Client(transport=transport_o) as o_client:
+            fetcher = JiraIssueFetcher(settings, client=j_client)
+            inference = OpenRouterInferenceClient(settings, client=o_client)
+            executor = _RecordingExecutor()
+            handler = TriageHandler(
+                allowed_projects=("CLOSM",),
+                fetcher=fetcher,
+                inference=inference,
+                policy=_policy(),
+                executor=executor,
+                audit_store=audit,
+                settings=settings,
+            )
+            sync_result = handler.run_sync(
+                issue_key="CLOSM-10",
+                project="CLOSM",
+                source="bug_created",
+                run_id="run-priority-only",
+            )
+            outcome = sync_result.outcome
+
+    assert idx["i"] == 1
+    assert isinstance(outcome, TriageRecommendation)
+    assert outcome.recommended_issue_type == "Bug"
+    assert outcome.recommended_priority == "P1"
+    assert outcome.confidence == 0.88
+    assert outcome.reason == "Data loss risk."
+    assert sync_result.classification is None
+    assert sync_result.priority is not None
+    assert sync_result.priority.recommended_priority == "P1"
+    event_types = [type(event) for event in audit.events]
+    assert ClassificationCompletedAuditEvent not in event_types
+    assert isinstance(audit.events[0], PriorityCompletedAuditEvent)
+    assert isinstance(audit.events[1], TriageCompletedAuditEvent)
+    completed = audit.events[1]
+    assert completed.telemetry is not None
+    assert completed.telemetry["triage_pipeline"] == "priority_only"
+
+
+@pytest.mark.unit
+def test_handler_priority_only_project_proceeds_when_jira_type_is_story(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _app_settings(monkeypatch, TRIAGE_PRIORITY_ONLY_PROJECTS="CLOSM")
+    issue = FetchedIssue(
+        issue_key="CLOSM-11",
+        summary="request",
+        description="please add filter",
+        issue_type="Story",
+        priority="P3",
+        reporter="alice",
+    )
+
+    def jira_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_jira_payload_for(issue))
+
+    pri_json = '{"recommended_priority":"P4","confidence":0.6,"reason":"Nice to have."}'
+
+    def openrouter_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": pri_json}}]},
+        )
+
+    transport_j = httpx.MockTransport(jira_handler)
+    transport_o = httpx.MockTransport(openrouter_handler)
+    with httpx.Client(transport=transport_j) as j_client:
+        with httpx.Client(transport=transport_o) as o_client:
+            fetcher = JiraIssueFetcher(settings, client=j_client)
+            inference = OpenRouterInferenceClient(settings, client=o_client)
+            handler = TriageHandler(
+                allowed_projects=("CLOSM",),
+                fetcher=fetcher,
+                inference=inference,
+                policy=_policy(),
+                executor=_RecordingExecutor(),
+                settings=settings,
+            )
+            sync_result = handler.run_sync(
+                issue_key="CLOSM-11",
+                project="CLOSM",
+                source="bug_created",
+                run_id="run-priority-only-story-intake",
+            )
+            outcome = sync_result.outcome
+
+    assert isinstance(outcome, TriageRecommendation)
+    assert outcome.recommended_issue_type == "Bug"
+    assert outcome.recommended_priority == "P4"
+    assert sync_result.classification is None
+
+
+@pytest.mark.unit
+def test_handler_non_priority_only_project_keeps_full_classification_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _app_settings(monkeypatch, TRIAGE_PRIORITY_ONLY_PROJECTS="CLOSM")
+    issue = FetchedIssue(
+        issue_key="TJC-10",
+        summary="crash",
+        description="segfault",
+        issue_type="Bug",
+        priority="Low",
+        reporter="bob",
+    )
+
+    def jira_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_jira_payload_for(issue))
+
+    cls_json = '{"recommended_issue_type":"Bug","confidence":0.55,"reason":"Defect."}'
+    pri_json = '{"recommended_priority":"P1","confidence":0.88,"reason":"Data loss risk."}'
+    responses = [cls_json, pri_json]
+    idx = {"i": 0}
+
+    def openrouter_handler(request: httpx.Request) -> httpx.Response:
+        i = idx["i"]
+        idx["i"] = i + 1
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": responses[i]}}]},
+        )
+
+    audit = _RecordingAuditStore()
+    transport_j = httpx.MockTransport(jira_handler)
+    transport_o = httpx.MockTransport(openrouter_handler)
+    with httpx.Client(transport=transport_j) as j_client:
+        with httpx.Client(transport=transport_o) as o_client:
+            fetcher = JiraIssueFetcher(settings, client=j_client)
+            inference = OpenRouterInferenceClient(settings, client=o_client)
+            handler = TriageHandler(
+                allowed_projects=("TJC", "CLOSM"),
+                fetcher=fetcher,
+                inference=inference,
+                policy=_policy(),
+                executor=_RecordingExecutor(),
+                audit_store=audit,
+                settings=settings,
+            )
+            sync_result = handler.run_sync(
+                issue_key="TJC-10",
+                project="TJC",
+                source="bug_created",
+                run_id="run-full-path",
+            )
+            outcome = sync_result.outcome
+
+    assert idx["i"] == 2
+    assert isinstance(outcome, TriageRecommendation)
+    assert sync_result.classification is not None
+    assert isinstance(audit.events[0], ClassificationCompletedAuditEvent)
+    completed = audit.events[-1]
+    assert isinstance(completed, TriageCompletedAuditEvent)
+    assert completed.telemetry is not None
+    assert completed.telemetry["triage_pipeline"] == "full"
+
+
+@pytest.mark.unit
 def test_handler_requests_json_object_response_for_both_inference_steps(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -835,6 +1022,7 @@ def test_handler_bug_path_emits_classification_priority_and_triage_completed_aud
         "jira_priority": "P2",
         "would_post_jira_comment": True,
         "would_auto_apply_priority_change": False,
+        "triage_pipeline": "full",
     }
 
 
@@ -902,6 +1090,7 @@ def test_handler_story_path_emits_classification_and_triage_completed_without_pr
         "auto_apply_bug_to_story_enabled": False,
         "would_post_jira_comment": True,
         "would_auto_apply_issue_type_change": False,
+        "triage_pipeline": "full",
     }
 
 
@@ -1664,6 +1853,7 @@ def test_triage_completed_telemetry_includes_intake_issue_type_and_priority(
     assert telemetry is not None
     assert telemetry["intake_issue_type"] == "Bug"
     assert telemetry["intake_priority"] == "P3"
+    assert telemetry["triage_pipeline"] == "full"
 
 
 @pytest.mark.unit

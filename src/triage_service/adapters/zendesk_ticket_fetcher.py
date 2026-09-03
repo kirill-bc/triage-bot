@@ -515,6 +515,12 @@ class ZendeskTicketFetcher:
             problem_id_text = str(problem_id_raw).strip()
             if problem_id_text:
                 problem_id = problem_id_text
+        created_raw = raw.get("created_at")
+        created_at = (
+            str(created_raw).strip()
+            if isinstance(created_raw, str) and created_raw.strip()
+            else None
+        )
         return LinkedZendeskTicket(
             ticket_id=rid,
             subject=subject,
@@ -524,6 +530,7 @@ class ZendeskTicketFetcher:
             problem_id=problem_id,
             url=url,
             description_image_refs=description_image_refs,
+            created_at=created_at,
         )
 
     def _base_url(self) -> str:

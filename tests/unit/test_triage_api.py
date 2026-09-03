@@ -10,8 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from triage_service.api.triage_api import (
-    _resolve_concurrency_wait_seconds,
-    _resolve_max_concurrent_runs,
+    _concurrency_limits_from_settings,
     create_app,
 )
 from triage_service.core.triage_handler import TriageSyncResult
@@ -65,28 +64,37 @@ def _configure_triage_webhook_token(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", _TRIAGE_TOKEN)
 
 
+def _required_settings_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
+    monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", _TRIAGE_TOKEN)
+
+
 @pytest.mark.unit
-def test_resolve_max_concurrent_runs_clamps_to_app_settings_bounds(
+def test_concurrency_limits_from_settings_use_defaults_when_values_invalid(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _required_settings_env(monkeypatch)
     monkeypatch.setenv("TRIAGE_MAX_CONCURRENT_RUNS", "1000")
-    assert _resolve_max_concurrent_runs() == 4
+    assert _concurrency_limits_from_settings() == (4, 900.0)
     monkeypatch.setenv("TRIAGE_MAX_CONCURRENT_RUNS", "0")
-    assert _resolve_max_concurrent_runs() == 4
+    assert _concurrency_limits_from_settings() == (4, 900.0)
     monkeypatch.setenv("TRIAGE_MAX_CONCURRENT_RUNS", "64")
-    assert _resolve_max_concurrent_runs() == 64
+    monkeypatch.setenv("TRIAGE_CONCURRENCY_WAIT_SECONDS", "3600")
+    assert _concurrency_limits_from_settings() == (64, 3600.0)
 
 
 @pytest.mark.unit
-def test_resolve_concurrency_wait_seconds_clamps_to_app_settings_bounds(
+def test_concurrency_wait_seconds_use_defaults_when_values_invalid(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _required_settings_env(monkeypatch)
     monkeypatch.setenv("TRIAGE_CONCURRENCY_WAIT_SECONDS", "9999")
-    assert _resolve_concurrency_wait_seconds() == 900.0
+    assert _concurrency_limits_from_settings()[1] == 900.0
     monkeypatch.setenv("TRIAGE_CONCURRENCY_WAIT_SECONDS", "0")
-    assert _resolve_concurrency_wait_seconds() == 900.0
+    assert _concurrency_limits_from_settings()[1] == 900.0
     monkeypatch.setenv("TRIAGE_CONCURRENCY_WAIT_SECONDS", "3600")
-    assert _resolve_concurrency_wait_seconds() == 3600.0
+    assert _concurrency_limits_from_settings()[1] == 3600.0
 
 
 @pytest.mark.unit

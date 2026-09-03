@@ -98,6 +98,7 @@ class LinkedZendeskTicket(BaseModel):
     comments: list[ZendeskCommentRef] = Field(default_factory=list)
     description_image_refs: list[ZendeskImageRef] = Field(default_factory=list)
     resolution_summary: ZendeskResolutionSummary | None = None
+    created_at: str | None = None
 
 
 def _text_from_jira_custom_field(raw: Any) -> str:

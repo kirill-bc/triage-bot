@@ -1,6 +1,7 @@
 Bug vs Story policy
 
 Classification precedence (highest first):
+0) Human override (see above) — if it applies, classify as stated and stop.
 1) Intentional change / new UX flow check
 2) New capability or improvement check
 3) Bug criteria check

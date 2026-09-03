@@ -367,6 +367,35 @@ def test_load_settings_allowlist_from_comma_separated_env(
 
 
 @pytest.mark.unit
+def test_load_settings_default_priority_only_projects_is_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text(
+        "JIRA_API_KEY=jira-token\nOPENROUTER_API_KEY=or-token\nTRIAGE_WEBHOOK_TOKEN=triage-token\n",
+        encoding="utf-8",
+    )
+    settings = load_settings()
+    assert settings.priority_only_projects == []
+
+
+@pytest.mark.unit
+def test_load_settings_priority_only_projects_from_comma_separated_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text(
+        "JIRA_API_KEY=jira-token\n"
+        "OPENROUTER_API_KEY=or-token\n"
+        "TRIAGE_WEBHOOK_TOKEN=triage-token\n"
+        "TRIAGE_PRIORITY_ONLY_PROJECTS= CLOSM , BC \n",
+        encoding="utf-8",
+    )
+    settings = load_settings()
+    assert settings.priority_only_projects == ["CLOSM", "BC"]
+
+
+@pytest.mark.unit
 def test_load_settings_rejects_empty_allowlist(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

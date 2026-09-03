@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import date, datetime, timezone
 from typing import TYPE_CHECKING
 
 from triage_service.adapters.jira_issue_fetcher import (
     CommentRef,
     FetchedIssue,
     LinkedZendeskTicket,
+    ZendeskCommentRef,
     ZendeskResolutionSummary,
+    zendesk_comment_newest_first_sort_key,
 )
 from triage_service.core.zendesk_jira_text_dedupe import (
     sanitize_resolution_summary_against_jira,
@@ -107,6 +110,20 @@ def _format_zendesk_resolution_signals(
     return lines
 
 
+def _display_timestamp(value: str | None) -> str:
+    token = (value or "").strip()
+    return token if token else "(none)"
+
+
+def _format_zendesk_last_activity(comments: Sequence[ZendeskCommentRef]) -> list[str]:
+    if not comments:
+        return []
+    newest = max(comments, key=zendesk_comment_newest_first_sort_key)
+    visibility = "public" if newest.public else "internal"
+    created = newest.created_at or "(unknown time)"
+    return [f"Last activity: {created} ({visibility})"]
+
+
 def _format_one_zendesk_ticket(
     ticket: LinkedZendeskTicket,
     issue: FetchedIssue,
@@ -117,24 +134,29 @@ def _format_one_zendesk_ticket(
 ) -> list[str]:
     status = ticket.status or "(none)"
     priority = ticket.priority or "(none)"
+    created = _display_timestamp(ticket.created_at)
     header = (
-        f"[Zendesk {index}: #{ticket.ticket_id} | status={status} | priority={priority}]"
+        f"[Zendesk {index}: #{ticket.ticket_id} | status={status} | "
+        f"priority={priority} | created={created}]"
     )
     attachment_lines = _format_zendesk_ticket_attachments(
         ticket_image_contexts or (),
         ticket_id=ticket.ticket_id,
     )
+    timestamp_lines = _format_zendesk_last_activity(ticket.comments)
     summary = ticket.resolution_summary
     if summary is None:
         lines = [header, f"Subject: {ticket.subject}"]
         if ticket.description:
             lines.append(f"Description:\n{ticket.description}")
+        lines.extend(timestamp_lines)
         lines.extend(attachment_lines)
         return lines
 
     lines = [header, f"Subject: {ticket.subject}"]
     if resolution_summary_should_omit_as_duplicate(ticket, state=dedupe_state):
         lines.append("(resolution signals identical to a prior linked ticket; omitted)")
+        lines.extend(timestamp_lines)
         lines.extend(attachment_lines)
         return lines
     record_rendered_resolution_summary(ticket, summary, state=dedupe_state)
@@ -145,6 +167,7 @@ def _format_one_zendesk_ticket(
             seen_hints=dedupe_state.seen_hints,
         ),
     )
+    lines.extend(timestamp_lines)
     lines.extend(attachment_lines)
     return lines
 
@@ -225,11 +248,16 @@ def _format_comments_section(
     return "\n".join(lines)
 
 
+def _utc_today() -> date:
+    return datetime.now(timezone.utc).date()
+
+
 def format_issue_text_block(
     issue: FetchedIssue,
     *,
     comments_char_budget: int | None = None,
     image_contexts: Sequence[ImageContext] | None = None,
+    triage_date: date | None = None,
 ) -> str:
     """Summary, description, reproduction steps, and metadata (no image extraction)."""
     description = issue.description if issue.description is not None else "(none)"
@@ -241,8 +269,12 @@ def format_issue_text_block(
         issue.comments,
         comments_char_budget=comments_char_budget,
     )
+    day = triage_date if triage_date is not None else _utc_today()
+    created = _display_timestamp(issue.issue_created_at)
     block = (
+        f"Triage date (UTC): {day.isoformat()}\n"
         f"Issue key: {issue.issue_key}\n"
+        f"Created: {created}\n"
         f"Current Jira issue type: {issue.issue_type}\n"
         f"Current Jira priority: {priority}\n"
         f"Reporter: {issue.reporter}\n"

@@ -271,6 +271,59 @@ def test_main_json_includes_classification_and_priority_steps(
 
 
 @pytest.mark.unit
+def test_cli_payload_omits_classification_when_priority_only(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from triage_service.core.triage_recommendation_parser import PriorityStepOutput
+    from triage_manual_cli import main
+
+    priority = PriorityStepOutput(
+        recommended_priority="P2",
+        confidence=0.7,
+        reason="Current impact is high.",
+    )
+
+    class _RunnerPriorityOnly:
+        def run_sync(
+            self,
+            issue_key: str,
+            project: str,
+            source: str,
+            *,
+            run_id: str,
+        ) -> TriageSyncResult:
+            _ = (issue_key, project, source, run_id)
+            return TriageSyncResult(
+                outcome=TriageRecommendation(
+                    recommended_issue_type="Bug",
+                    recommended_priority="P2",
+                    confidence=0.7,
+                    reason="Current impact is high.",
+                ),
+                classification=None,
+                priority=priority,
+            )
+
+        def flush_inference_telemetry(self) -> None:
+            return None
+
+    class _Settings:
+        triage_image_context_enabled = False
+
+    with (
+        patch("triage_service.core.settings.load_settings", return_value=_Settings()),
+        patch("triage_manual_cli.build_default_triage_handler", return_value=_RunnerPriorityOnly()),
+    ):
+        rc = main(["CLOSM-10"])
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert "classification" not in payload
+    assert payload["priority"] == priority.model_dump()
+    assert payload["recommendation"]["recommended_issue_type"] == "Bug"
+
+
+@pytest.mark.unit
 def test_run_cli_triage_passes_apply_to_jira_to_handler_builder() -> None:
     from triage_manual_cli import run_cli_triage
 

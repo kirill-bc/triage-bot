@@ -356,7 +356,7 @@ def test_issue_block_includes_linked_zendesk_tickets(settings: AppSettings) -> N
     )
     block = _issue_block(issue)
     assert "Linked Zendesk tickets:" in block
-    assert "[Zendesk 1: #91234 | status=open | priority=urgent]" in block
+    assert "[Zendesk 1: #91234 | status=open | priority=urgent | created=(none)]" in block
     assert "Subject: Portal login broken" in block
     assert "Description:\nCustomer cannot sign in after MFA prompt." in block
 

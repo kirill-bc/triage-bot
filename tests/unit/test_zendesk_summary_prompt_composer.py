@@ -34,6 +34,7 @@ def test_format_jira_context_includes_summary_description_and_repro() -> None:
     context = format_jira_context_for_zendesk_summary(issue)
 
     assert "Issue key: BC-10" in context
+    assert "Created: (none)" in context
     assert "Checkout broken" in context
     assert "503 on payment API." in context
     assert "Open checkout and pay with card." in context
@@ -67,3 +68,4 @@ def test_compose_zendesk_summary_user_instruction_instructs_net_new_signal(
     assert "Jira issue context" in instruction
     assert "Login loop" in instruction
     assert "MFA prompt repeats." in instruction
+    assert "Created: (none)" in instruction
