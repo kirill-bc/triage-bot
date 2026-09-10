@@ -7,6 +7,7 @@ was invoked: ``bug_created`` (Jira automation on new bugs), ``priority_changed``
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sys
@@ -24,7 +25,10 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from typing_extensions import Self
 
-from triage_service.adapters.automation_webhook_executor import validate_request_webhook_url
+from triage_service.adapters.automation_webhook_executor import (
+    redacted_webhook_url,
+    validate_request_webhook_url,
+)
 from triage_service.core.settings import AppSettings, JiraApplyMode, load_settings
 from triage_service.core.triage_fallback import TriageFailure
 from triage_service.core.triage_handler import TriageRunner, build_default_triage_handler
@@ -47,8 +51,26 @@ def triage_inbound_debug_enabled() -> bool:
 
 
 def preview_request_body_for_log(body: bytes, *, max_len: int = 8192) -> str:
-    """Return a UTF-8 string or repr for logging; truncate very large bodies."""
-    return preview_bytes_for_log(body, max_bytes=max_len)
+    """Return a UTF-8 string or repr for logging; truncate very large bodies.
+
+    ``jira_automation_webhook_url`` is redacted to scheme and host because its path is secret.
+    """
+    preview_source = _redact_callback_url_in_body(body)
+    return preview_bytes_for_log(preview_source, max_bytes=max_len)
+
+
+def _redact_callback_url_in_body(body: bytes) -> bytes:
+    try:
+        parsed = json.loads(body)
+    except (ValueError, UnicodeDecodeError):
+        return body
+    if not isinstance(parsed, dict):
+        return body
+    url = parsed.get("jira_automation_webhook_url")
+    if not isinstance(url, str) or not url.strip():
+        return body
+    parsed["jira_automation_webhook_url"] = redacted_webhook_url(url)
+    return json.dumps(parsed, ensure_ascii=False).encode("utf-8")
 
 
 class _DebugInboundTriageBodyMiddleware(BaseHTTPMiddleware):
@@ -103,8 +125,8 @@ class TriageRequest(BaseModel):
         default=None,
         description=(
             "Optional callback URL for this project's Automation rule. Must be an https URL on "
-            "an Atlassian Automation host. Omit to use JIRA_AUTOMATION_WEBHOOK_URL from the "
-            "service environment."
+            "api-private.atlassian.com. Omit to use JIRA_AUTOMATION_WEBHOOK_URL from settings "
+            "(Secret only; never a ConfigMap)."
         ),
     )
 
@@ -205,6 +227,56 @@ def _concurrency_limits_from_settings() -> tuple[int, float]:
     return settings.triage_max_concurrent_runs, settings.triage_concurrency_wait_seconds
 
 
+def _optional_app_settings() -> AppSettings | None:
+    """Return loaded settings, or None when required credentials are not yet valid."""
+    try:
+        return load_settings()
+    except Exception:
+        return None
+
+
+def require_webhook_callback_config(
+    body: TriageRequest,
+    *,
+    request_webhook_token: str | None,
+    settings: AppSettings | None = None,
+) -> None:
+    """Reject webhook mode without a callback URL or Automation webhook token."""
+    if settings is None:
+        settings = _optional_app_settings()
+    effective_mode: JiraApplyMode = body.jira_apply_mode or (
+        settings.triage_jira_apply_mode if settings is not None else "direct"
+    )
+    configured_url = body.jira_automation_webhook_url or (
+        settings.jira_automation_webhook_url if settings is not None else None
+    )
+    header_token = (request_webhook_token or "").strip() or None
+    settings_token = (
+        str(settings.jira_automation_webhook_token or "").strip() or None
+        if settings is not None
+        else None
+    )
+    token = header_token or settings_token
+    if effective_mode != "automation_webhook":
+        return
+    if not str(configured_url or "").strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                "A callback URL is required for jira_apply_mode=automation_webhook: "
+                "send jira_automation_webhook_url or set JIRA_AUTOMATION_WEBHOOK_URL"
+            ),
+        )
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                "A webhook token is required for jira_apply_mode=automation_webhook: "
+                "send X-Jira-Automation-Webhook-Token or set JIRA_AUTOMATION_WEBHOOK_TOKEN"
+            ),
+        )
+
+
 def _run_triage_within_capacity(
     body: TriageRequest,
     runner: TriageRunner,
@@ -286,6 +358,10 @@ def create_app(*, triage_handler_factory: Callable[[], TriageRunner] | None = No
             alias="X-Jira-Automation-Webhook-Token",
         ),
     ) -> TriageRunner:
+        require_webhook_callback_config(
+            body,
+            request_webhook_token=x_jira_automation_webhook_token,
+        )
         if triage_handler_factory is not None:
             return triage_handler_factory()
         token = (x_jira_automation_webhook_token or "").strip() or None

@@ -80,7 +80,7 @@ From repository root:
   - optional: `TRIAGE_PROMPT_TEMPLATES_PATH` (path to local JSON prompt templates fallback; defaults to `src/triage_service/core/prompt_templates.json`)
    - optional: `JIRA_CLOUD_ID`, `JIRA_USER_EMAIL`, logging values
    - optional: `TRIAGE_JIRA_REPRODUCTION_STEPS_FIELD_ID` (defaults to `customfield_10251`; set empty to disable custom-field lookup and rely on description marker extraction)
-   - optional: `TRIAGE_JIRA_HTTP_TIMEOUT_SECONDS` (per-attempt timeout for Jira REST, default `30`) and `TRIAGE_JIRA_HTTP_MAX_RETRIES` (extra attempts after a transient HTTP 429/502/503/504 or transport failure, default `2`, max `10`)
+   - optional: `TRIAGE_JIRA_HTTP_TIMEOUT_SECONDS` (per-attempt timeout for Jira REST, default `30`) and `TRIAGE_JIRA_HTTP_MAX_RETRIES` (extra attempts after a transient HTTP 429/502/503/504 or transport failure, default `2`, max `10`; does **not** apply to the Automation callback POST, which is a single attempt)
    - optional: `TRIAGE_OPENROUTER_HTTP_TIMEOUT_SECONDS` (per-attempt timeout for OpenRouter chat completions, default `60`) and `TRIAGE_OPENROUTER_HTTP_MAX_RETRIES` (same transient policy as Jira, default `2`, max `10`)
    - optional: `TRIAGE_OPENROUTER_CALL_DEADLINE_SECONDS` (hard wall-clock ceiling per chat completion attempt, default `150`, max `600`). The HTTP timeout above only bounds the gap between received chunks, so it cannot stop a call that OpenRouter holds open with keep-alive padding while an upstream provider stalls; this deadline closes the connection and retries once on a fresh one.
    - optional: `TRIAGE_MAX_CONCURRENT_RUNS` (max concurrent `POST /triage` executions in-process, default `4`, max `64`) and `TRIAGE_CONCURRENCY_WAIT_SECONDS` (max seconds a request waits for a slot before `503`, default `900`, max `3600`) — see Concurrency below.
@@ -379,8 +379,8 @@ In the **Send web request** action, add custom headers:
 
 - **Name:** `X-Triage-Token`
 - **Value:** the same secret you set as `TRIAGE_WEBHOOK_TOKEN` in the triage service environment (paste the literal token; Jira does not resolve env vars from your container).
-- **Name:** `X-Jira-Automation-Webhook-Token` (optional, webhook-mode Rule A only)
-- **Value:** this project's Rule B incoming-webhook secret. The service forwards it as `X-Automation-Webhook-Token` on the callback. Omit to fall back to `JIRA_AUTOMATION_WEBHOOK_TOKEN`.
+- **Name:** `X-Jira-Automation-Webhook-Token` (webhook-mode Rule A only)
+- **Value:** this project's Rule B incoming-webhook secret. The service forwards it as `X-Automation-Webhook-Token` on the callback. Do not put it in service env.
 
 Omitting `X-Triage-Token` or sending the wrong value results in **`401 Unauthorized`**.
 
@@ -413,14 +413,15 @@ callers unchanged.
 | `direct` (default) | The service writes labels, the comment, and any auto-apply field edits itself via Jira REST. |
 | `automation_webhook` | The service POSTs a rendered outcome payload to a Jira Automation incoming-webhook rule, which applies everything as the Automation actor. |
 
-Webhook mode reads `JIRA_AUTOMATION_WEBHOOK_URL`, `JIRA_AUTOMATION_WEBHOOK_TOKEN` (sent as
-`X-Automation-Webhook-Token`), and `JIRA_AUTOMATION_WEBHOOK_TIMEOUT_SECONDS` (default `30`).
-Because Automation rules are project-scoped, a caller may instead pass its own Rule B endpoint as
-`jira_automation_webhook_url` in the `/triage` body and `X-Jira-Automation-Webhook-Token` as a
-header; these override the environment values for that run only. A payload URL must be `https` on
-an Atlassian Automation host (`422` otherwise). The token stays out of the JSON body (so inbound
-debug logging cannot print it) and is never echoed in responses, logs, or audit events. Two
-behavior differences are worth knowing:
+Webhook mode does not store a Rule B URL or secret in the service environment. Each caller
+must send `jira_automation_webhook_url` in the `/triage` body and
+`X-Jira-Automation-Webhook-Token` as a header. The URL must be `https` on
+`api-private.atlassian.com` (`422` otherwise). The token stays out of the JSON body (so inbound debug
+logging cannot print it) and is never echoed in responses, logs, or audit events.
+`JIRA_AUTOMATION_WEBHOOK_TIMEOUT_SECONDS` (default `30`) is the only webhook-mode env knob.
+The callback POST is a single attempt: retrying a webhook that Rule B may already have
+accepted would duplicate comments.
+Two behavior differences are worth knowing:
 
 - Comment copy is identical, but the reporter mention is rendered as `[~accountid:...]` plain
   text instead of an ADF `mention` node.

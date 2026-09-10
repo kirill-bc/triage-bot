@@ -1818,7 +1818,7 @@ def test_build_default_triage_handler_selects_automation_webhook_executor(
     monkeypatch.setenv("TRIAGE_JIRA_APPLY_MODE", "automation_webhook")
     monkeypatch.setenv(
         "JIRA_AUTOMATION_WEBHOOK_URL",
-        "https://automation.atlassian.com/pro/hooks/abc",
+        "https://api-private.atlassian.com/automation/webhooks/jira/cloud/abc",
     )
 
     runner = build_default_triage_handler()
@@ -1858,7 +1858,7 @@ def test_build_default_triage_handler_request_mode_overrides_direct_environment(
     monkeypatch.setenv("JIRA_USER_EMAIL", "bot@example.com")
     monkeypatch.setenv(
         "JIRA_AUTOMATION_WEBHOOK_URL",
-        "https://automation.atlassian.com/pro/hooks/abc",
+        "https://api-private.atlassian.com/automation/webhooks/jira/cloud/abc",
     )
 
     runner = build_default_triage_handler(jira_apply_mode="automation_webhook")
@@ -1881,13 +1881,17 @@ def test_build_default_triage_handler_accepts_request_webhook_url_without_env_ur
     monkeypatch.setenv("JIRA_AUTOMATION_WEBHOOK_URL", "")
 
     runner = build_default_triage_handler(
-        jira_automation_webhook_url="https://automation.atlassian.com/pro/hooks/per-project",
+        jira_automation_webhook_url=(
+            "https://api-private.atlassian.com/automation/webhooks/jira/cloud/per-project"
+        ),
     )
 
     assert isinstance(runner, TriageHandler)
     executor = runner._executor
     assert isinstance(executor, AutomationWebhookTriageActionExecutor)
-    assert executor._webhook_url == "https://automation.atlassian.com/pro/hooks/per-project"
+    assert executor._webhook_url == (
+        "https://api-private.atlassian.com/automation/webhooks/jira/cloud/per-project"
+    )
 
 
 @pytest.mark.unit
@@ -1902,7 +1906,7 @@ def test_build_default_triage_handler_forwards_request_webhook_token(
     monkeypatch.setenv("TRIAGE_JIRA_APPLY_MODE", "automation_webhook")
     monkeypatch.setenv(
         "JIRA_AUTOMATION_WEBHOOK_URL",
-        "https://automation.atlassian.com/pro/hooks/abc",
+        "https://api-private.atlassian.com/automation/webhooks/jira/cloud/abc",
     )
 
     runner = build_default_triage_handler(
@@ -1938,7 +1942,7 @@ def test_build_default_triage_handler_skips_webhook_executor_when_apply_disabled
     monkeypatch.setenv("TRIAGE_JIRA_APPLY_MODE", "automation_webhook")
     monkeypatch.setenv(
         "JIRA_AUTOMATION_WEBHOOK_URL",
-        "https://automation.atlassian.com/pro/hooks/abc",
+        "https://api-private.atlassian.com/automation/webhooks/jira/cloud/abc",
     )
 
     runner = build_default_triage_handler(apply_to_jira=False)

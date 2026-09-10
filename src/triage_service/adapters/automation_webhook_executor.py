@@ -42,9 +42,9 @@ CALLBACK_PAYLOAD_VERSION = 1
 
 _TOKEN_HEADER = "X-Automation-Webhook-Token"
 
-# Callers may name their own Rule B webhook, so the callback target is pinned to the hosts
-# Atlassian serves Automation webhooks from. Operator-supplied env URLs are trusted as-is.
-ALLOWED_WEBHOOK_HOSTS = frozenset({"automation.atlassian.com", "api-private.atlassian.com"})
+# Callers may name their own Rule B webhook, so the callback target is pinned to the current
+# Atlassian Automation webhook host. Operator-supplied env URLs are trusted as-is.
+ALLOWED_WEBHOOK_HOSTS = frozenset({"api-private.atlassian.com"})
 
 
 def validate_request_webhook_url(url: str) -> str:
@@ -65,6 +65,19 @@ def validate_request_webhook_url(url: str) -> str:
         )
         raise ValueError(msg)
     return candidate
+
+
+def redacted_webhook_url(url: str) -> str:
+    """Return only the callback origin because its path contains a secret."""
+    parsed = urlsplit(url)
+    if parsed.scheme and parsed.hostname:
+        return f"{parsed.scheme}://{parsed.hostname}"
+    return "<redacted-webhook-url>"
+
+
+def delivery_attempts(exc: object) -> int:
+    """HTTP attempts for a failed callback; bare transport errors still made one request."""
+    return int(getattr(exc, "attempts", 1))
 
 
 class AutomationCallbackError(RuntimeError):
@@ -250,7 +263,7 @@ class AutomationWebhookTriageActionExecutor:
         try:
             response, attempts = self._post(url, payload=payload, headers=headers)
         except (TransportRetriesExhausted, httpx.RequestError) as exc:
-            failure = f"Automation callback request failed after retries: {exc}"
+            failure = f"Automation callback request failed: {exc}"
             self._record_delivery(
                 issue_key=issue_key,
                 project=project,
@@ -258,7 +271,7 @@ class AutomationWebhookTriageActionExecutor:
                 run_id=run_id,
                 delivered=False,
                 http_status=None,
-                attempts=getattr(exc, "attempts", 0),
+                attempts=delivery_attempts(exc),
                 failure=failure,
             )
             raise AutomationCallbackError(failure) from exc
@@ -298,12 +311,17 @@ class AutomationWebhookTriageActionExecutor:
         payload: dict[str, Any],
         headers: dict[str, str],
     ) -> tuple[httpx.Response, int]:
+        # Incoming-webhook POSTs are not idempotent: Atlassian may accept the body and
+        # start Rule B before we see a response. Retrying on timeout or 5xx can post a
+        # second comment. A failed attempt stays a delivery failure; the scan JQL retries
+        # later with a new run_id.
         if self._client is not None:
             return request_with_retries(
                 self._client,
                 "POST",
                 url,
-                max_retries=self._settings.jira_http_max_retries,
+                max_retries=0,
+                log_url=redacted_webhook_url(url),
                 headers=headers,
                 json=payload,
             )
@@ -313,7 +331,8 @@ class AutomationWebhookTriageActionExecutor:
                 client,
                 "POST",
                 url,
-                max_retries=self._settings.jira_http_max_retries,
+                max_retries=0,
+                log_url=redacted_webhook_url(url),
                 headers=headers,
                 json=payload,
             )

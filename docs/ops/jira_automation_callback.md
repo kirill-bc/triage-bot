@@ -36,9 +36,12 @@ Trigger rule (scheduled JQL / issue created / priority changed)
 | `TRIAGE_JIRA_APPLY_MODE` | `direct` (default, rollback path) or `automation_webhook` |
 | `JIRA_AUTOMATION_WEBHOOK_URL` | Fallback Rule B incoming-webhook URL. Required in webhook mode unless every caller sends `jira_automation_webhook_url`, which takes precedence. |
 | `JIRA_AUTOMATION_WEBHOOK_TOKEN` | Fallback secret for Rule B's incoming-webhook trigger; sent as `X-Automation-Webhook-Token`. Jira validates this header — do not re-check it in a rule condition. A per-request `X-Jira-Automation-Webhook-Token` inbound header takes precedence. |
-| `JIRA_AUTOMATION_WEBHOOK_TIMEOUT_SECONDS` | Per-attempt POST timeout (default `30`) |
+| `JIRA_AUTOMATION_WEBHOOK_TIMEOUT_SECONDS` | Callback POST timeout (default `30`); the webhook is not retried |
 
-Retries reuse `TRIAGE_JIRA_HTTP_MAX_RETRIES`. Webhook mode needs no Jira write credentials;
+The callback POST is **not retried**. `TRIAGE_JIRA_HTTP_MAX_RETRIES` applies to Jira REST
+fetch/write only. Replaying the same webhook after a timeout or 5xx can run Rule B twice
+and duplicate comments; a failed attempt is a delivery failure so the scheduled scan can
+retry later with a new `run_id`. Webhook mode needs no Jira write credentials;
 `JIRA_CLOUD_ID` / `JIRA_USER_EMAIL` are still required for issue **fetch**.
 `build_default_triage_handler(apply_to_jira=False)` still returns the no-op executor, so
 read-only CLI runs are unaffected by the mode.
@@ -78,8 +81,8 @@ callback, and the env values remain the fallback for callers that send neither.
 
 Guardrails and limits:
 
-- The URL must be `https` on `automation.atlassian.com` or `api-private.atlassian.com`. Anything
-  else is rejected with `422` before triage runs, so a bad or hostile payload cannot aim the
+- The URL must be `https` on `api-private.atlassian.com`. Anything else is rejected with `422`
+  before triage runs, so a bad or hostile payload cannot aim the
   callback POST at an arbitrary host. Widen `ALLOWED_WEBHOOK_HOSTS` in
   `adapters/automation_webhook_executor.py` if Atlassian changes hosts.
 - The env URL is *not* host-checked; operator configuration stays trusted, which keeps tunnels and
@@ -278,6 +281,9 @@ observes the write.
   label is never removed and the issue silently drops out of the scan forever. Sweep for stale
   markers (e.g. `labels = triagebot-scheduled AND labels not in (triagebot-reviewed) AND
   created <= -1h`) and remove the label to re-queue.
+- **Callback POST is not retried.** A timeout after Jira accepted the webhook can still mean
+  Rule B ran while the service recorded `delivered: false`. The service will not POST again
+  for that `run_id`. A scheduled-scan retry starts a new `run_id` and is a new apply.
 - **A failed edit does not stop the rule.** Automation logs the failed *Edit work item* and
   continues, so a rejected priority write still adds `triagebot-priority-mismatch` and still
   posts the comment — and that comment uses the "applied" copy ("The ticket Priority was changed

@@ -428,16 +428,18 @@ class AppSettings(BaseSettings):
         default=None,
         validation_alias="JIRA_AUTOMATION_WEBHOOK_URL",
         description=(
-            "Jira Automation incoming-webhook URL that applies triage outcomes. "
-            "Required when TRIAGE_JIRA_APPLY_MODE=automation_webhook."
+            "Optional Secret fallback for the Rule B incoming-webhook URL. "
+            "Prefer jira_automation_webhook_url on each request during parallel migration. "
+            "Never store this in a ConfigMap."
         ),
     )
     jira_automation_webhook_token: str | None = Field(
         default=None,
         validation_alias="JIRA_AUTOMATION_WEBHOOK_TOKEN",
         description=(
-            "Secret sent as X-Automation-Webhook-Token; Jira validates it on the "
-            "incoming-webhook trigger."
+            "Optional Secret fallback for X-Automation-Webhook-Token. "
+            "Prefer X-Jira-Automation-Webhook-Token on each request during parallel migration. "
+            "Never store this in a ConfigMap."
         ),
     )
     jira_automation_webhook_timeout_seconds: float = Field(

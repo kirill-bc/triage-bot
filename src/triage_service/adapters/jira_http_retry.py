@@ -58,6 +58,7 @@ def request_with_retries(
     url: str,
     *,
     max_retries: int,
+    log_url: str | None = None,
     **kwargs: Any,
 ) -> tuple[httpx.Response, int]:
     """Issue ``method``/``url`` with up to ``max_retries`` extra tries on transient errors.
@@ -67,6 +68,7 @@ def request_with_retries(
 
     Raises :class:`TransportRetriesExhausted` when retriable transport errors exhaust retries.
     """
+    safe_log_url = log_url or url
     for attempt in range(max_retries + 1):
         start = time.perf_counter()
         try:
@@ -76,7 +78,7 @@ def request_with_retries(
             duration_ms = round((time.perf_counter() - start) * 1000, 2)
             _log_outbound_http(
                 method=method,
-                url=url,
+                url=safe_log_url,
                 status_code=None,
                 attempts=attempts_used,
                 duration_ms=duration_ms,
@@ -92,7 +94,7 @@ def request_with_retries(
         duration_ms = round((time.perf_counter() - start) * 1000, 2)
         _log_outbound_http(
             method=method,
-            url=url,
+            url=safe_log_url,
             status_code=response.status_code,
             attempts=attempts_used,
             duration_ms=duration_ms,

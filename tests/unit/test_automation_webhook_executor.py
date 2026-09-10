@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 import httpx
@@ -18,7 +19,9 @@ from triage_service.core.triage_fallback import TriageFailure
 from triage_service.core.triage_recommendation_parser import TriageRecommendation
 from triage_service.observability.audit_events import TriageAuditEvent
 
-_WEBHOOK_URL = "https://automation.atlassian.com/pro/hooks/hook-id"
+_WEBHOOK_URL = (
+    "https://api-private.atlassian.com/automation/webhooks/jira/cloud/secret-hook-id"
+)
 
 
 class _RecordingAuditStore:
@@ -119,6 +122,33 @@ def test_executor_posts_versioned_payload_with_token_header(
     assert payload["comment"]["body"].startswith("[~accountid:account-123]")
     assert "Change ticket Priority from P1 to P3." in payload["comment"]["body"]
     assert payload["actions"] == {"apply_bug_to_story": False, "apply_priority": None}
+
+
+@pytest.mark.unit
+def test_executor_redacts_webhook_path_from_outbound_log(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    settings = _settings(monkeypatch)
+    caplog.set_level(logging.INFO, logger="triage_service.adapters.jira_http_retry")
+
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, request=request))
+    with httpx.Client(transport=transport) as client:
+        executor = AutomationWebhookTriageActionExecutor(settings, client=client)
+        executor.apply_triage_outcome(
+            issue=_issue(),
+            issue_key="TJC-1",
+            project="TJC",
+            source="bug_created",
+            outcome=_recommendation(),
+            run_id="run-1",
+        )
+
+    record = [
+        item for item in caplog.records if str(item.msg).startswith("outbound_http")
+    ][-1]
+    assert getattr(record, "url") == "https://api-private.atlassian.com"
+    assert "secret-hook-id" not in record.getMessage()
 
 
 @pytest.mark.unit
@@ -333,21 +363,20 @@ def test_executor_raises_automation_callback_error_when_url_missing(
 
 
 @pytest.mark.unit
-def test_executor_retries_callback_on_503_then_succeeds(
+def test_executor_does_not_retry_callback_on_transient_http(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Rule B is not idempotent; a lost 200 plus retry would duplicate comments."""
     monkeypatch.setattr(
         "triage_service.adapters.jira_http_retry.time.sleep",
         lambda _s: None,
     )
-    settings = _settings(monkeypatch)
+    settings = _settings(monkeypatch, TRIAGE_JIRA_HTTP_MAX_RETRIES="2")
     attempts = {"n": 0}
 
     def handler(_request: httpx.Request) -> httpx.Response:
         attempts["n"] += 1
-        if attempts["n"] == 1:
-            return httpx.Response(503, text="gateway")
-        return httpx.Response(200, json={})
+        return httpx.Response(503, text="gateway")
 
     transport = httpx.MockTransport(handler)
     audit_store = _RecordingAuditStore()
@@ -357,19 +386,21 @@ def test_executor_retries_callback_on_503_then_succeeds(
             client=client,
             audit_store=audit_store,
         )
-        executor.apply_triage_outcome(
-            issue=_issue(),
-            issue_key="TJC-1",
-            project="TJC",
-            source="bug_created",
-            outcome=_recommendation(),
-            run_id="run-1",
-        )
+        with pytest.raises(AutomationCallbackError, match="503"):
+            executor.apply_triage_outcome(
+                issue=_issue(),
+                issue_key="TJC-1",
+                project="TJC",
+                source="bug_created",
+                outcome=_recommendation(),
+                run_id="run-1",
+            )
 
-    assert attempts["n"] == 2
+    assert attempts["n"] == 1
     delivered = [e for e in audit_store.events if e.event_type == "outcome_delivered"]
     assert len(delivered) == 1
-    assert delivered[0].attempts == 2
+    assert delivered[0].delivered is False
+    assert delivered[0].attempts == 1
 
 
 @pytest.mark.unit
@@ -478,6 +509,7 @@ def test_executor_prefers_request_url_over_settings_url(
     "bad_url",
     [
         "https://evil.example.com/hooks/abc",
+        "https://automation.atlassian.com/pro/hooks/abc",
         "http://automation.atlassian.com/pro/hooks/abc",
         "https://automation.atlassian.com.evil.example.com/hooks/abc",
     ],

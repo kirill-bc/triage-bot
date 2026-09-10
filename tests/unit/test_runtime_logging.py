@@ -276,6 +276,34 @@ def test_request_with_retries_logs_outbound_http(
 
 
 @pytest.mark.unit
+def test_request_with_retries_uses_redacted_logging_url(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="triage_service.adapters.jira_http_retry")
+    callback_url = (
+        "https://api-private.atlassian.com/automation/webhooks/jira/cloud/secret-hook-id"
+    )
+
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(200, json={}, request=request),
+    )
+    with httpx.Client(transport=transport) as client:
+        request_with_retries(
+            client,
+            "POST",
+            callback_url,
+            max_retries=0,
+            log_url="https://api-private.atlassian.com",
+        )
+
+    record = [
+        item for item in caplog.records if str(item.msg).startswith("outbound_http")
+    ][-1]
+    assert getattr(record, "url") == "https://api-private.atlassian.com"
+    assert "secret-hook-id" not in record.getMessage()
+
+
+@pytest.mark.unit
 def test_request_with_retries_logs_outbound_http_errors_at_warning(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

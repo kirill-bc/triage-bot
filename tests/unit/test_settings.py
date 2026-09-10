@@ -179,7 +179,8 @@ def test_load_settings_reads_automation_webhook_apply_mode(
         "OPENROUTER_API_KEY=or-token\n"
         "TRIAGE_WEBHOOK_TOKEN=triage-token\n"
         "TRIAGE_JIRA_APPLY_MODE=automation_webhook\n"
-        "JIRA_AUTOMATION_WEBHOOK_URL=https://automation.atlassian.com/pro/hooks/abc\n"
+        "JIRA_AUTOMATION_WEBHOOK_URL="
+        "https://api-private.atlassian.com/automation/webhooks/jira/cloud/abc\n"
         "JIRA_AUTOMATION_WEBHOOK_TOKEN=automation-secret\n"
         "JIRA_AUTOMATION_WEBHOOK_TIMEOUT_SECONDS=12.5\n",
         encoding="utf-8",
@@ -187,7 +188,7 @@ def test_load_settings_reads_automation_webhook_apply_mode(
     settings = load_settings()
     assert settings.triage_jira_apply_mode == "automation_webhook"
     assert settings.jira_automation_webhook_url == (
-        "https://automation.atlassian.com/pro/hooks/abc"
+        "https://api-private.atlassian.com/automation/webhooks/jira/cloud/abc"
     )
     assert settings.jira_automation_webhook_token == "automation-secret"
     assert settings.jira_automation_webhook_timeout_seconds == 12.5

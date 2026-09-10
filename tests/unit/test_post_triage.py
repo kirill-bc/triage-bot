@@ -113,6 +113,10 @@ def test_post_triage_passes_optional_apply_mode_to_default_handler(
     }
     if request_mode is not None:
         payload["jira_apply_mode"] = request_mode
+    if request_mode == "automation_webhook":
+        payload["jira_automation_webhook_url"] = (
+            "https://api-private.atlassian.com/automation/webhooks/jira/cloud/hook"
+        )
 
     with patch(
         "triage_service.api.triage_api.build_default_triage_handler",
@@ -130,6 +134,7 @@ def test_post_triage_passes_optional_apply_mode_to_default_handler(
     "bad_url",
     [
         "https://evil.example.com/hooks/abc",
+        "https://automation.atlassian.com/pro/hooks/abc",
         "http://automation.atlassian.com/pro/hooks/abc",
         "not-a-url",
     ],
@@ -179,7 +184,7 @@ def test_post_triage_forwards_webhook_token_from_header(
                 "source": "bug_created",
                 "jira_apply_mode": "automation_webhook",
                 "jira_automation_webhook_url": (
-                    "https://automation.atlassian.com/pro/hooks/per-project"
+                    "https://api-private.atlassian.com/automation/webhooks/jira/cloud/per-project"
                 ),
             },
             headers={
@@ -194,7 +199,7 @@ def test_post_triage_forwards_webhook_token_from_header(
             "jira_apply_mode": "automation_webhook",
             "jira_automation_webhook_token": "per-project-token",
             "jira_automation_webhook_url": (
-                "https://automation.atlassian.com/pro/hooks/per-project"
+                "https://api-private.atlassian.com/automation/webhooks/jira/cloud/per-project"
             ),
         },
     ]
@@ -228,6 +233,9 @@ def test_post_triage_ignores_webhook_token_in_json_body(
                 "source": "bug_created",
                 "jira_apply_mode": "automation_webhook",
                 "jira_automation_webhook_token": "body-token-must-be-ignored",
+                "jira_automation_webhook_url": (
+                    "https://api-private.atlassian.com/automation/webhooks/jira/cloud/hook"
+                ),
             },
             headers=_auth_headers(),
         )
@@ -235,6 +243,38 @@ def test_post_triage_ignores_webhook_token_in_json_body(
     assert response.status_code == 200
     assert observed[0]["jira_automation_webhook_token"] is None
     assert "body-token-must-be-ignored" not in response.text
+
+
+@pytest.mark.unit
+def test_post_triage_returns_422_when_webhook_mode_has_no_callback_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("JIRA_AUTOMATION_WEBHOOK_URL", raising=False)
+    observed: list[dict[str, object]] = []
+
+    def _build(**kwargs: object) -> _StubRunner:
+        observed.append(kwargs)
+        return _StubRunner()
+
+    with patch(
+        "triage_service.api.triage_api.build_default_triage_handler",
+        side_effect=_build,
+    ):
+        app_client = TestClient(create_app())
+        response = app_client.post(
+            "/triage",
+            json={
+                "issue_key": "TJC-9",
+                "project": "TJC",
+                "source": "bug_created",
+                "jira_apply_mode": "automation_webhook",
+            },
+            headers=_auth_headers(),
+        )
+
+    assert response.status_code == 422
+    assert "callback URL is required" in response.json()["detail"]
+    assert observed == []
 
 
 @pytest.mark.unit
