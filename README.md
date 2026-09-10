@@ -375,12 +375,14 @@ The production integration model is Jira Cloud Automation running on a schedule 
   - `labels not in (triagebot-reviewed)`: dedupe marker so successful issues drop out.
   - `created >= -30m`: retry backstop window for temporary failures.
 
-In the **Send web request** action, add a custom header so the service can authenticate the caller:
+In the **Send web request** action, add custom headers:
 
 - **Name:** `X-Triage-Token`
 - **Value:** the same secret you set as `TRIAGE_WEBHOOK_TOKEN` in the triage service environment (paste the literal token; Jira does not resolve env vars from your container).
+- **Name:** `X-Jira-Automation-Webhook-Token` (optional, webhook-mode Rule A only)
+- **Value:** this project's Rule B incoming-webhook secret. The service forwards it as `X-Automation-Webhook-Token` on the callback. Omit to fall back to `JIRA_AUTOMATION_WEBHOOK_TOKEN`.
 
-Omitting this header or sending the wrong value results in **`401 Unauthorized`**.
+Omitting `X-Triage-Token` or sending the wrong value results in **`401 Unauthorized`**.
 
 Use custom JSON data (the endpoint expects this exact shape; default Jira payloads such as `{"issues":[]}` are rejected by request validation):
 
@@ -388,12 +390,46 @@ Use custom JSON data (the endpoint expects this exact shape; default Jira payloa
 {
   "issue_key": "{{issue.key}}",
   "project": "{{issue.project.key}}",
-  "source": "bug_created"
+  "source": "bug_created",
+  "jira_apply_mode": "automation_webhook",
+  "jira_automation_webhook_url": "<this project's Rule B webhook URL>"
 }
 ```
 
 Use `"source": "bug_created"` for a newly-created Bug rule and `"source": "priority_changed"`
-for a priority-change rule.
+for a priority-change rule. `jira_apply_mode` is optional: when present it selects the outcome
+delivery path for this request only; when omitted, the service uses `TRIAGE_JIRA_APPLY_MODE`.
+For a gradual migration, keep the service env at `direct`, add
+`"jira_apply_mode": "automation_webhook"` only to migrated Rule A payloads, and leave existing
+callers unchanged.
+
+### Outcome delivery mode (direct writes vs Automation callback)
+
+`TRIAGE_JIRA_APPLY_MODE` selects the default way a finished triage reaches Jira. An authenticated
+`POST /triage` may override it per request with `jira_apply_mode`:
+
+| Mode | Behavior |
+|------|----------|
+| `direct` (default) | The service writes labels, the comment, and any auto-apply field edits itself via Jira REST. |
+| `automation_webhook` | The service POSTs a rendered outcome payload to a Jira Automation incoming-webhook rule, which applies everything as the Automation actor. |
+
+Webhook mode reads `JIRA_AUTOMATION_WEBHOOK_URL`, `JIRA_AUTOMATION_WEBHOOK_TOKEN` (sent as
+`X-Automation-Webhook-Token`), and `JIRA_AUTOMATION_WEBHOOK_TIMEOUT_SECONDS` (default `30`).
+Because Automation rules are project-scoped, a caller may instead pass its own Rule B endpoint as
+`jira_automation_webhook_url` in the `/triage` body and `X-Jira-Automation-Webhook-Token` as a
+header; these override the environment values for that run only. A payload URL must be `https` on
+an Atlassian Automation host (`422` otherwise). The token stays out of the JSON body (so inbound
+debug logging cannot print it) and is never echoed in responses, logs, or audit events. Two
+behavior differences are worth knowing:
+
+- Comment copy is identical, but the reporter mention is rendered as `[~accountid:...]` plain
+  text instead of an ADF `mention` node.
+- `applied_type_change` / `applied_priority_change` on analytics rows mean **apply directed**,
+  not apply confirmed — the service no longer observes the write.
+
+Each delivery attempt records an `outcome_delivered` audit event (mode, HTTP status, attempt
+count, failure). Setup, payload contract, smoke checklist, and caveats:
+[docs/ops/jira_automation_callback.md](docs/ops/jira_automation_callback.md).
 
 ### Jira side effects
 

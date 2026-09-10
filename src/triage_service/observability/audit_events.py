@@ -11,6 +11,7 @@ at lifecycle boundaries:
 - ``zendesk_context_summarized`` — after resolution-aware comment summarization (when enabled).
 - ``triage_completed`` — final merged recommendation before/after executor success.
 - ``triage_failed`` — pipeline returned :class:`~triage_service.core.triage_fallback.TriageFailure`.
+- ``outcome_delivered`` — outcome hand-off finished (Jira Automation callback POST).
 
 ``TriageAuditFailureCategory`` values are kept aligned with
 ``TriageFailureCategory`` (see unit test); observability stays independent of
@@ -266,10 +267,44 @@ class TriageFailedAuditEvent(_CorrelationMixin):
         return value
 
 
+class OutcomeDeliveredAuditEvent(_CorrelationMixin):
+    """Outcome hand-off finished: Automation callback POST (or direct Jira writes).
+
+    ``delivered`` records whether the hand-off itself succeeded, not whether Jira ultimately
+    applied the changes — on the ``automation_webhook`` path the rule executes asynchronously,
+    so its own audit log (correlated by ``run_id``) is the record of the applied result.
+    """
+
+    event_type: Literal["outcome_delivered"]
+    delivery_mode: Literal["direct", "automation_webhook"]
+    delivered: bool
+    http_status: int | None = None
+    attempts: int = Field(default=0, ge=0)
+    failure: str | None = None
+
+    @field_validator("failure", mode="before")
+    @classmethod
+    def _blank_failure_to_none(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @model_validator(mode="after")
+    def _failure_matches_delivered(self) -> OutcomeDeliveredAuditEvent:
+        if self.delivered and self.failure is not None:
+            msg = "failure must be null when delivered is true"
+            raise ValueError(msg)
+        if not self.delivered and self.failure is None:
+            msg = "failure is required when delivered is false"
+            raise ValueError(msg)
+        return self
+
+
 TriageAuditEvent = Annotated[
     Union[
         ClassificationCompletedAuditEvent,
         ImageContextExtractedAuditEvent,
+        OutcomeDeliveredAuditEvent,
         PriorityCompletedAuditEvent,
         TriageCompletedAuditEvent,
         TriageFailedAuditEvent,

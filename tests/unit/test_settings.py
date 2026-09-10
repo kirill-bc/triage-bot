@@ -109,6 +109,10 @@ def test_load_settings_optional_fields_default_when_omitted(
     monkeypatch.delenv("TRIAGE_AUTO_APPLY_DEESCALATION", raising=False)
     monkeypatch.delenv("TRIAGE_AUTO_APPLY_ESCALATION", raising=False)
     monkeypatch.delenv("TRIAGE_AUTO_APPLY_BUG_TO_STORY", raising=False)
+    monkeypatch.delenv("TRIAGE_JIRA_APPLY_MODE", raising=False)
+    monkeypatch.delenv("JIRA_AUTOMATION_WEBHOOK_URL", raising=False)
+    monkeypatch.delenv("JIRA_AUTOMATION_WEBHOOK_TOKEN", raising=False)
+    monkeypatch.delenv("JIRA_AUTOMATION_WEBHOOK_TIMEOUT_SECONDS", raising=False)
     (tmp_path / ".env").write_text(
         "JIRA_API_KEY=jira-token\nOPENROUTER_API_KEY=or-token\nTRIAGE_WEBHOOK_TOKEN=triage-token\n",
         encoding="utf-8",
@@ -147,6 +151,82 @@ def test_load_settings_optional_fields_default_when_omitted(
     assert settings.analytics_http_timeout_seconds == 2.0
     assert settings.triage_langfuse_truncate_payloads is False
     assert settings.triage_langfuse_max_string_chars == 8192
+    assert settings.triage_jira_apply_mode == "direct"
+    assert settings.jira_automation_webhook_url is None
+    assert settings.jira_automation_webhook_token is None
+    assert settings.jira_automation_webhook_timeout_seconds == 30.0
+
+
+def _clear_apply_mode_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``load_dotenv`` leaks into ``os.environ``, so clear these before each mode test."""
+    for name in (
+        "TRIAGE_JIRA_APPLY_MODE",
+        "JIRA_AUTOMATION_WEBHOOK_URL",
+        "JIRA_AUTOMATION_WEBHOOK_TOKEN",
+        "JIRA_AUTOMATION_WEBHOOK_TIMEOUT_SECONDS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+@pytest.mark.unit
+def test_load_settings_reads_automation_webhook_apply_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_apply_mode_env(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text(
+        "JIRA_API_KEY=jira-token\n"
+        "OPENROUTER_API_KEY=or-token\n"
+        "TRIAGE_WEBHOOK_TOKEN=triage-token\n"
+        "TRIAGE_JIRA_APPLY_MODE=automation_webhook\n"
+        "JIRA_AUTOMATION_WEBHOOK_URL=https://automation.atlassian.com/pro/hooks/abc\n"
+        "JIRA_AUTOMATION_WEBHOOK_TOKEN=automation-secret\n"
+        "JIRA_AUTOMATION_WEBHOOK_TIMEOUT_SECONDS=12.5\n",
+        encoding="utf-8",
+    )
+    settings = load_settings()
+    assert settings.triage_jira_apply_mode == "automation_webhook"
+    assert settings.jira_automation_webhook_url == (
+        "https://automation.atlassian.com/pro/hooks/abc"
+    )
+    assert settings.jira_automation_webhook_token == "automation-secret"
+    assert settings.jira_automation_webhook_timeout_seconds == 12.5
+
+
+@pytest.mark.unit
+def test_load_settings_allows_automation_webhook_mode_without_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Callers may supply a per-project URL, so the env URL is optional in webhook mode."""
+    _clear_apply_mode_env(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text(
+        "JIRA_API_KEY=jira-token\n"
+        "OPENROUTER_API_KEY=or-token\n"
+        "TRIAGE_WEBHOOK_TOKEN=triage-token\n"
+        "TRIAGE_JIRA_APPLY_MODE=automation_webhook\n",
+        encoding="utf-8",
+    )
+    settings = load_settings()
+    assert settings.triage_jira_apply_mode == "automation_webhook"
+    assert settings.jira_automation_webhook_url is None
+
+
+@pytest.mark.unit
+def test_load_settings_rejects_unknown_jira_apply_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_apply_mode_env(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text(
+        "JIRA_API_KEY=jira-token\n"
+        "OPENROUTER_API_KEY=or-token\n"
+        "TRIAGE_WEBHOOK_TOKEN=triage-token\n"
+        "TRIAGE_JIRA_APPLY_MODE=carrier_pigeon\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValidationError):
+        load_settings()
 
 
 @pytest.mark.unit

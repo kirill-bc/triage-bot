@@ -165,6 +165,68 @@ def test_parse_triage_failed_accepts_optional_telemetry() -> None:
 
 
 @pytest.mark.unit
+def test_parse_outcome_delivered_includes_delivery_metadata() -> None:
+    from triage_service.observability.audit_events import parse_triage_audit_event
+
+    payload: dict[str, Any] = {
+        "event_type": "outcome_delivered",
+        "run_id": "r5",
+        "issue_key": "TJC-6",
+        "project": "TJC",
+        "source": "bug_created",
+        "delivery_mode": "automation_webhook",
+        "delivered": True,
+        "http_status": 200,
+        "attempts": 1,
+    }
+    event = parse_triage_audit_event(payload)
+    assert event.event_type == "outcome_delivered"
+    assert event.delivery_mode == "automation_webhook"
+    assert event.delivered is True
+    assert event.attempts == 1
+    assert event.failure is None
+
+
+@pytest.mark.unit
+def test_parse_outcome_delivered_rejects_delivered_with_failure() -> None:
+    from triage_service.observability.audit_events import parse_triage_audit_event
+
+    payload: dict[str, Any] = {
+        "event_type": "outcome_delivered",
+        "run_id": "r5",
+        "issue_key": "TJC-6",
+        "project": "TJC",
+        "source": "bug_created",
+        "delivery_mode": "automation_webhook",
+        "delivered": True,
+        "http_status": 200,
+        "attempts": 1,
+        "failure": "should not be set on success",
+    }
+    with pytest.raises(ValidationError):
+        parse_triage_audit_event(payload)
+
+
+@pytest.mark.unit
+def test_parse_outcome_delivered_requires_failure_when_not_delivered() -> None:
+    from triage_service.observability.audit_events import parse_triage_audit_event
+
+    payload: dict[str, Any] = {
+        "event_type": "outcome_delivered",
+        "run_id": "r5",
+        "issue_key": "TJC-6",
+        "project": "TJC",
+        "source": "bug_created",
+        "delivery_mode": "automation_webhook",
+        "delivered": False,
+        "http_status": 400,
+        "attempts": 1,
+    }
+    with pytest.raises(ValidationError):
+        parse_triage_audit_event(payload)
+
+
+@pytest.mark.unit
 def test_parse_rejects_unknown_event_type() -> None:
     from triage_service.observability.audit_events import parse_triage_audit_event
 

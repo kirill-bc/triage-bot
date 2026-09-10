@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlparse
 
 from dotenv import find_dotenv, load_dotenv
 from pydantic import Field, computed_field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing_extensions import Self
+
+JiraApplyMode = Literal["direct", "automation_webhook"]
 
 
 def _strip_matching_quotes(value: str) -> str:
@@ -412,6 +415,38 @@ class AppSettings(BaseSettings):
             "mismatches current issue type."
         ),
     )
+    triage_jira_apply_mode: JiraApplyMode = Field(
+        default="direct",
+        validation_alias="TRIAGE_JIRA_APPLY_MODE",
+        description=(
+            "How triage outcomes reach Jira: 'direct' writes labels/comments/fields via Jira "
+            "REST; 'automation_webhook' POSTs a rendered outcome payload to a Jira Automation "
+            "incoming webhook that applies them as the Automation actor."
+        ),
+    )
+    jira_automation_webhook_url: str | None = Field(
+        default=None,
+        validation_alias="JIRA_AUTOMATION_WEBHOOK_URL",
+        description=(
+            "Jira Automation incoming-webhook URL that applies triage outcomes. "
+            "Required when TRIAGE_JIRA_APPLY_MODE=automation_webhook."
+        ),
+    )
+    jira_automation_webhook_token: str | None = Field(
+        default=None,
+        validation_alias="JIRA_AUTOMATION_WEBHOOK_TOKEN",
+        description=(
+            "Secret sent as X-Automation-Webhook-Token; Jira validates it on the "
+            "incoming-webhook trigger."
+        ),
+    )
+    jira_automation_webhook_timeout_seconds: float = Field(
+        default=30.0,
+        ge=1.0,
+        le=300.0,
+        validation_alias="JIRA_AUTOMATION_WEBHOOK_TIMEOUT_SECONDS",
+        description="Per-attempt timeout (seconds) for the outcome callback POST.",
+    )
     analytics_dashboard_url: str | None = Field(
         default=None,
         validation_alias="ANALYTICS_DASHBOARD_URL",
@@ -542,6 +577,14 @@ class AppSettings(BaseSettings):
             return None
         normalized = _strip_matching_quotes(str(value))
         return normalized or None
+
+    @field_validator("jira_automation_webhook_url", "jira_automation_webhook_token", mode="before")
+    @classmethod
+    def _empty_automation_webhook_value_to_none(cls, value: object) -> object:
+        if value is None:
+            return None
+        token = _strip_matching_quotes(str(value))
+        return token or None
 
     @model_validator(mode="after")
     def allowed_projects_nonempty(self) -> Self:

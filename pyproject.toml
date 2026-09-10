@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 py-modules = [
     "dev_tunnel",
     "triage_manual_cli",
+    "webhook_triage_cli",
 ]
 packages = [
     "triage_service",
@@ -62,6 +63,7 @@ exclude = ["^build/", "^\\.venv/"]
 files = [
     "dev_tunnel.py",
     "triage_manual_cli.py",
+    "webhook_triage_cli.py",
     "src/triage_service",
     "scripts",
     "tests",

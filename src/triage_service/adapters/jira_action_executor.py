@@ -3,27 +3,27 @@
 from __future__ import annotations
 
 import base64
-import json
-from pathlib import Path
 from typing import Any
 
 import httpx
 
+from triage_service.adapters.jira_issue_fetcher import FetchedIssue
 from triage_service.adapters.jira_http_retry import (
     TransportRetriesExhausted,
     request_with_retries,
 )
+from triage_service.adapters.triage_outcome_rendering import (
+    AutoApplyPolicy,
+    OutcomeDecision,
+    build_outcome_decision,
+    render_adf_comment,
+)
 from triage_service.core.settings import AppSettings
-from triage_service.adapters.jira_issue_fetcher import FetchedIssue
 from triage_service.core.triage_action_applied import TriageActionAppliedFlags
 from triage_service.core.triage_fallback import TriageFailure
-from triage_service.core.triage_mismatch import compute_mismatch_flags
 from triage_service.core.triage_recommendation_parser import TriageRecommendation
 
-# Display name for Jira mismatch comments (keep consistent with operator-facing bot naming).
-_TRIAGEBOT_NAME = "TriageBot"
 _ATLASSIAN_GATEWAY = "https://api.atlassian.com/ex/jira"
-_COMMENT_TEMPLATES_PATH = Path(__file__).resolve().parent / "jira_comment_templates.json"
 
 
 class JiraActionExecutorError(RuntimeError):
@@ -55,211 +55,18 @@ def _jira_base_and_headers(settings: AppSettings) -> tuple[str, dict[str, str]]:
     return prefix, headers
 
 
-def _labels_for_outcome(recommendation: TriageRecommendation, issue: FetchedIssue) -> list[str]:
-    flags = compute_mismatch_flags(issue, recommendation)
-    labels = ["triagebot-reviewed"]
-    if flags.type_mismatch and recommendation.recommended_issue_type == "Story":
-        labels.append("triagebot-likely-story")
-    if _priority_signal(issue, recommendation) in ("prioritize", "deescalate"):
-        labels.append("triagebot-priority-mismatch")
-    return labels
-
-
-def _load_comment_templates() -> dict[str, dict[str, str]]:
-    raw = json.loads(_COMMENT_TEMPLATES_PATH.read_text(encoding="utf-8"))
-    advisory = raw["advisory"]
-    applied = raw["applied"]
-    confluence = raw["confluence"]
-    return {
-        "advisory": {k: str(v) for k, v in advisory.items()},
-        "applied": {k: str(v) for k, v in applied.items()},
-        "confluence": {k: str(v) for k, v in confluence.items()},
-    }
-
-
-_COMMENT_TEMPLATES = _load_comment_templates()
-
-
-def _mention_attrs(issue: FetchedIssue) -> dict[str, str]:
-    aid = issue.reporter_account_id or ""
-    display = issue.reporter.strip() if issue.reporter.strip() else aid
-    text = f"@{display}" if display else "@Reporter"
-    return {"id": aid, "text": text, "accessLevel": ""}
-
-
-def _opening_paragraph_nodes(
-    issue: FetchedIssue,
-    *,
-    mutations_applied: bool,
-) -> list[dict[str, Any]]:
-    template_group = _COMMENT_TEMPLATES["applied" if mutations_applied else "advisory"]
-    mention_intro = template_group["mention_intro"]
-    no_mention_intro = template_group["no_mention_intro"]
-    if issue.reporter_account_id:
-        return [
-            {"type": "mention", "attrs": _mention_attrs(issue)},
-            {"type": "text", "text": mention_intro},
-        ]
-    return [{"type": "text", "text": no_mention_intro}]
-
-
-def _suggestion_paragraph_text(
-    issue: FetchedIssue,
-    recommendation: TriageRecommendation,
-    *,
-    mutations_applied: bool,
-) -> str:
-    template_group = _COMMENT_TEMPLATES["applied" if mutations_applied else "advisory"]
-    if recommendation.recommended_issue_type == "Story":
-        body = template_group["story_action"]
-        return f"- {body}" if mutations_applied else body
-    pri = recommendation.recommended_priority
-    assert pri is not None  # Bug path: schema requires a P0–P4 priority
-    raw = issue.priority
-    if raw is None or not str(raw).strip():
-        from_label = "(not set)"
-    else:
-        from_label = str(raw).strip()
-    to_label = str(pri).strip()
-    body = template_group["priority_action"].format(
-        from_priority=from_label,
-        to_priority=to_label,
-    )
-    return f"- {body}" if mutations_applied else body
-
-
-def _rationale_paragraph_text(
-    recommendation: TriageRecommendation,
-    *,
-    mutations_applied: bool,
-) -> str:
-    template_group = _COMMENT_TEMPLATES["applied" if mutations_applied else "advisory"]
-    return template_group["rationale"].format(reason=recommendation.reason)
-
-
-def _p0_p4_rank(label: str | None) -> int | None:
-    """Map P0..P4 to 0..4 for ordering (lower rank = more urgent). Unknown labels -> None."""
-    if label is None:
-        return None
-    s = str(label).strip().upper()
-    if len(s) != 2 or s[0] != "P" or s[1] not in "01234":
-        return None
-    return int(s[1])
-
-
-def _closing_paragraph_text(
-    issue: FetchedIssue,
-    recommendation: TriageRecommendation,
-    *,
-    mutations_applied: bool,
-) -> str:
-    template_group = _COMMENT_TEMPLATES["applied" if mutations_applied else "advisory"]
-    if recommendation.recommended_issue_type == "Story":
-        return template_group["closing_bug"]
-    raw = issue.priority
-    if raw is None or not str(raw).strip():
-        current = "(not set)"
-    else:
-        current = str(raw).strip()
-    return template_group["closing_priority"].format(current_priority=current)
-
-
-def _adf_text_link(text: str, href: str) -> dict[str, Any]:
-    return {
-        "type": "text",
-        "text": text,
-        "marks": [{"type": "link", "attrs": {"href": href}}],
-    }
-
-
-def _helpful_resources_paragraph_nodes(
-    recommendation: TriageRecommendation,
-) -> list[dict[str, Any]]:
-    confluence = _COMMENT_TEMPLATES["confluence"]
-    nodes: list[dict[str, Any]] = [
-        {"type": "text", "text": confluence["helpful_resources_heading"]},
-    ]
-    if recommendation.recommended_issue_type == "Story":
-        nodes.append(
-            _adf_text_link(
-                confluence["bug_requirements_link_text"],
-                confluence["bug_requirements_url"],
-            ),
-        )
-    else:
-        nodes.append(
-            _adf_text_link(
-                confluence["priority_definitions_link_text"],
-                confluence["priority_definitions_url"],
-            ),
-        )
-    return nodes
-
-
 def _mismatch_comment_body(
     issue: FetchedIssue,
     recommendation: TriageRecommendation,
     *,
     mutations_applied: bool,
 ) -> dict[str, Any]:
-    content: list[dict[str, Any]] = [
-        {
-            "type": "paragraph",
-            "content": _opening_paragraph_nodes(issue, mutations_applied=mutations_applied),
-        }
-    ]
-    content.append(
-        {
-            "type": "paragraph",
-            "content": [
-                {
-                    "type": "text",
-                    "text": _suggestion_paragraph_text(
-                        issue,
-                        recommendation,
-                        mutations_applied=mutations_applied,
-                    ),
-                },
-            ],
-        },
+    """Compatibility wrapper for callers of the former private renderer."""
+    return render_adf_comment(
+        issue,
+        recommendation,
+        mutations_applied=mutations_applied,
     )
-
-    content.append(
-        {
-            "type": "paragraph",
-            "content": [
-                {
-                    "type": "text",
-                    "text": _rationale_paragraph_text(
-                        recommendation,
-                        mutations_applied=mutations_applied,
-                    ),
-                },
-            ],
-        },
-    )
-    content.append(
-        {
-            "type": "paragraph",
-            "content": [
-                {
-                    "type": "text",
-                    "text": _closing_paragraph_text(
-                        issue,
-                        recommendation,
-                        mutations_applied=mutations_applied,
-                    ),
-                },
-            ],
-        },
-    )
-    content.append(
-        {
-            "type": "paragraph",
-            "content": _helpful_resources_paragraph_nodes(recommendation),
-        },
-    )
-    return {"version": 1, "type": "doc", "content": content}
 
 
 def _raise_for_status(response: httpx.Response, action: str) -> None:
@@ -269,35 +76,17 @@ def _raise_for_status(response: httpx.Response, action: str) -> None:
         raise JiraActionExecutorError(msg)
 
 
-def _priority_signal(issue: FetchedIssue, recommendation: TriageRecommendation) -> str | None:
-    """Return ``prioritize``/``deescalate`` when Bug priorities are comparable, else ``None``."""
-    if recommendation.recommended_issue_type != "Bug":
-        return None
-    rec_pri = recommendation.recommended_priority
-    if rec_pri is None:
-        return None
-    orig_rank = _p0_p4_rank(issue.priority)
-    rec_rank = _p0_p4_rank(str(rec_pri))
-    if orig_rank is None or rec_rank is None:
-        return None
-    if rec_rank < orig_rank:
-        return "prioritize"
-    if rec_rank > orig_rank:
-        return "deescalate"
-    return None
-
-
 def _should_post_mismatch_comment(
     *,
     issue: FetchedIssue,
     recommendation: TriageRecommendation,
 ) -> bool:
-    """Comment for likely-story and all priority mismatches (prioritize + de-escalate)."""
-    flags = compute_mismatch_flags(issue, recommendation)
-    if flags.type_mismatch and recommendation.recommended_issue_type == "Story":
-        return True
-    signal = _priority_signal(issue, recommendation)
-    return signal in ("prioritize", "deescalate")
+    """Compatibility wrapper for callers of the former private decision helper."""
+    return build_outcome_decision(
+        issue,
+        recommendation,
+        policy=AutoApplyPolicy(),
+    ).post_comment
 
 
 class JiraTriageActionExecutor:
@@ -378,27 +167,30 @@ class JiraTriageActionExecutor:
             return TriageActionAppliedFlags()
         if issue is None:
             return TriageActionAppliedFlags()
-        labels = _labels_for_outcome(outcome, issue)
-        base_url, headers = _jira_base_and_headers(self._settings)
-        self._apply_labels(base_url, issue_key, labels, headers)
-        should_post_comment = _should_post_mismatch_comment(
-            issue=issue,
-            recommendation=outcome,
+        decision = build_outcome_decision(
+            issue,
+            outcome,
+            policy=AutoApplyPolicy(
+                apply_deescalation=self._auto_apply_deescalation,
+                apply_escalation=self._auto_apply_escalation,
+                apply_bug_to_story=self._auto_apply_bug_to_story,
+            ),
         )
+        base_url, headers = _jira_base_and_headers(self._settings)
+        self._apply_labels(base_url, issue_key, decision.labels, headers)
         applied = TriageActionAppliedFlags()
         mutation_error: JiraActionExecutorError | None = None
         try:
             applied = self._maybe_apply_recommended_mutations(
                 base_url=base_url,
                 issue_key=issue_key,
-                issue=issue,
-                recommendation=outcome,
+                decision=decision,
                 headers=headers,
             )
         except JiraActionExecutorError as exc:
             mutation_error = exc
             applied = TriageActionAppliedFlags()
-        if self._post_mismatch_comments and should_post_comment:
+        if self._post_mismatch_comments and decision.post_comment:
             self._post_comment(
                 base_url,
                 issue_key,
@@ -464,19 +256,12 @@ class JiraTriageActionExecutor:
         *,
         base_url: str,
         issue_key: str,
-        issue: FetchedIssue,
-        recommendation: TriageRecommendation,
+        decision: OutcomeDecision,
         headers: dict[str, str],
     ) -> TriageActionAppliedFlags:
-        flags = compute_mismatch_flags(issue, recommendation)
         applied_type_change = False
         applied_priority_change = False
-        if (
-            self._auto_apply_bug_to_story
-            and flags.type_mismatch
-            and str(issue.issue_type).strip().upper() == "BUG"
-            and recommendation.recommended_issue_type == "Story"
-        ):
+        if decision.apply_bug_to_story:
             self._update_issue_fields(
                 base_url,
                 issue_key,
@@ -484,30 +269,14 @@ class JiraTriageActionExecutor:
                 headers,
             )
             applied_type_change = True
-        priority_signal = _priority_signal(issue, recommendation)
-        should_apply_priority = (
-            flags.priority_mismatch
-            and (
-                (
-                    priority_signal == "deescalate"
-                    and self._auto_apply_deescalation
-                )
-                or (
-                    priority_signal == "prioritize"
-                    and self._auto_apply_escalation
-                )
+        if decision.apply_priority is not None:
+            self._update_issue_fields(
+                base_url,
+                issue_key,
+                {"priority": {"name": decision.apply_priority.to_priority}},
+                headers,
             )
-        )
-        if should_apply_priority:
-            rec_priority = recommendation.recommended_priority
-            if rec_priority is not None:
-                self._update_issue_fields(
-                    base_url,
-                    issue_key,
-                    {"priority": {"name": str(rec_priority).strip()}},
-                    headers,
-                )
-                applied_priority_change = True
+            applied_priority_change = True
         return TriageActionAppliedFlags(
             applied_type_change=applied_type_change,
             applied_priority_change=applied_priority_change,

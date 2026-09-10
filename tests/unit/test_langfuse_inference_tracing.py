@@ -81,6 +81,47 @@ def test_tracer_triage_run_session_noop_without_client() -> None:
 
 
 @pytest.mark.unit
+def test_tracer_triage_run_session_preserves_exception_from_body() -> None:
+    client = MagicMock()
+    tracer = LangfuseInferenceTracer(client)
+    original_error = ValueError("triage failed")
+
+    with patch(
+        "triage_service.observability.langfuse_inference_tracing.propagate_attributes"
+    ) as propagate:
+        propagate.return_value.__enter__ = MagicMock(return_value=None)
+        propagate.return_value.__exit__ = MagicMock(return_value=False)
+        with pytest.raises(ValueError) as exc_info:
+            with tracer.triage_run_session(run_id="run-42"):
+                raise original_error
+
+    assert exc_info.value is original_error
+
+
+@pytest.mark.unit
+def test_tracer_triage_issue_trace_preserves_exception_from_body() -> None:
+    @contextmanager
+    def root_ctx(**kwargs: Any) -> Any:
+        _ = kwargs
+        yield MagicMock()
+
+    client = MagicMock()
+    client.start_as_current_observation.return_value = root_ctx()
+    tracer = LangfuseInferenceTracer(client)
+    original_error = ValueError("apply failed")
+
+    with pytest.raises(ValueError) as exc_info:
+        with tracer.triage_issue_trace(
+            run_id="run-42",
+            issue_key="TJC-1",
+            project="TJC",
+        ):
+            raise original_error
+
+    assert exc_info.value is original_error
+
+
+@pytest.mark.unit
 def test_stable_langfuse_trace_id_non_uuid_is_32_hex_chars() -> None:
     rid = "benchmark-run-20250514"
     out = stable_langfuse_trace_id(rid)

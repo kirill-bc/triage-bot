@@ -15,7 +15,7 @@ Primary goal: keep triage reliable, observable, and easy to operate while preser
 - Zendesk linked-ticket enrichment is implemented end-to-end (fetch, resolution summarization, dedupe, Zendesk-only vision, OAuth client_credentials with 401 retry, observability); benchmark stratification for Zendesk context is still open in `TODO.md` §11.
 - Triage analytics decision emission is implemented (`ANALYTICS_DASHBOARD_URL` fire-and-forget POST after successful triage); Langfuse decision-row tooling in `scripts/build_dashboard_seed.py` subcommands `backfill`, `catchup` (seed → `catchup.json`, idempotent on `run_id`), and `enrich` for dashboard bootstrap.
 - Concurrency is bounded in-process (no message broker): a semaphore on `POST /triage` and a bounded worker pool in `triage_bulk_cli.py`; see `TODO.md` §12.
-- Integration-test expansion remains deferred in `TODO.md` §13.
+- Integration-test expansion remains deferred in `TODO.md` §16.
 
 ## Non-Negotiable Workflow
 
@@ -100,8 +100,10 @@ Reference `.env.example` for the full set.
 
 Highest-priority unfinished area in `TODO.md`:
 
+- **§14 Jira Automation callback delivery:** service-side work is done (`TRIAGE_JIRA_APPLY_MODE=automation_webhook` renders the outcome payload and POSTs it to Rule B). Remaining: the Jira-side Rule B build + smoke run, then retiring the `direct` path.
+- **§15 Re-triage on priority change:** blocked on §14's Rule B (automation-actor loop suppression and entity-property last-run state).
 - **§11 Post-MVP:** benchmark / bulk-triage stratification for issues with vs without linked Zendesk context (and Zendesk-only images); Langfuse root trace cost display; optional image-context inline placement and post-triage formatting advisory.
-- **§13:** integration tests (deferred until post-deploy stabilization).
+- **§16:** integration tests (deferred until post-deploy stabilization).
 
 Zendesk enrichment remains soft-fail-safe: fetch/summary/vision failures must not abort triage.
 
@@ -109,6 +111,7 @@ Zendesk enrichment remains soft-fail-safe: fetch/summary/vision failures must no
 
 - Keep sequential logic intact: Story path skips priority inference.
 - Keep Jira mutations advisory only (labels/comments), no automatic field mutation.
+- Outcome delivery is transport-pluggable: decisions and comment copy live in `adapters/triage_outcome_rendering.py`, never in an executor. Direct Jira writes and the Automation callback must stay behaviorally identical.
 - Preserve `run_id` propagation for API, logs, and traces.
 - Prefer narrow, high-signal tests over brittle mock-heavy coverage.
 - Avoid introducing coupling across package boundaries that breaks the architecture direction.

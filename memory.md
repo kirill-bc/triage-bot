@@ -1,5 +1,62 @@
 # Project memory
 
+## 2026-09-09 (§14 Jira Automation callback delivery — Phase A, service side)
+
+- **Shape:** `TRIAGE_JIRA_APPLY_MODE` picks the outcome transport — `direct` (existing Jira REST
+  writes, default/rollback) or `automation_webhook`, where `AutomationWebhookTriageActionExecutor`
+  (`adapters/automation_webhook_executor.py`) POSTs a versioned payload to a Jira Automation
+  incoming webhook that applies labels/comment/field edits as the Automation actor. Forced by
+  Automation's fixed ~30s "wait for response" timeout: trigger rules stay fire-and-forget and the
+  service calls back when triage finishes.
+- **Decision boundary:** both executors are thin transports over
+  `adapters/triage_outcome_rendering.py` (labels, comment gate, auto-apply decision, ADF **and**
+  plain-text rendering). The Automation rule is a dumb applier — it maps `{{webhookData.*}}` onto
+  actions and re-derives nothing. Payload: `payload_version`, `run_id`, `issue_key`, `project`,
+  `source`, `recommendation`, `labels`, `comment {post, body}`,
+  `actions {apply_bug_to_story, apply_priority {from,to}}`.
+- **Semantics shift to remember:** returned `TriageActionAppliedFlags` (and therefore the
+  `applied_*` analytics columns) mean **apply directed**, not apply confirmed — the service no
+  longer observes the write. Rule B's audit log, correlated by `run_id`, is the record of the
+  applied result. Mention encoding also differs: ADF `mention` node (direct) vs
+  `[~accountid:...]` plain text (automation).
+- **Wiring/validation:** `_build_action_executor` in `triage_handler.py` picks NoOp when
+  `apply_to_jira=False`, then webhook mode (no Jira write creds needed), then direct when
+  `JIRA_CLOUD_ID` + `JIRA_USER_EMAIL` are set. `AppSettings` rejects `automation_webhook` without
+  `JIRA_AUTOMATION_WEBHOOK_URL` at startup. New `outcome_delivered` audit event (mode, delivered,
+  http_status, attempts, failure) separates "triage failed" from "callback failed" from "Rule B
+  failed"; its validator requires `failure` exactly when `delivered` is false.
+- **Test-suite trap (cost me a red herring):** `load_settings()` calls `load_dotenv`, which writes
+  `.env` values into `os.environ` permanently, so settings tests leak env across tests. New
+  mode tests use `_clear_apply_mode_env(monkeypatch)` before writing their `.env`.
+- **Still open (ops):** Rule B does not exist yet in Jira. Build it per
+  `docs/ops/jira_automation_callback.md`, run the smoke checklist, commit the exported rule JSON.
+  Known caveat to watch: `triagebot-reviewed` now lands asynchronously, so the scheduled-scan JQL
+  can re-match an issue (and re-spend inference) in the window before Rule B executes.
+- **Manual callback CLI:** `scripts/run_webhook_triage_cli.py ISSUE-KEY` forces
+  `TRIAGE_JIRA_APPLY_MODE=automation_webhook` for one invocation and otherwise reuses the manual
+  CLI pipeline. URL/token stay in `.env` or process environment rather than command arguments;
+  `--auto-apply-deescalation`, `--auto-apply-escalation`, and
+  `--auto-apply-bug-to-story` are injected by default so Rule B mutation branches fire.
+- **Per-project Rule B endpoints:** `POST /triage` accepts optional `jira_automation_webhook_url`
+  in the JSON body and `X-Jira-Automation-Webhook-Token` as a header (not a body field, so inbound
+  debug logging cannot print it). They override the matching env vars for that callback.
+  Automation rules are project-scoped, so each Rule A carries its own endpoint instead of the env
+  holding one pair per project. The token is never echoed/logged/audited. A payload URL is
+  host-pinned to `ALLOWED_WEBHOOK_HOSTS` in `adapters/automation_webhook_executor.py` (https +
+  Atlassian Automation hosts) and rejected with `422` otherwise; env URLs stay trusted so
+  tunnels/stubs still work. Because the URL can arrive per request, the settings-level "webhook
+  mode requires the env URL" startup guard was removed — the request-time check in
+  `_build_action_executor` is now the gate and fires before model spend.
+- **Hybrid migration:** authenticated `POST /triage` accepts optional
+  `jira_apply_mode: direct|automation_webhook`. Omission uses the service env default. Keep
+  `TRIAGE_JIRA_APPLY_MODE=direct` and add `"jira_apply_mode":"automation_webhook"` only to
+  migrated Rule A payloads; each API request builds its own executor, so overrides cannot leak
+  between concurrent runs. A webhook override without `JIRA_AUTOMATION_WEBHOOK_URL` fails during
+  handler construction, before Jira fetch/model spend.
+- **Gates:** `.venv/bin/pytest -m lint` (5 passed), `.venv/bin/mypy .` (120 files),
+  `.venv/bin/pytest -m "unit or integration"` (**703 passed**, 1 skipped `OPENROUTER_LIVE_SMOKE`,
+  6 deselected).
+
 ## 2026-08-20 (Langfuse v4 project migration — code-only)
 
 - **Scope:** ran the Langfuse v4 project-migration workflow in code-only mode (no

@@ -8,6 +8,7 @@ local runner.
 from __future__ import annotations
 
 import uuid
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -75,6 +76,181 @@ def test_post_triage_returns_200_when_token_valid(client: TestClient) -> None:
     payload = {"issue_key": "TJC-9", "project": "TJC", "source": "manual_trigger"}
     response = client.post("/triage", json=payload, headers=_auth_headers())
     assert response.status_code == 200
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("request_mode", "expected_mode"),
+    [
+        ("automation_webhook", "automation_webhook"),
+        ("direct", "direct"),
+        (None, None),
+    ],
+)
+def test_post_triage_passes_optional_apply_mode_to_default_handler(
+    monkeypatch: pytest.MonkeyPatch,
+    request_mode: str | None,
+    expected_mode: str | None,
+) -> None:
+    monkeypatch.setenv("JIRA_API_KEY", "jira-token")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
+    observed: list[str | None] = []
+
+    def _build(
+        *,
+        jira_apply_mode: str | None = None,
+        jira_automation_webhook_token: str | None = None,
+        jira_automation_webhook_url: str | None = None,
+    ) -> _StubRunner:
+        _ = (jira_automation_webhook_token, jira_automation_webhook_url)
+        observed.append(jira_apply_mode)
+        return _StubRunner()
+
+    payload: dict[str, str] = {
+        "issue_key": "TJC-9",
+        "project": "TJC",
+        "source": "bug_created",
+    }
+    if request_mode is not None:
+        payload["jira_apply_mode"] = request_mode
+
+    with patch(
+        "triage_service.api.triage_api.build_default_triage_handler",
+        side_effect=_build,
+    ):
+        app_client = TestClient(create_app())
+        response = app_client.post("/triage", json=payload, headers=_auth_headers())
+
+    assert response.status_code == 200
+    assert observed == [expected_mode]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "bad_url",
+    [
+        "https://evil.example.com/hooks/abc",
+        "http://automation.atlassian.com/pro/hooks/abc",
+        "not-a-url",
+    ],
+)
+def test_post_triage_rejects_webhook_url_outside_atlassian_hosts(
+    client: TestClient,
+    bad_url: str,
+) -> None:
+    """Reject a hostile callback target before any inference spend."""
+    response = client.post(
+        "/triage",
+        json={
+            "issue_key": "TJC-9",
+            "project": "TJC",
+            "source": "bug_created",
+            "jira_apply_mode": "automation_webhook",
+            "jira_automation_webhook_url": bad_url,
+        },
+        headers=_auth_headers(),
+    )
+
+    assert response.status_code == 422
+
+
+@pytest.mark.unit
+def test_post_triage_forwards_webhook_token_from_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JIRA_API_KEY", "jira-token")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
+    observed: list[dict[str, object]] = []
+
+    def _build(**kwargs: object) -> _StubRunner:
+        observed.append(kwargs)
+        return _StubRunner()
+
+    with patch(
+        "triage_service.api.triage_api.build_default_triage_handler",
+        side_effect=_build,
+    ):
+        app_client = TestClient(create_app())
+        response = app_client.post(
+            "/triage",
+            json={
+                "issue_key": "TJC-9",
+                "project": "TJC",
+                "source": "bug_created",
+                "jira_apply_mode": "automation_webhook",
+                "jira_automation_webhook_url": (
+                    "https://automation.atlassian.com/pro/hooks/per-project"
+                ),
+            },
+            headers={
+                **_auth_headers(),
+                "X-Jira-Automation-Webhook-Token": "per-project-token",
+            },
+        )
+
+    assert response.status_code == 200
+    assert observed == [
+        {
+            "jira_apply_mode": "automation_webhook",
+            "jira_automation_webhook_token": "per-project-token",
+            "jira_automation_webhook_url": (
+                "https://automation.atlassian.com/pro/hooks/per-project"
+            ),
+        },
+    ]
+    # The forwarded secret must never be echoed back to the caller.
+    assert "per-project-token" not in response.text
+
+
+@pytest.mark.unit
+def test_post_triage_ignores_webhook_token_in_json_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rule B secrets belong in X-Jira-Automation-Webhook-Token, not the JSON body."""
+    monkeypatch.setenv("JIRA_API_KEY", "jira-token")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
+    observed: list[dict[str, object]] = []
+
+    def _build(**kwargs: object) -> _StubRunner:
+        observed.append(kwargs)
+        return _StubRunner()
+
+    with patch(
+        "triage_service.api.triage_api.build_default_triage_handler",
+        side_effect=_build,
+    ):
+        app_client = TestClient(create_app())
+        response = app_client.post(
+            "/triage",
+            json={
+                "issue_key": "TJC-9",
+                "project": "TJC",
+                "source": "bug_created",
+                "jira_apply_mode": "automation_webhook",
+                "jira_automation_webhook_token": "body-token-must-be-ignored",
+            },
+            headers=_auth_headers(),
+        )
+
+    assert response.status_code == 200
+    assert observed[0]["jira_automation_webhook_token"] is None
+    assert "body-token-must-be-ignored" not in response.text
+
+
+@pytest.mark.unit
+def test_post_triage_rejects_unknown_apply_mode(client: TestClient) -> None:
+    response = client.post(
+        "/triage",
+        json={
+            "issue_key": "TJC-9",
+            "project": "TJC",
+            "source": "bug_created",
+            "jira_apply_mode": "carrier_pigeon",
+        },
+        headers=_auth_headers(),
+    )
+
+    assert response.status_code == 422
 
 
 @pytest.mark.unit

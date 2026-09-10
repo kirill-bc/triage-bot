@@ -97,7 +97,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Run full triage for one issue (source=manual_trigger; "
-            "no Jira Automation required)."
+            "deliver through the configured Jira outcome path)."
         ),
     )
     parser.add_argument(
@@ -128,23 +128,23 @@ def main(argv: list[str] | None = None) -> int:
         "--auto-apply-deescalation",
         action="store_true",
         help=(
-            "When writing to Jira, apply less-urgent priority recommendations directly "
-            "instead of advisory-only comments."
+            "Apply less-urgent priority recommendations through the configured Jira "
+            "outcome path instead of advisory-only comments."
         ),
     )
     parser.add_argument(
         "--auto-apply-escalation",
         action="store_true",
         help=(
-            "When writing to Jira, apply more-urgent priority recommendations directly "
-            "instead of advisory-only comments."
+            "Apply more-urgent priority recommendations through the configured Jira "
+            "outcome path instead of advisory-only comments."
         ),
     )
     parser.add_argument(
         "--auto-apply-bug-to-story",
         action="store_true",
         help=(
-            "When writing to Jira, apply Bug -> Story recommendation directly "
+            "Apply Bug -> Story recommendations through the configured Jira outcome path "
             "instead of advisory-only comments."
         ),
     )

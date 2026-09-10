@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import sys
 import uuid
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
@@ -130,6 +131,35 @@ def langfuse_session_id(run_id: str) -> str:
     return trimmed[:_LANGFUSE_SESSION_ID_MAX_LEN]
 
 
+@contextmanager
+def _failure_safe_context(
+    context_factory: Callable[[], Any],
+    *,
+    warning: str,
+) -> Generator[None, None, None]:
+    """Swallow tracing failures without masking exceptions from the wrapped body."""
+    try:
+        context = context_factory()
+        context.__enter__()
+    except Exception:
+        LOGGER.warning(warning, exc_info=True)
+        yield
+        return
+    try:
+        yield
+    except BaseException:
+        try:
+            context.__exit__(*sys.exc_info())
+        except Exception:
+            LOGGER.warning(warning, exc_info=True)
+        raise
+    else:
+        try:
+            context.__exit__(None, None, None)
+        except Exception:
+            LOGGER.warning(warning, exc_info=True)
+
+
 class LangfuseInferenceTracer:
     """Records triage root span plus per-step generation metadata (failure-safe)."""
 
@@ -163,11 +193,10 @@ class LangfuseInferenceTracer:
         if self._client is None:
             yield
             return
-        try:
-            with propagate_attributes(session_id=langfuse_session_id(run_id)):
-                yield
-        except Exception:
-            LOGGER.warning("Langfuse triage_run session propagation failed", exc_info=True)
+        with _failure_safe_context(
+            lambda: propagate_attributes(session_id=langfuse_session_id(run_id)),
+            warning="Langfuse triage_run session propagation failed",
+        ):
             yield
 
     @contextmanager
@@ -181,8 +210,9 @@ class LangfuseInferenceTracer:
         if self._client is None:
             yield
             return
-        try:
-            with self._client.start_as_current_observation(
+        client = self._client
+        with _failure_safe_context(
+            lambda: client.start_as_current_observation(
                 name="triage_issue_pipeline",
                 as_type="span",
                 metadata={
@@ -191,10 +221,9 @@ class LangfuseInferenceTracer:
                     "project": project,
                     "operation": "triage_issue",
                 },
-            ):
-                yield
-        except Exception:
-            LOGGER.warning("Langfuse triage_issue span failed", exc_info=True)
+            ),
+            warning="Langfuse triage_issue span failed",
+        ):
             yield
 
     @contextmanager

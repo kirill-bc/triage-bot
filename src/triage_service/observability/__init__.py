@@ -2,6 +2,7 @@
 
 from triage_service.observability.audit_events import (
     ClassificationCompletedAuditEvent,
+    OutcomeDeliveredAuditEvent,
     PriorityCompletedAuditEvent,
     TriageAuditEvent,
     TriageAuditFailureCategory,
@@ -41,6 +42,7 @@ __all__ = [
     "LangfuseAuditStore",
     "LangfuseInferenceTracer",
     "NoOpAuditStore",
+    "OutcomeDeliveredAuditEvent",
     "PriorityCompletedAuditEvent",
     "StructuredLoggerAuditStore",
     "TriageAuditEvent",

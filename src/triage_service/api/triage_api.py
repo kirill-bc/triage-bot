@@ -18,13 +18,14 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, status
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from typing_extensions import Self
 
-from triage_service.core.settings import AppSettings, load_settings
+from triage_service.adapters.automation_webhook_executor import validate_request_webhook_url
+from triage_service.core.settings import AppSettings, JiraApplyMode, load_settings
 from triage_service.core.triage_fallback import TriageFailure
 from triage_service.core.triage_handler import TriageRunner, build_default_triage_handler
 from triage_service.core.triage_recommendation_parser import TriageRecommendation
@@ -91,6 +92,28 @@ class TriageRequest(BaseModel):
             "or manual_trigger (local runner)."
         ),
     )
+    jira_apply_mode: JiraApplyMode | None = Field(
+        default=None,
+        description=(
+            "Optional per-request Jira outcome delivery mode. Omit to use "
+            "TRIAGE_JIRA_APPLY_MODE from the service environment."
+        ),
+    )
+    jira_automation_webhook_url: str | None = Field(
+        default=None,
+        description=(
+            "Optional callback URL for this project's Automation rule. Must be an https URL on "
+            "an Atlassian Automation host. Omit to use JIRA_AUTOMATION_WEBHOOK_URL from the "
+            "service environment."
+        ),
+    )
+
+    @field_validator("jira_automation_webhook_url")
+    @classmethod
+    def _check_automation_webhook_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return validate_request_webhook_url(value)
 
 
 class ObservabilityHealth(BaseModel):
@@ -247,7 +270,6 @@ def _run_triage_within_capacity(
 
 def create_app(*, triage_handler_factory: Callable[[], TriageRunner] | None = None) -> FastAPI:
     """Build the FastAPI app. Override ``triage_handler_factory`` in tests."""
-    factory: Callable[[], TriageRunner] = triage_handler_factory or build_default_triage_handler
     max_concurrent_runs, concurrency_wait_seconds = _concurrency_limits_from_settings()
     triage_slots = threading.Semaphore(max_concurrent_runs)
 
@@ -257,8 +279,21 @@ def create_app(*, triage_handler_factory: Callable[[], TriageRunner] | None = No
         LOGGER.info("triage_api_started")
         yield
 
-    def get_triage_runner() -> TriageRunner:
-        return factory()
+    def get_triage_runner(
+        body: TriageRequest,
+        x_jira_automation_webhook_token: str | None = Header(
+            default=None,
+            alias="X-Jira-Automation-Webhook-Token",
+        ),
+    ) -> TriageRunner:
+        if triage_handler_factory is not None:
+            return triage_handler_factory()
+        token = (x_jira_automation_webhook_token or "").strip() or None
+        return build_default_triage_handler(
+            jira_apply_mode=body.jira_apply_mode,
+            jira_automation_webhook_token=token,
+            jira_automation_webhook_url=body.jira_automation_webhook_url,
+        )
 
     def require_triage_token(
         x_triage_token: str | None = Header(default=None, alias="X-Triage-Token"),
