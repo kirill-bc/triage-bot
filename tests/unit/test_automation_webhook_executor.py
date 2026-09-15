@@ -10,8 +10,14 @@ import httpx
 import pytest
 
 from triage_service.adapters.automation_webhook_executor import (
+    REDACTED_URL_MARKER,
     AutomationCallbackError,
     AutomationWebhookTriageActionExecutor,
+    WebhookCallbackConfigError,
+    configured_webhook_config_error,
+    redacted_webhook_url,
+    resolve_webhook_callback_credentials,
+    validate_request_webhook_url,
 )
 from triage_service.adapters.jira_issue_fetcher import FetchedIssue
 from triage_service.core.settings import AppSettings
@@ -22,6 +28,25 @@ from triage_service.observability.audit_events import TriageAuditEvent
 _WEBHOOK_URL = (
     "https://api-private.atlassian.com/automation/webhooks/jira/cloud/secret-hook-id"
 )
+_WEBHOOK_TOKEN = "automation-secret"
+
+
+def _executor(
+    settings: AppSettings,
+    *,
+    client: httpx.Client,
+    webhook_url: str = _WEBHOOK_URL,
+    webhook_token: str = _WEBHOOK_TOKEN,
+    **kwargs: Any,
+) -> AutomationWebhookTriageActionExecutor:
+    """Build an executor with the already-resolved callback pair the constructor now requires."""
+    return AutomationWebhookTriageActionExecutor(
+        settings,
+        client=client,
+        webhook_url=webhook_url,
+        webhook_token=webhook_token,
+        **kwargs,
+    )
 
 
 class _RecordingAuditStore:
@@ -40,7 +65,7 @@ def _settings(monkeypatch: pytest.MonkeyPatch, **env: str) -> AppSettings:
     monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
     monkeypatch.setenv("TRIAGE_JIRA_APPLY_MODE", "automation_webhook")
     monkeypatch.setenv("JIRA_AUTOMATION_WEBHOOK_URL", _WEBHOOK_URL)
-    monkeypatch.setenv("JIRA_AUTOMATION_WEBHOOK_TOKEN", "automation-secret")
+    monkeypatch.setenv("JIRA_AUTOMATION_WEBHOOK_TOKEN", _WEBHOOK_TOKEN)
     for key in (
         "TRIAGE_AUTO_APPLY_DEESCALATION",
         "TRIAGE_AUTO_APPLY_ESCALATION",
@@ -90,7 +115,7 @@ def test_executor_posts_versioned_payload_with_token_header(
 
     transport = httpx.MockTransport(handler)
     with httpx.Client(transport=transport) as client:
-        executor = AutomationWebhookTriageActionExecutor(settings, client=client)
+        executor = _executor(settings, client=client)
         executor.apply_triage_outcome(
             issue=_issue(priority="P1", reporter_account_id="account-123"),
             issue_key="TJC-1",
@@ -134,7 +159,7 @@ def test_executor_redacts_webhook_path_from_outbound_log(
 
     transport = httpx.MockTransport(lambda request: httpx.Response(200, request=request))
     with httpx.Client(transport=transport) as client:
-        executor = AutomationWebhookTriageActionExecutor(settings, client=client)
+        executor = _executor(settings, client=client)
         executor.apply_triage_outcome(
             issue=_issue(),
             issue_key="TJC-1",
@@ -164,7 +189,7 @@ def test_executor_marks_comment_not_posted_when_no_mismatch(
 
     transport = httpx.MockTransport(handler)
     with httpx.Client(transport=transport) as client:
-        executor = AutomationWebhookTriageActionExecutor(settings, client=client)
+        executor = _executor(settings, client=client)
         executor.apply_triage_outcome(
             issue=_issue(),
             issue_key="TJC-1",
@@ -192,7 +217,7 @@ def test_executor_marks_comment_not_posted_when_comments_disabled(
 
     transport = httpx.MockTransport(handler)
     with httpx.Client(transport=transport) as client:
-        executor = AutomationWebhookTriageActionExecutor(
+        executor = _executor(
             settings,
             client=client,
             post_mismatch_comments=False,
@@ -232,7 +257,7 @@ def test_executor_skips_callback_without_applicable_outcome(
 
     transport = httpx.MockTransport(handler)
     with httpx.Client(transport=transport) as client:
-        executor = AutomationWebhookTriageActionExecutor(settings, client=client)
+        executor = _executor(settings, client=client)
         applied = executor.apply_triage_outcome(
             issue=None if outcome is None else _issue(),
             issue_key="TJC-1",
@@ -260,7 +285,7 @@ def test_executor_directs_priority_change_when_escalation_enabled(
 
     transport = httpx.MockTransport(handler)
     with httpx.Client(transport=transport) as client:
-        executor = AutomationWebhookTriageActionExecutor(settings, client=client)
+        executor = _executor(settings, client=client)
         applied = executor.apply_triage_outcome(
             issue=_issue(priority="P3"),
             issue_key="TJC-1",
@@ -292,7 +317,7 @@ def test_executor_directs_bug_to_story_when_flag_enabled(
 
     transport = httpx.MockTransport(handler)
     with httpx.Client(transport=transport) as client:
-        executor = AutomationWebhookTriageActionExecutor(settings, client=client)
+        executor = _executor(settings, client=client)
         applied = executor.apply_triage_outcome(
             issue=_issue(issue_type="Bug"),
             issue_key="TJC-1",
@@ -325,7 +350,7 @@ def test_executor_raises_automation_callback_error_on_http_error(
 
     transport = httpx.MockTransport(lambda _r: httpx.Response(400, text="bad payload"))
     with httpx.Client(transport=transport) as client:
-        executor = AutomationWebhookTriageActionExecutor(settings, client=client)
+        executor = _executor(settings, client=client)
         with pytest.raises(AutomationCallbackError, match="400"):
             executor.apply_triage_outcome(
                 issue=_issue(),
@@ -338,20 +363,15 @@ def test_executor_raises_automation_callback_error_on_http_error(
 
 
 @pytest.mark.unit
-def test_executor_raises_automation_callback_error_when_url_missing(
+def test_executor_raises_automation_callback_error_when_injected_url_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
-    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
-    monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
-    monkeypatch.delenv("JIRA_AUTOMATION_WEBHOOK_URL", raising=False)
-    monkeypatch.setenv("TRIAGE_JIRA_APPLY_MODE", "direct")
-    settings = AppSettings()
-
+    """Last-mile check: the resolver should have rejected this before construction."""
+    settings = _settings(monkeypatch)
     transport = httpx.MockTransport(lambda _r: httpx.Response(200, json={}))
     with httpx.Client(transport=transport) as client:
-        executor = AutomationWebhookTriageActionExecutor(settings, client=client)
-        with pytest.raises(AutomationCallbackError, match="JIRA_AUTOMATION_WEBHOOK_URL"):
+        executor = _executor(settings, client=client, webhook_url="")
+        with pytest.raises(AutomationCallbackError, match="must not be empty"):
             executor.apply_triage_outcome(
                 issue=_issue(),
                 issue_key="TJC-1",
@@ -381,7 +401,7 @@ def test_executor_does_not_retry_callback_on_transient_http(
     transport = httpx.MockTransport(handler)
     audit_store = _RecordingAuditStore()
     with httpx.Client(transport=transport) as client:
-        executor = AutomationWebhookTriageActionExecutor(
+        executor = _executor(
             settings,
             client=client,
             audit_store=audit_store,
@@ -412,7 +432,7 @@ def test_executor_records_outcome_delivered_audit_event_on_success(
 
     transport = httpx.MockTransport(lambda _r: httpx.Response(200, json={}))
     with httpx.Client(transport=transport) as client:
-        executor = AutomationWebhookTriageActionExecutor(
+        executor = _executor(
             settings,
             client=client,
             audit_store=audit_store,
@@ -449,7 +469,7 @@ def test_executor_records_outcome_delivered_audit_event_on_failure(
 
     transport = httpx.MockTransport(lambda _r: httpx.Response(400, text="bad payload"))
     with httpx.Client(transport=transport) as client:
-        executor = AutomationWebhookTriageActionExecutor(
+        executor = _executor(
             settings,
             client=client,
             audit_store=audit_store,
@@ -473,10 +493,10 @@ def test_executor_records_outcome_delivered_audit_event_on_failure(
 
 
 @pytest.mark.unit
-def test_executor_prefers_request_url_over_settings_url(
+def test_executor_posts_to_injected_webhook_url(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Project-scoped Rule B rules each have their own webhook URL."""
+    """The executor uses the resolved pair it was given, not a settings lookup."""
     settings = _settings(monkeypatch)
     per_project_url = "https://api-private.atlassian.com/automation/webhooks/jira/a/one/two"
     requests: list[httpx.Request] = []
@@ -487,11 +507,7 @@ def test_executor_prefers_request_url_over_settings_url(
 
     transport = httpx.MockTransport(handler)
     with httpx.Client(transport=transport) as client:
-        executor = AutomationWebhookTriageActionExecutor(
-            settings,
-            client=client,
-            webhook_url=per_project_url,
-        )
+        executor = _executor(settings, client=client, webhook_url=per_project_url)
         executor.apply_triage_outcome(
             issue=_issue(),
             issue_key="TJC-1",
@@ -514,11 +530,11 @@ def test_executor_prefers_request_url_over_settings_url(
         "https://automation.atlassian.com.evil.example.com/hooks/abc",
     ],
 )
-def test_executor_rejects_request_url_outside_atlassian_hosts(
+def test_executor_rejects_injected_url_outside_atlassian_hosts(
     monkeypatch: pytest.MonkeyPatch,
     bad_url: str,
 ) -> None:
-    """A caller-supplied URL must not aim the callback POST at an arbitrary host."""
+    """Last-mile host check still refuses a hostile callback target."""
     settings = _settings(monkeypatch)
     requests: list[httpx.Request] = []
 
@@ -528,12 +544,8 @@ def test_executor_rejects_request_url_outside_atlassian_hosts(
 
     transport = httpx.MockTransport(handler)
     with httpx.Client(transport=transport) as client:
-        executor = AutomationWebhookTriageActionExecutor(
-            settings,
-            client=client,
-            webhook_url=bad_url,
-        )
-        with pytest.raises(AutomationCallbackError):
+        executor = _executor(settings, client=client, webhook_url=bad_url)
+        with pytest.raises(AutomationCallbackError) as exc_info:
             executor.apply_triage_outcome(
                 issue=_issue(),
                 issue_key="TJC-1",
@@ -544,13 +556,14 @@ def test_executor_rejects_request_url_outside_atlassian_hosts(
             )
 
     assert requests == []
+    assert bad_url not in str(exc_info.value)
+    assert "evil" not in str(exc_info.value)
 
 
 @pytest.mark.unit
-def test_executor_prefers_request_token_over_settings_secret(
+def test_executor_sends_injected_webhook_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Per-project Rule B secrets travel in the triage request, not the service env."""
     settings = _settings(monkeypatch)
     requests: list[httpx.Request] = []
 
@@ -560,7 +573,7 @@ def test_executor_prefers_request_token_over_settings_secret(
 
     transport = httpx.MockTransport(handler)
     with httpx.Client(transport=transport) as client:
-        executor = AutomationWebhookTriageActionExecutor(
+        executor = _executor(
             settings,
             client=client,
             webhook_token="per-project-token",
@@ -578,60 +591,137 @@ def test_executor_prefers_request_token_over_settings_secret(
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("request_token", [None, "", "   "])
-def test_executor_falls_back_to_settings_token_when_request_token_absent(
-    monkeypatch: pytest.MonkeyPatch,
-    request_token: str | None,
-) -> None:
-    settings = _settings(monkeypatch)
-    requests: list[httpx.Request] = []
+def test_validate_request_webhook_url_messages_do_not_echo_the_secret() -> None:
+    secret = "https://evil.example.com/automation/webhooks/jira/cloud/secret-hook-id"
+    with pytest.raises(ValueError, match="host is not allowed") as exc_info:
+        validate_request_webhook_url(secret)
+    assert "secret-hook-id" not in str(exc_info.value)
+    assert "evil.example.com" not in str(exc_info.value)
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        return httpx.Response(200, json={})
+    with pytest.raises(ValueError, match="must use https"):
+        validate_request_webhook_url("http://api-private.atlassian.com/hooks/secret")
 
-    transport = httpx.MockTransport(handler)
-    with httpx.Client(transport=transport) as client:
-        executor = AutomationWebhookTriageActionExecutor(
-            settings,
-            client=client,
-            webhook_token=request_token,
-        )
-        executor.apply_triage_outcome(
-            issue=_issue(),
-            issue_key="TJC-1",
-            project="TJC",
-            source="bug_created",
-            outcome=_recommendation(),
-            run_id="run-1",
+    with pytest.raises(ValueError, match="malformed port"):
+        validate_request_webhook_url(
+            "https://api-private.atlassian.com:notaport/hooks/secret",
         )
 
-    assert requests[0].headers["X-Automation-Webhook-Token"] == "automation-secret"
+    with pytest.raises(ValueError, match="port 8443"):
+        validate_request_webhook_url(
+            "https://api-private.atlassian.com:8443/hooks/secret",
+        )
 
 
 @pytest.mark.unit
-def test_executor_omits_token_header_when_token_unset(
+def test_redacted_webhook_url_keeps_origin_only_for_allowed_hosts() -> None:
+    assert redacted_webhook_url(_WEBHOOK_URL) == "https://api-private.atlassian.com"
+    assert redacted_webhook_url("https://host%2Fsecret-hook-id") == REDACTED_URL_MARKER
+    assert redacted_webhook_url("https://evil.example.com/hooks/abc") == REDACTED_URL_MARKER
+    assert redacted_webhook_url("not a url") == REDACTED_URL_MARKER
+
+
+@pytest.mark.unit
+def test_resolve_webhook_callback_credentials_uses_complete_request_pair(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _settings(monkeypatch)
-    monkeypatch.delenv("JIRA_AUTOMATION_WEBHOOK_TOKEN", raising=False)
-    settings = AppSettings()
-    requests: list[httpx.Request] = []
+    settings = _settings(monkeypatch)
+    request_url = "https://api-private.atlassian.com/automation/webhooks/jira/cloud/per-project"
+    credentials = resolve_webhook_callback_credentials(
+        request_url=request_url,
+        request_token="per-project-token",
+        settings=settings,
+    )
+    assert credentials.url == request_url
+    assert credentials.token == "per-project-token"
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        return httpx.Response(200, json={})
 
-    transport = httpx.MockTransport(handler)
-    with httpx.Client(transport=transport) as client:
-        executor = AutomationWebhookTriageActionExecutor(settings, client=client)
-        executor.apply_triage_outcome(
-            issue=_issue(),
-            issue_key="TJC-1",
-            project="TJC",
-            source="bug_created",
-            outcome=_recommendation(),
-            run_id="run-1",
+@pytest.mark.unit
+def test_resolve_webhook_callback_credentials_uses_settings_pair_when_request_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(monkeypatch)
+    credentials = resolve_webhook_callback_credentials(
+        request_url=None,
+        request_token=None,
+        settings=settings,
+    )
+    assert credentials.url == _WEBHOOK_URL
+    assert credentials.token == _WEBHOOK_TOKEN
+
+
+@pytest.mark.unit
+def test_resolve_webhook_callback_credentials_does_not_mix_request_and_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(monkeypatch)
+    with pytest.raises(WebhookCallbackConfigError) as token_only:
+        resolve_webhook_callback_credentials(
+            request_url=None,
+            request_token="per-project-token",
+            settings=settings,
         )
+    assert token_only.value.code == "request_token_without_url"
 
-    assert "X-Automation-Webhook-Token" not in requests[0].headers
+    with pytest.raises(WebhookCallbackConfigError) as url_only:
+        resolve_webhook_callback_credentials(
+            request_url=_WEBHOOK_URL,
+            request_token=None,
+            settings=settings,
+        )
+    assert url_only.value.code == "request_url_without_token"
+
+
+@pytest.mark.unit
+def test_resolve_webhook_callback_credentials_requires_a_complete_pair(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
+    monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
+    monkeypatch.setenv("JIRA_AUTOMATION_WEBHOOK_URL", "")
+    monkeypatch.setenv("JIRA_AUTOMATION_WEBHOOK_TOKEN", "")
+    settings = AppSettings()
+    with pytest.raises(WebhookCallbackConfigError) as exc_info:
+        resolve_webhook_callback_credentials(
+            request_url=None,
+            request_token=None,
+            settings=settings,
+        )
+    assert exc_info.value.code == "missing_pair"
+
+
+@pytest.mark.unit
+def test_configured_webhook_config_error_requires_complete_valid_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
+    monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
+    monkeypatch.setenv("JIRA_AUTOMATION_WEBHOOK_URL", "")
+    monkeypatch.setenv("JIRA_AUTOMATION_WEBHOOK_TOKEN", "")
+    assert configured_webhook_config_error(AppSettings()) is None
+
+    settings = _settings(monkeypatch)
+    assert configured_webhook_config_error(settings) is None
+
+    monkeypatch.setenv("JIRA_AUTOMATION_WEBHOOK_TOKEN", "")
+    message = configured_webhook_config_error(AppSettings())
+    assert message is not None
+    assert "JIRA_AUTOMATION_WEBHOOK_TOKEN" in message
+    assert "secret-hook-id" not in message
+
+    monkeypatch.setenv("JIRA_AUTOMATION_WEBHOOK_URL", "")
+    monkeypatch.setenv("JIRA_AUTOMATION_WEBHOOK_TOKEN", _WEBHOOK_TOKEN)
+    token_only = configured_webhook_config_error(AppSettings())
+    assert token_only is not None
+    assert "JIRA_AUTOMATION_WEBHOOK_URL" in token_only
+
+    monkeypatch.setenv(
+        "JIRA_AUTOMATION_WEBHOOK_URL",
+        "https://evil.example.com/hooks/secret-hook-id",
+    )
+    invalid = configured_webhook_config_error(AppSettings())
+    assert invalid is not None
+    assert "invalid" in invalid.lower()
+    assert "secret-hook-id" not in invalid
+    assert "evil.example.com" not in invalid

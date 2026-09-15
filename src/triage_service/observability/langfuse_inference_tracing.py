@@ -27,6 +27,9 @@ LOGGER = logging.getLogger(__name__)
 
 _LANGFUSE_SESSION_ID_MAX_LEN = 199
 
+# Distinguishes "tracing scope could not be entered" from a span whose value is None.
+_SCOPE_FAILED = object()
+
 InferenceStepName = Literal["classification", "priority"]
 GenerationFinish = Callable[..., None]
 ImageContextExtractionFinish = Callable[..., None]
@@ -136,17 +139,21 @@ def _failure_safe_context(
     context_factory: Callable[[], Any],
     *,
     warning: str,
-) -> Generator[None, None, None]:
-    """Swallow tracing failures without masking exceptions from the wrapped body."""
+) -> Generator[Any, None, None]:
+    """Yield the entered context value, or ``_SCOPE_FAILED`` when tracing setup fails.
+
+    Tracing failures (factory, ``__enter__``, ``__exit__``) are swallowed; exceptions
+    raised by the wrapped body always propagate.
+    """
     try:
         context = context_factory()
-        context.__enter__()
+        entered = context.__enter__()
     except Exception:
         LOGGER.warning(warning, exc_info=True)
-        yield
+        yield _SCOPE_FAILED
         return
     try:
-        yield
+        yield entered
     except BaseException:
         try:
             context.__exit__(*sys.exc_info())
@@ -246,43 +253,45 @@ class LangfuseInferenceTracer:
         if self._client is None:
             yield noop_finish
             return
-        try:
-            trace_context = _safe_current_trace_context(self._client)
-            with _start_current_observation(
-                self._client,
-                trace_context=trace_context,
+        client = self._client
+        with _failure_safe_context(
+            lambda: _start_current_observation(
+                client,
+                trace_context=_safe_current_trace_context(client),
                 name="image_context_extraction",
                 as_type="span",
                 metadata={"operation": "image_context_extraction"},
-            ) as span:
+            ),
+            warning="Langfuse image_context_extraction span failed",
+        ) as span:
+            if span is _SCOPE_FAILED:
+                yield noop_finish
+                return
 
-                def finish(
-                    *,
-                    attachments_considered: int,
-                    attachments_extracted: int,
-                    total_bytes: int,
-                    total_vision_cost: float | None,
-                ) -> None:
-                    metadata: dict[str, Any] = {
-                        "attachments_considered": attachments_considered,
-                        "attachments_extracted": attachments_extracted,
-                        "total_bytes": total_bytes,
-                    }
-                    if total_vision_cost is not None:
-                        metadata["total_vision_cost"] = total_vision_cost
-                    try:
-                        update = getattr(span, "update")
-                        update(metadata=metadata)
-                    except Exception:
-                        LOGGER.warning(
-                            "Langfuse image_context_extraction update failed",
-                            exc_info=True,
-                        )
+            def finish(
+                *,
+                attachments_considered: int,
+                attachments_extracted: int,
+                total_bytes: int,
+                total_vision_cost: float | None,
+            ) -> None:
+                metadata: dict[str, Any] = {
+                    "attachments_considered": attachments_considered,
+                    "attachments_extracted": attachments_extracted,
+                    "total_bytes": total_bytes,
+                }
+                if total_vision_cost is not None:
+                    metadata["total_vision_cost"] = total_vision_cost
+                try:
+                    update = getattr(span, "update")
+                    update(metadata=metadata)
+                except Exception:
+                    LOGGER.warning(
+                        "Langfuse image_context_extraction update failed",
+                        exc_info=True,
+                    )
 
-                yield finish
-        except Exception:
-            LOGGER.warning("Langfuse image_context_extraction span failed", exc_info=True)
-            yield noop_finish
+            yield finish
 
     @contextmanager
     def zendesk_context_fetch(self) -> Generator[ZendeskContextFetchFinish, None, None]:
@@ -306,44 +315,46 @@ class LangfuseInferenceTracer:
         if self._client is None:
             yield noop_finish
             return
-        try:
-            trace_context = _safe_current_trace_context(self._client)
-            with _start_current_observation(
-                self._client,
-                trace_context=trace_context,
+        client = self._client
+        with _failure_safe_context(
+            lambda: _start_current_observation(
+                client,
+                trace_context=_safe_current_trace_context(client),
                 name="zendesk_context_fetch",
                 as_type="span",
                 metadata={"operation": "zendesk_context_fetch"},
-            ) as span:
+            ),
+            warning="Langfuse zendesk_context_fetch span failed",
+        ) as span:
+            if span is _SCOPE_FAILED:
+                yield noop_finish
+                return
 
-                def finish(
-                    *,
-                    ticket_ids_requested: int,
-                    tickets_fetched: int,
-                    ticket_ids_deduped: int,
-                    fetch_failed: bool,
-                    per_ticket_failures: int,
-                ) -> None:
-                    metadata: dict[str, Any] = {
-                        "ticket_ids_requested": ticket_ids_requested,
-                        "tickets_fetched": tickets_fetched,
-                        "ticket_ids_deduped": ticket_ids_deduped,
-                        "fetch_failed": fetch_failed,
-                        "per_ticket_failures": per_ticket_failures,
-                    }
-                    try:
-                        update = getattr(span, "update")
-                        update(metadata=metadata)
-                    except Exception:
-                        LOGGER.warning(
-                            "Langfuse zendesk_context_fetch update failed",
-                            exc_info=True,
-                        )
+            def finish(
+                *,
+                ticket_ids_requested: int,
+                tickets_fetched: int,
+                ticket_ids_deduped: int,
+                fetch_failed: bool,
+                per_ticket_failures: int,
+            ) -> None:
+                metadata: dict[str, Any] = {
+                    "ticket_ids_requested": ticket_ids_requested,
+                    "tickets_fetched": tickets_fetched,
+                    "ticket_ids_deduped": ticket_ids_deduped,
+                    "fetch_failed": fetch_failed,
+                    "per_ticket_failures": per_ticket_failures,
+                }
+                try:
+                    update = getattr(span, "update")
+                    update(metadata=metadata)
+                except Exception:
+                    LOGGER.warning(
+                        "Langfuse zendesk_context_fetch update failed",
+                        exc_info=True,
+                    )
 
-                yield finish
-        except Exception:
-            LOGGER.warning("Langfuse zendesk_context_fetch span failed", exc_info=True)
-            yield noop_finish
+            yield finish
 
     @contextmanager
     def zendesk_context_summary(self) -> Generator[ZendeskContextSummaryFinish, None, None]:
@@ -359,41 +370,43 @@ class LangfuseInferenceTracer:
         if self._client is None:
             yield noop_finish
             return
-        try:
-            trace_context = _safe_current_trace_context(self._client)
-            with _start_current_observation(
-                self._client,
-                trace_context=trace_context,
+        client = self._client
+        with _failure_safe_context(
+            lambda: _start_current_observation(
+                client,
+                trace_context=_safe_current_trace_context(client),
                 name="zendesk_context_summary",
                 as_type="span",
                 metadata={"operation": "zendesk_context_summary"},
-            ) as span:
+            ),
+            warning="Langfuse zendesk_context_summary span failed",
+        ) as span:
+            if span is _SCOPE_FAILED:
+                yield noop_finish
+                return
 
-                def finish(
-                    *,
-                    tickets_considered: int,
-                    tickets_summarized: int,
-                    total_summary_cost: float | None,
-                ) -> None:
-                    metadata: dict[str, Any] = {
-                        "tickets_considered": tickets_considered,
-                        "tickets_summarized": tickets_summarized,
-                    }
-                    if total_summary_cost is not None:
-                        metadata["total_summary_cost"] = total_summary_cost
-                    try:
-                        update = getattr(span, "update")
-                        update(metadata=metadata)
-                    except Exception:
-                        LOGGER.warning(
-                            "Langfuse zendesk_context_summary update failed",
-                            exc_info=True,
-                        )
+            def finish(
+                *,
+                tickets_considered: int,
+                tickets_summarized: int,
+                total_summary_cost: float | None,
+            ) -> None:
+                metadata: dict[str, Any] = {
+                    "tickets_considered": tickets_considered,
+                    "tickets_summarized": tickets_summarized,
+                }
+                if total_summary_cost is not None:
+                    metadata["total_summary_cost"] = total_summary_cost
+                try:
+                    update = getattr(span, "update")
+                    update(metadata=metadata)
+                except Exception:
+                    LOGGER.warning(
+                        "Langfuse zendesk_context_summary update failed",
+                        exc_info=True,
+                    )
 
-                yield finish
-        except Exception:
-            LOGGER.warning("Langfuse zendesk_context_summary span failed", exc_info=True)
-            yield noop_finish
+            yield finish
 
     @contextmanager
     def zendesk_summary_generation(
@@ -431,40 +444,42 @@ class LangfuseInferenceTracer:
         }
         if input_trunc:
             gen_metadata["log_payload_truncated"] = True
-        try:
-            trace_context = _safe_current_trace_context(self._client)
-            with _start_current_observation(
-                self._client,
-                trace_context=trace_context,
+        client = self._client
+        with _failure_safe_context(
+            lambda: _start_current_observation(
+                client,
+                trace_context=_safe_current_trace_context(client),
                 name="inference_zendesk_summary",
                 as_type="generation",
                 model=model,
                 input=traced_input,
                 model_parameters=model_parameters,
                 metadata=gen_metadata,
-            ) as gen:
+            ),
+            warning="Langfuse zendesk summary generation span failed",
+        ) as gen:
+            if gen is _SCOPE_FAILED:
+                yield noop_finish
+                return
 
-                def finish(
-                    raw: str,
-                    meta: dict[str, Any],
-                    *,
-                    usage_details: dict[str, int] | None = None,
-                    cost_details: dict[str, float] | None = None,
-                ) -> None:
-                    _apply_langfuse_generation_update(
-                        gen,
-                        raw,
-                        meta,
-                        redact_model_output=self._redact_model_output,
-                        usage_details=usage_details,
-                        cost_details=cost_details,
-                        max_string_chars=self._max_string_chars,
-                    )
+            def finish(
+                raw: str,
+                meta: dict[str, Any],
+                *,
+                usage_details: dict[str, int] | None = None,
+                cost_details: dict[str, float] | None = None,
+            ) -> None:
+                _apply_langfuse_generation_update(
+                    gen,
+                    raw,
+                    meta,
+                    redact_model_output=self._redact_model_output,
+                    usage_details=usage_details,
+                    cost_details=cost_details,
+                    max_string_chars=self._max_string_chars,
+                )
 
-                yield finish
-        except Exception:
-            LOGGER.warning("Langfuse zendesk summary generation span failed", exc_info=True)
-            yield noop_finish
+            yield finish
 
     @contextmanager
     def vision_generation(
@@ -497,40 +512,42 @@ class LangfuseInferenceTracer:
             "attachment_id": attachment_id,
             "filename": filename,
         }
-        try:
-            trace_context = _safe_current_trace_context(self._client)
-            with _start_current_observation(
-                self._client,
-                trace_context=trace_context,
+        client = self._client
+        with _failure_safe_context(
+            lambda: _start_current_observation(
+                client,
+                trace_context=_safe_current_trace_context(client),
                 name="inference_vision",
                 as_type="generation",
                 model=model,
                 input=traced_input,
                 model_parameters=model_parameters,
                 metadata=gen_metadata,
-            ) as gen:
+            ),
+            warning="Langfuse vision generation span failed",
+        ) as gen:
+            if gen is _SCOPE_FAILED:
+                yield noop_finish
+                return
 
-                def finish(
-                    raw: str,
-                    meta: dict[str, Any],
-                    *,
-                    usage_details: dict[str, int] | None = None,
-                    cost_details: dict[str, float] | None = None,
-                ) -> None:
-                    _apply_langfuse_generation_update(
-                        gen,
-                        raw,
-                        meta,
-                        redact_model_output=self._redact_vision_transcript,
-                        usage_details=usage_details,
-                        cost_details=cost_details,
-                        max_string_chars=self._max_string_chars,
-                    )
+            def finish(
+                raw: str,
+                meta: dict[str, Any],
+                *,
+                usage_details: dict[str, int] | None = None,
+                cost_details: dict[str, float] | None = None,
+            ) -> None:
+                _apply_langfuse_generation_update(
+                    gen,
+                    raw,
+                    meta,
+                    redact_model_output=self._redact_vision_transcript,
+                    usage_details=usage_details,
+                    cost_details=cost_details,
+                    max_string_chars=self._max_string_chars,
+                )
 
-                yield finish
-        except Exception:
-            LOGGER.warning("Langfuse vision generation span failed", exc_info=True)
-            yield noop_finish
+            yield finish
 
     @contextmanager
     def model_generation(
@@ -566,40 +583,42 @@ class LangfuseInferenceTracer:
         gen_metadata: dict[str, Any] = {"operation": gen_name, "step": step}
         if input_trunc:
             gen_metadata["log_payload_truncated"] = True
-        try:
-            trace_context = _safe_current_trace_context(self._client)
-            with _start_current_observation(
-                self._client,
-                trace_context=trace_context,
+        client = self._client
+        with _failure_safe_context(
+            lambda: _start_current_observation(
+                client,
+                trace_context=_safe_current_trace_context(client),
                 name=gen_name,
                 as_type="generation",
                 model=model,
                 input=traced_input,
                 model_parameters=model_parameters,
                 metadata=gen_metadata,
-            ) as gen:
+            ),
+            warning="Langfuse generation span failed",
+        ) as gen:
+            if gen is _SCOPE_FAILED:
+                yield noop_finish
+                return
 
-                def finish(
-                    raw: str,
-                    meta: dict[str, Any],
-                    *,
-                    usage_details: dict[str, int] | None = None,
-                    cost_details: dict[str, float] | None = None,
-                ) -> None:
-                    _apply_langfuse_generation_update(
-                        gen,
-                        raw,
-                        meta,
-                        redact_model_output=self._redact_model_output,
-                        usage_details=usage_details,
-                        cost_details=cost_details,
-                        max_string_chars=self._max_string_chars,
-                    )
+            def finish(
+                raw: str,
+                meta: dict[str, Any],
+                *,
+                usage_details: dict[str, int] | None = None,
+                cost_details: dict[str, float] | None = None,
+            ) -> None:
+                _apply_langfuse_generation_update(
+                    gen,
+                    raw,
+                    meta,
+                    redact_model_output=self._redact_model_output,
+                    usage_details=usage_details,
+                    cost_details=cost_details,
+                    max_string_chars=self._max_string_chars,
+                )
 
-                yield finish
-        except Exception:
-            LOGGER.warning("Langfuse generation span failed", exc_info=True)
-            yield noop_finish
+            yield finish
 
 
 def build_langfuse_inference_tracer(

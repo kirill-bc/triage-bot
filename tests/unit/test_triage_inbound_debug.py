@@ -47,6 +47,24 @@ def test_preview_request_body_truncates_long_payload() -> None:
     assert len(text) < len(body)
 
 
+@pytest.mark.unit
+def test_preview_request_body_redacts_callback_webhook_path() -> None:
+    body = (
+        b'{"issue_key":"TJC-1","jira_automation_webhook_url":'
+        b'"https://api-private.atlassian.com/automation/webhooks/jira/cloud/secret-hook-id"}'
+    )
+    text = preview_request_body_for_log(body)
+    assert "secret-hook-id" not in text
+    assert "api-private.atlassian.com" in text
+
+
+@pytest.mark.unit
+def test_preview_request_body_collapses_percent_encoded_callback_host() -> None:
+    body = b'{"jira_automation_webhook_url":"https://host%2Fsecret-hook-id"}'
+    text = preview_request_body_for_log(body)
+    assert "secret-hook-id" not in text
+
+
 class _StubRunner:
     def run_sync(
         self,

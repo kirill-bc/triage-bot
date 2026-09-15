@@ -12,7 +12,10 @@ from triage_service.adapters.jira_action_executor import (
     JiraActionExecutorError,
     JiraTriageActionExecutor,
     _mismatch_comment_body,
-    _should_post_mismatch_comment,
+)
+from triage_service.adapters.triage_outcome_rendering import (
+    AutoApplyPolicy,
+    build_outcome_decision,
 )
 from triage_service.adapters.jira_issue_fetcher import FetchedIssue
 from triage_service.core.settings import AppSettings
@@ -128,18 +131,22 @@ def test_executor_no_http_on_triage_failure(monkeypatch: pytest.MonkeyPatch) -> 
 
 @pytest.mark.unit
 def test_should_post_mismatch_comment_for_priority_mismatches_and_likely_story() -> None:
-    assert _should_post_mismatch_comment(
-        issue=_issue(priority="P1"),
-        recommendation=_rec(recommended_priority="P2"),
-    )
-    assert _should_post_mismatch_comment(
-        issue=_issue(priority="P2"),
-        recommendation=_rec(recommended_priority="P1"),
-    )
-    assert _should_post_mismatch_comment(
-        issue=_issue(priority="P1"),
-        recommendation=_rec(recommended_issue_type="Story", recommended_priority=None),
-    )
+    policy = AutoApplyPolicy()
+    assert build_outcome_decision(
+        _issue(priority="P1"),
+        _rec(recommended_priority="P2"),
+        policy=policy,
+    ).post_comment
+    assert build_outcome_decision(
+        _issue(priority="P2"),
+        _rec(recommended_priority="P1"),
+        policy=policy,
+    ).post_comment
+    assert build_outcome_decision(
+        _issue(priority="P1"),
+        _rec(recommended_issue_type="Story", recommended_priority=None),
+        policy=policy,
+    ).post_comment
 
 
 @pytest.mark.unit

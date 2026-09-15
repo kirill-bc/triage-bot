@@ -10,15 +10,18 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
 import threading
 import uuid
-from contextlib import asynccontextmanager
-from hmac import compare_digest
 from collections.abc import AsyncIterator, Awaitable, Callable
-from typing import Literal
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from hmac import compare_digest
+from typing import Any, Literal, NoReturn
 
 from fastapi import Depends, FastAPI, Header, HTTPException, status
+from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field, field_validator, model_validator
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -26,7 +29,11 @@ from starlette.responses import JSONResponse, Response
 from typing_extensions import Self
 
 from triage_service.adapters.automation_webhook_executor import (
+    REDACTED_URL_MARKER,
+    WebhookCallbackConfigError,
+    configured_webhook_config_error,
     redacted_webhook_url,
+    resolve_webhook_callback_credentials,
     validate_request_webhook_url,
 )
 from triage_service.core.settings import AppSettings, JiraApplyMode, load_settings
@@ -43,6 +50,28 @@ from triage_service.observability.runtime_logging import (
 TriageSource = Literal["bug_created", "priority_changed", "manual_trigger"]
 LOGGER = logging.getLogger(__name__)
 
+# A URL slash, whether written as `/`, JSON `\/`, or JSON `\u002f`. Each form is matched
+# independently so mixed escaping (``https:/\/host/secret``) cannot bypass redaction.
+_JSON_SLASH = rb"(?:/|\\/|\\u002f)"
+
+# Group 1 is scheme plus authority; the unbounded tail (the secret part) is dropped. The
+# retained authority also stops at ``%`` so percent-encoded delimiters (``%2F``) cannot smuggle
+# an encoded secret path into what looks like a bare host. Authority also stops at ``\``, so
+# an escaped slash begins the dropped tail rather than being kept as part of the host.
+_URL_WITH_PATH_PATTERN = re.compile(
+    rb"(https?:" + _JSON_SLASH + rb"{2}[^/?#%\s\"'\\]*)"
+    rb"(?:" + _JSON_SLASH + rb"|[^\s\"'\\])*",
+    re.IGNORECASE,
+)
+
+# The callback member of an unparsable body: its value may encode slashes or be cut off
+# mid-string, so the whole value goes, closing quote optional (truncation).
+_CALLBACK_URL_MEMBER_PATTERN = re.compile(
+    rb'("jira_automation_webhook_url"\s*:\s*")(?:\\.|[^"\\])*("|\Z)',
+    re.DOTALL,
+)
+_REDACTED_MEMBER_REPLACEMENT = rb"\1" + REDACTED_URL_MARKER.encode("utf-8") + rb"\2"
+
 
 def triage_inbound_debug_enabled() -> bool:
     """True when ``TRIAGE_DEBUG_INBOUND`` requests raw ``POST /triage`` body logging to stderr."""
@@ -53,24 +82,52 @@ def triage_inbound_debug_enabled() -> bool:
 def preview_request_body_for_log(body: bytes, *, max_len: int = 8192) -> str:
     """Return a UTF-8 string or repr for logging; truncate very large bodies.
 
-    ``jira_automation_webhook_url`` is redacted to scheme and host because its path is secret.
+    Every URL in the body is reduced to scheme and host because the Rule B callback path is
+    a secret, and the callback member of a body that does not parse loses its value outright.
+    Redaction runs before request validation, so it must hold for bodies that are not valid
+    JSON and must never raise.
     """
-    preview_source = _redact_callback_url_in_body(body)
+    preview_source = _redact_urls_in_body(_redact_callback_url_field(body))
     return preview_bytes_for_log(preview_source, max_bytes=max_len)
 
 
-def _redact_callback_url_in_body(body: bytes) -> bytes:
+def _redact_callback_url_field(body: bytes) -> bytes:
+    """Rewrite ``jira_automation_webhook_url`` to its origin when the body parses as JSON.
+
+    Anything json.loads cannot turn into an object is redacted on the raw bytes instead, since
+    the value's encoding is then unknown.
+    """
     try:
         parsed = json.loads(body)
     except (ValueError, UnicodeDecodeError):
-        return body
+        return _drop_callback_url_member(body)
     if not isinstance(parsed, dict):
-        return body
+        return _drop_callback_url_member(body)
     url = parsed.get("jira_automation_webhook_url")
     if not isinstance(url, str) or not url.strip():
         return body
     parsed["jira_automation_webhook_url"] = redacted_webhook_url(url)
     return json.dumps(parsed, ensure_ascii=False).encode("utf-8")
+
+
+def _drop_callback_url_member(body: bytes) -> bytes:
+    """Replace the whole callback URL value, whatever it encodes, on the raw bytes.
+
+    Without a parse the origin cannot be told apart from the secret path: the value may write
+    its slashes as ``\\/`` or ``\\u002f``, or the body may stop mid-value. Keeping nothing is
+    the only form that holds for all of them.
+    """
+    return _CALLBACK_URL_MEMBER_PATTERN.sub(_REDACTED_MEMBER_REPLACEMENT, body)
+
+
+def _redact_urls_in_body(body: bytes) -> bytes:
+    """Strip path, query, and fragment from every URL, whatever shape the body has.
+
+    This is the backstop for the JSON path above: a payload that fails to parse (unescaped
+    dynamic value from Jira, truncated body) can still carry the secret callback path, under
+    the expected key or any other, with ``/``, ``\\/``, and ``\\u002f`` mixed arbitrarily.
+    """
+    return _URL_WITH_PATH_PATTERN.sub(rb"\1", body)
 
 
 class _DebugInboundTriageBodyMiddleware(BaseHTTPMiddleware):
@@ -125,8 +182,9 @@ class TriageRequest(BaseModel):
         default=None,
         description=(
             "Optional callback URL for this project's Automation rule. Must be an https URL on "
-            "api-private.atlassian.com. Omit to use JIRA_AUTOMATION_WEBHOOK_URL from settings "
-            "(Secret only; never a ConfigMap)."
+            "api-private.atlassian.com and must be sent with X-Jira-Automation-Webhook-Token. "
+            "Omit both to use the JIRA_AUTOMATION_WEBHOOK_URL / JIRA_AUTOMATION_WEBHOOK_TOKEN "
+            "pair from settings (Secret only; never a ConfigMap)."
         ),
     )
 
@@ -136,6 +194,14 @@ class TriageRequest(BaseModel):
         if value is None:
             return None
         return validate_request_webhook_url(value)
+
+
+@dataclass(frozen=True, slots=True)
+class _TriageTrigger:
+    """Parsed POST /triage body plus the runner built from that same instance."""
+
+    body: TriageRequest
+    runner: TriageRunner
 
 
 class ObservabilityHealth(BaseModel):
@@ -241,40 +307,69 @@ def require_webhook_callback_config(
     request_webhook_token: str | None,
     settings: AppSettings | None = None,
 ) -> None:
-    """Reject webhook mode without a callback URL or Automation webhook token."""
+    """Reject webhook mode unless one complete, valid callback credential pair is available.
+
+    Pairing, source precedence, and URL validation live in
+    ``resolve_webhook_callback_credentials``; this wrapper maps that typed error to HTTP 422
+    with API-facing field names.
+    """
     if settings is None:
         settings = _optional_app_settings()
     effective_mode: JiraApplyMode = body.jira_apply_mode or (
         settings.triage_jira_apply_mode if settings is not None else "direct"
     )
-    configured_url = body.jira_automation_webhook_url or (
-        settings.jira_automation_webhook_url if settings is not None else None
-    )
-    header_token = (request_webhook_token or "").strip() or None
-    settings_token = (
-        str(settings.jira_automation_webhook_token or "").strip() or None
-        if settings is not None
-        else None
-    )
-    token = header_token or settings_token
     if effective_mode != "automation_webhook":
         return
-    if not str(configured_url or "").strip():
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=(
-                "A callback URL is required for jira_apply_mode=automation_webhook: "
-                "send jira_automation_webhook_url or set JIRA_AUTOMATION_WEBHOOK_URL"
-            ),
+    try:
+        resolve_webhook_callback_credentials(
+            request_url=body.jira_automation_webhook_url,
+            request_token=request_webhook_token,
+            settings=settings,
         )
-    if not token:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=(
-                "A webhook token is required for jira_apply_mode=automation_webhook: "
-                "send X-Jira-Automation-Webhook-Token or set JIRA_AUTOMATION_WEBHOOK_TOKEN"
-            ),
+    except WebhookCallbackConfigError as exc:
+        _reject_callback_config(_api_callback_error_detail(exc))
+
+
+def _api_callback_error_detail(exc: WebhookCallbackConfigError) -> str:
+    """Map resolver codes onto HTTP field names without re-implementing pairing rules."""
+    if exc.code == "request_url_without_token":
+        return (
+            "jira_automation_webhook_url requires the matching "
+            "X-Jira-Automation-Webhook-Token header: per-request callback credentials must "
+            "be sent together"
         )
+    if exc.code == "request_token_without_url":
+        return (
+            "X-Jira-Automation-Webhook-Token requires the matching "
+            "jira_automation_webhook_url body field: per-request callback credentials must "
+            "be sent together"
+        )
+    if exc.code == "missing_pair":
+        return (
+            "jira_apply_mode=automation_webhook requires a callback URL and token: send "
+            "jira_automation_webhook_url with X-Jira-Automation-Webhook-Token, or configure "
+            "both JIRA_AUTOMATION_WEBHOOK_URL and JIRA_AUTOMATION_WEBHOOK_TOKEN"
+        )
+    return str(exc)
+
+
+def _reject_callback_config(detail: str) -> NoReturn:
+    raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=detail)
+
+
+def sanitized_validation_errors(exc: RequestValidationError) -> list[dict[str, Any]]:
+    """Pydantic error entries with the rejected input values removed.
+
+    FastAPI's default 422 payload echoes each error's ``input``; for a rejected
+    ``jira_automation_webhook_url`` that is the full Rule B URL with its secret path, and
+    for a missing-field error it is the entire request body (which can carry that URL).
+    Keeping only ``type``, ``loc``, and ``msg`` stays debuggable — URL validation messages
+    never include the URL — without persisting the credential in clients or proxies.
+    """
+    return [
+        {"type": error.get("type"), "loc": error.get("loc"), "msg": error.get("msg")}
+        for error in exc.errors()
+    ]
 
 
 def _run_triage_within_capacity(
@@ -351,25 +446,27 @@ def create_app(*, triage_handler_factory: Callable[[], TriageRunner] | None = No
         LOGGER.info("triage_api_started")
         yield
 
-    def get_triage_runner(
+    def get_triage_trigger(
         body: TriageRequest,
         x_jira_automation_webhook_token: str | None = Header(
             default=None,
             alias="X-Jira-Automation-Webhook-Token",
         ),
-    ) -> TriageRunner:
+    ) -> _TriageTrigger:
         require_webhook_callback_config(
             body,
             request_webhook_token=x_jira_automation_webhook_token,
         )
         if triage_handler_factory is not None:
-            return triage_handler_factory()
-        token = (x_jira_automation_webhook_token or "").strip() or None
-        return build_default_triage_handler(
-            jira_apply_mode=body.jira_apply_mode,
-            jira_automation_webhook_token=token,
-            jira_automation_webhook_url=body.jira_automation_webhook_url,
-        )
+            runner = triage_handler_factory()
+        else:
+            token = (x_jira_automation_webhook_token or "").strip() or None
+            runner = build_default_triage_handler(
+                jira_apply_mode=body.jira_apply_mode,
+                jira_automation_webhook_token=token,
+                jira_automation_webhook_url=body.jira_automation_webhook_url,
+            )
+        return _TriageTrigger(body=body, runner=runner)
 
     def require_triage_token(
         x_triage_token: str | None = Header(default=None, alias="X-Triage-Token"),
@@ -387,16 +484,41 @@ def create_app(*, triage_handler_factory: Callable[[], TriageRunner] | None = No
 
     app = FastAPI(title="Jira Triage", version="0.1.0", lifespan=lifespan)
 
+    @app.exception_handler(RequestValidationError)
+    async def _validation_error_without_input(
+        _request: Request,
+        exc: RequestValidationError,
+    ) -> JSONResponse:
+        """422 without echoed input: the body can carry the secret Rule B callback URL."""
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            content={"detail": sanitized_validation_errors(exc)},
+        )
+
     @app.get("/health", response_model=None)
     async def health() -> HealthResponse | JSONResponse:
-        """Process liveness; ``ready`` is true only when :func:`load_settings` succeeds.
+        """Process liveness; ``ready`` is true only when the runtime configuration is usable.
 
-        Async so readiness probes are served directly on the event loop and are never
-        starved by the sync worker thread pool when triage slots are saturated.
+        Usable means :func:`load_settings` succeeds and any configured callback fallback pair
+        (``JIRA_AUTOMATION_WEBHOOK_URL`` / ``JIRA_AUTOMATION_WEBHOOK_TOKEN``) is complete and
+        valid, so a misconfigured Secret surfaces at the readiness probe instead of after a
+        full triage run. Async so readiness probes are served directly on the event loop and
+        are never starved by the sync worker thread pool when triage slots are saturated.
         """
         try:
             settings = load_settings()
         except Exception:
+            return JSONResponse(
+                status_code=503,
+                content={"service": "jira-triage", "ready": False},
+            )
+        callback_config_error = configured_webhook_config_error(settings)
+        if callback_config_error is not None:
+            # The message never contains the URL itself (its path is a secret).
+            LOGGER.warning(
+                "triage_api_not_ready invalid callback configuration: %s",
+                callback_config_error,
+            )
             return JSONResponse(
                 status_code=503,
                 content={"service": "jira-triage", "ready": False},
@@ -406,13 +528,12 @@ def create_app(*, triage_handler_factory: Callable[[], TriageRunner] | None = No
 
     @app.post("/triage", response_model=TriagePostResponse)
     def accept_triage_trigger(
-        body: TriageRequest,
-        runner: TriageRunner = Depends(get_triage_runner),
+        trigger: _TriageTrigger = Depends(get_triage_trigger),
         _: None = Depends(require_triage_token),
     ) -> TriagePostResponse:
         return _run_triage_within_capacity(
-            body,
-            runner,
+            trigger.body,
+            trigger.runner,
             triage_slots=triage_slots,
             concurrency_wait_seconds=concurrency_wait_seconds,
             max_concurrent_runs=max_concurrent_runs,

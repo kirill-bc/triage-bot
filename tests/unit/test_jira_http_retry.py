@@ -200,3 +200,46 @@ def test_request_with_retries_raises_transport_retries_exhausted_with_attempt_co
     assert exc.value.attempts == 3
     assert calls["n"] == 3
     assert isinstance(exc.value.cause, httpx.ConnectError)
+
+
+@pytest.mark.unit
+def test_request_with_retries_logs_error_type_only_when_log_url_set(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setattr(
+        "triage_service.adapters.jira_http_retry.time.sleep",
+        lambda *_a, **_k: None,
+    )
+    caplog.set_level("WARNING", logger="triage_service.adapters.jira_http_retry")
+    secret_url = (
+        "https://api-private.atlassian.com/automation/webhooks/jira/cloud/secret-hook-id"
+    )
+    req = httpx.Request("POST", secret_url)
+
+    def always_connect_error(
+        method: str,
+        url: str,
+        **kwargs: object,
+    ) -> httpx.Response:
+        _ = (method, url, kwargs)
+        raise httpx.ConnectError(f"Failed to send to {secret_url}", request=req)
+
+    client = MagicMock()
+    client.request = always_connect_error
+
+    with pytest.raises(TransportRetriesExhausted):
+        request_with_retries(
+            client,
+            "POST",
+            secret_url,
+            max_retries=0,
+            log_url="https://api-private.atlassian.com",
+        )
+
+    record = [
+        item for item in caplog.records if str(item.msg).startswith("outbound_http")
+    ][-1]
+    assert getattr(record, "error") == "ConnectError"
+    assert "secret-hook-id" not in record.getMessage()
+    assert getattr(record, "url") == "https://api-private.atlassian.com"

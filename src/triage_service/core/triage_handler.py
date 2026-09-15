@@ -1570,23 +1570,25 @@ def _build_action_executor(
     """Pick the outcome delivery path: Automation callback, direct Jira writes, or no-op.
 
     Webhook mode needs no Jira write credentials — the Automation rule applies the changes.
+    ``resolve_webhook_callback_credentials`` enforces pairing, source precedence, and URL
+    validation here so a bad pair fails at build time with ``ValueError`` instead of after
+    the Jira fetch and model inference have already run. The HTTP API maps the same error
+    to 422 before this function is reached.
     """
     from triage_service.adapters.automation_webhook_executor import (
         AutomationWebhookTriageActionExecutor,
+        resolve_webhook_callback_credentials,
     )
     from triage_service.adapters.jira_action_executor import JiraTriageActionExecutor
 
     if not apply_to_jira:
         return NoOpTriageActionExecutor()
     if jira_apply_mode == "automation_webhook":
-        configured_url = jira_automation_webhook_url or settings.jira_automation_webhook_url
-        if not str(configured_url or "").strip():
-            msg = (
-                "A callback URL is required when the request selects "
-                "jira_apply_mode=automation_webhook: send jira_automation_webhook_url or set "
-                "JIRA_AUTOMATION_WEBHOOK_URL"
-            )
-            raise ValueError(msg)
+        credentials = resolve_webhook_callback_credentials(
+            request_url=jira_automation_webhook_url,
+            request_token=jira_automation_webhook_token,
+            settings=settings,
+        )
         return AutomationWebhookTriageActionExecutor(
             settings,
             post_mismatch_comments=post_mismatch_comments,
@@ -1594,8 +1596,8 @@ def _build_action_executor(
             auto_apply_escalation=auto_apply_escalation,
             auto_apply_bug_to_story=auto_apply_bug_to_story,
             audit_store=audit_store,
-            webhook_token=jira_automation_webhook_token,
-            webhook_url=jira_automation_webhook_url,
+            webhook_token=credentials.token,
+            webhook_url=credentials.url,
         )
     cloud_id_configured = bool(str(settings.jira_cloud_id or "").strip())
     email_configured = bool(str(settings.jira_user_email or "").strip())

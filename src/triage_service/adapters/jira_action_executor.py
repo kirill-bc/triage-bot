@@ -76,19 +76,6 @@ def _raise_for_status(response: httpx.Response, action: str) -> None:
         raise JiraActionExecutorError(msg)
 
 
-def _should_post_mismatch_comment(
-    *,
-    issue: FetchedIssue,
-    recommendation: TriageRecommendation,
-) -> bool:
-    """Compatibility wrapper for callers of the former private decision helper."""
-    return build_outcome_decision(
-        issue,
-        recommendation,
-        policy=AutoApplyPolicy(),
-    ).post_comment
-
-
 class JiraTriageActionExecutor:
     """Apply ``triagebot-reviewed`` on success; on mismatch, labels plus a templated ADF comment.
 

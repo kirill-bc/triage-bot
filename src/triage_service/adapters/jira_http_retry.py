@@ -76,13 +76,15 @@ def request_with_retries(
         except httpx.RequestError as exc:
             attempts_used = attempt + 1
             duration_ms = round((time.perf_counter() - start) * 1000, 2)
+            # ``log_url`` means the caller treats the request URL as sensitive; httpx
+            # exception text often repeats that URL, so persist the type only.
             _log_outbound_http(
                 method=method,
                 url=safe_log_url,
                 status_code=None,
                 attempts=attempts_used,
                 duration_ms=duration_ms,
-                error=str(exc),
+                error=type(exc).__name__ if log_url is not None else str(exc),
             )
             if is_retriable_request_error(exc) and attempt < max_retries:
                 time.sleep(_backoff_seconds(attempt))

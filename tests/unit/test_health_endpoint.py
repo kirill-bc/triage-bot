@@ -79,6 +79,29 @@ def test_get_health_returns_503_and_ready_false_when_settings_missing(
 
 
 @pytest.mark.unit
+def test_get_health_returns_503_when_configured_webhook_pair_is_incomplete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("JIRA_API_KEY", "jira-token")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-token")
+    monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
+    monkeypatch.setenv(
+        "JIRA_AUTOMATION_WEBHOOK_URL",
+        "https://api-private.atlassian.com/automation/webhooks/jira/cloud/secret-hook-id",
+    )
+    monkeypatch.delenv("JIRA_AUTOMATION_WEBHOOK_TOKEN", raising=False)
+    client = TestClient(create_app(triage_handler_factory=lambda: _StubRunner()))
+    response = client.get("/health")
+    assert response.status_code == 503
+    data = response.json()
+    assert data.get("ready") is False
+    assert "secret-hook-id" not in response.text
+    assert "observability" not in data
+
+
+@pytest.mark.unit
 def test_get_health_includes_observability_langfuse_enabled_when_keys_set(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

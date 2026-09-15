@@ -113,17 +113,19 @@ def test_post_triage_passes_optional_apply_mode_to_default_handler(
     }
     if request_mode is not None:
         payload["jira_apply_mode"] = request_mode
+    headers = _auth_headers()
     if request_mode == "automation_webhook":
         payload["jira_automation_webhook_url"] = (
             "https://api-private.atlassian.com/automation/webhooks/jira/cloud/hook"
         )
+        headers["X-Jira-Automation-Webhook-Token"] = "per-project-token"
 
     with patch(
         "triage_service.api.triage_api.build_default_triage_handler",
         side_effect=_build,
     ):
         app_client = TestClient(create_app())
-        response = app_client.post("/triage", json=payload, headers=_auth_headers())
+        response = app_client.post("/triage", json=payload, headers=headers)
 
     assert response.status_code == 200
     assert observed == [expected_mode]
@@ -157,6 +159,11 @@ def test_post_triage_rejects_webhook_url_outside_atlassian_hosts(
     )
 
     assert response.status_code == 422
+    assert bad_url not in response.text
+    detail = response.json()["detail"]
+    assert isinstance(detail, list)
+    for entry in detail:
+        assert "input" not in entry
 
 
 @pytest.mark.unit
@@ -237,19 +244,95 @@ def test_post_triage_ignores_webhook_token_in_json_body(
                     "https://api-private.atlassian.com/automation/webhooks/jira/cloud/hook"
                 ),
             },
-            headers=_auth_headers(),
+            headers={
+                **_auth_headers(),
+                "X-Jira-Automation-Webhook-Token": "header-token",
+            },
         )
 
     assert response.status_code == 200
-    assert observed[0]["jira_automation_webhook_token"] is None
+    assert observed[0]["jira_automation_webhook_token"] == "header-token"
     assert "body-token-must-be-ignored" not in response.text
 
 
 @pytest.mark.unit
-def test_post_triage_returns_422_when_webhook_mode_has_no_callback_url(
+def test_post_triage_returns_422_when_webhook_url_sent_without_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("JIRA_AUTOMATION_WEBHOOK_URL", raising=False)
+    monkeypatch.delenv("JIRA_AUTOMATION_WEBHOOK_TOKEN", raising=False)
+    observed: list[dict[str, object]] = []
+
+    def _build(**kwargs: object) -> _StubRunner:
+        observed.append(kwargs)
+        return _StubRunner()
+
+    with patch(
+        "triage_service.api.triage_api.build_default_triage_handler",
+        side_effect=_build,
+    ):
+        app_client = TestClient(create_app())
+        response = app_client.post(
+            "/triage",
+            json={
+                "issue_key": "TJC-9",
+                "project": "TJC",
+                "source": "bug_created",
+                "jira_apply_mode": "automation_webhook",
+                "jira_automation_webhook_url": (
+                    "https://api-private.atlassian.com/automation/webhooks/jira/cloud/hook"
+                ),
+            },
+            headers=_auth_headers(),
+        )
+
+    assert response.status_code == 422
+    assert "X-Jira-Automation-Webhook-Token" in response.json()["detail"]
+    assert observed == []
+
+
+@pytest.mark.unit
+def test_post_triage_returns_422_when_webhook_token_sent_without_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("JIRA_AUTOMATION_WEBHOOK_URL", raising=False)
+    monkeypatch.delenv("JIRA_AUTOMATION_WEBHOOK_TOKEN", raising=False)
+    observed: list[dict[str, object]] = []
+
+    def _build(**kwargs: object) -> _StubRunner:
+        observed.append(kwargs)
+        return _StubRunner()
+
+    with patch(
+        "triage_service.api.triage_api.build_default_triage_handler",
+        side_effect=_build,
+    ):
+        app_client = TestClient(create_app())
+        response = app_client.post(
+            "/triage",
+            json={
+                "issue_key": "TJC-9",
+                "project": "TJC",
+                "source": "bug_created",
+                "jira_apply_mode": "automation_webhook",
+            },
+            headers={
+                **_auth_headers(),
+                "X-Jira-Automation-Webhook-Token": "per-project-token",
+            },
+        )
+
+    assert response.status_code == 422
+    assert "jira_automation_webhook_url" in response.json()["detail"]
+    assert observed == []
+
+
+@pytest.mark.unit
+def test_post_triage_returns_422_when_webhook_mode_has_no_callback_pair(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("JIRA_AUTOMATION_WEBHOOK_URL", raising=False)
+    monkeypatch.delenv("JIRA_AUTOMATION_WEBHOOK_TOKEN", raising=False)
     observed: list[dict[str, object]] = []
 
     def _build(**kwargs: object) -> _StubRunner:
@@ -273,7 +356,7 @@ def test_post_triage_returns_422_when_webhook_mode_has_no_callback_url(
         )
 
     assert response.status_code == 422
-    assert "callback URL is required" in response.json()["detail"]
+    assert "callback URL and token" in response.json()["detail"]
     assert observed == []
 
 

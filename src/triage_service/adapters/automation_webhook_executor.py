@@ -9,6 +9,7 @@ re-triage on priority change safe.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Any, cast
 from urllib.parse import urlsplit
 
@@ -42,37 +43,170 @@ CALLBACK_PAYLOAD_VERSION = 1
 
 _TOKEN_HEADER = "X-Automation-Webhook-Token"
 
+REDACTED_URL_MARKER = "<redacted-webhook-url>"
+
 # Callers may name their own Rule B webhook, so the callback target is pinned to the current
-# Atlassian Automation webhook host. Operator-supplied env URLs are trusted as-is.
+# Atlassian Automation webhook host. Request URLs and the settings fallback share this check.
 ALLOWED_WEBHOOK_HOSTS = frozenset({"api-private.atlassian.com"})
+_HTTPS_PORT = 443
 
 
 def validate_request_webhook_url(url: str) -> str:
-    """Return the trimmed caller-supplied callback URL, or raise ``ValueError`` if unsafe."""
+    """Return the trimmed caller-supplied callback URL, or raise ``ValueError`` if unsafe.
+
+    Error messages stay generic (scheme, allowlist, port). They never include the rejected
+    value: ``urlsplit`` can park a percent-encoded path in ``hostname``, and that path is
+    the webhook secret.
+    """
     candidate = (url or "").strip()
     if not candidate:
         msg = "Automation webhook URL must not be empty"
         raise ValueError(msg)
     parsed = urlsplit(candidate)
     if parsed.scheme != "https":
-        msg = f"Automation webhook URL must use https, got {parsed.scheme or 'no scheme'!r}"
+        # Do not echo scheme or any other URL fragment: percent-encoded paths can
+        # appear in unexpected ``urlsplit`` fields and are a secret on this credential.
+        msg = "Automation webhook URL must use https"
         raise ValueError(msg)
+    # ``port`` raises on a non-numeric or out-of-range value, which httpx would otherwise
+    # surface as an unhandled InvalidURL at request time, after triage has already run.
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        msg = "Automation webhook URL has a malformed port"
+        raise ValueError(msg) from exc
     if parsed.hostname not in ALLOWED_WEBHOOK_HOSTS:
         allowed = ", ".join(sorted(ALLOWED_WEBHOOK_HOSTS))
-        msg = (
-            f"Automation webhook host {parsed.hostname!r} is not allowed; "
-            f"expected one of: {allowed}"
-        )
+        msg = f"Automation webhook host is not allowed; expected one of: {allowed}"
+        raise ValueError(msg)
+    if port is not None and port != _HTTPS_PORT:
+        msg = f"Automation webhook port {port} is not allowed; expected {_HTTPS_PORT}"
         raise ValueError(msg)
     return candidate
 
 
+@dataclass(frozen=True)
+class WebhookCallbackCredentials:
+    """One Rule B webhook URL and its matching token, already validated as a pair."""
+
+    url: str
+    token: str
+
+
+class WebhookCallbackConfigError(ValueError):
+    """Callback URL/token pairing, fallback completeness, or URL validation failed.
+
+    The HTTP API maps this to 422. Handler construction raises it as ``ValueError`` so
+    non-HTTP callers fail before Jira fetch and model inference.
+    """
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+_REQUEST_URL_WITHOUT_TOKEN = (
+    "Automation callback webhook_url requires the matching webhook_token: "
+    "per-request callback credentials must be sent together"
+)
+_REQUEST_TOKEN_WITHOUT_URL = (
+    "Automation callback webhook_token requires the matching webhook_url: "
+    "per-request callback credentials must be sent together"
+)
+_MISSING_CALLBACK_PAIR = (
+    "Automation callback requires a webhook URL and token together: send both "
+    "per-request values, or configure both JIRA_AUTOMATION_WEBHOOK_URL and "
+    "JIRA_AUTOMATION_WEBHOOK_TOKEN"
+)
+
+
+def resolve_webhook_callback_credentials(
+    *,
+    request_url: str | None,
+    request_token: str | None,
+    settings: AppSettings | None,
+) -> WebhookCallbackCredentials:
+    """Return one complete callback pair, or raise ``WebhookCallbackConfigError``.
+
+    URL and token address the same Rule B webhook, so they never mix across sources: a
+    per-request URL is paired only with a per-request token, and the settings pair is
+    used only when the request supplies neither. The URL that will actually be used is
+    validated here so a bad value fails before triage work is paid for.
+    """
+    url = str(request_url or "").strip() or None
+    token = str(request_token or "").strip() or None
+    if token is not None and url is None:
+        raise WebhookCallbackConfigError("request_token_without_url", _REQUEST_TOKEN_WITHOUT_URL)
+    if url is not None:
+        if token is None:
+            raise WebhookCallbackConfigError("request_url_without_token", _REQUEST_URL_WITHOUT_TOKEN)
+        try:
+            return WebhookCallbackCredentials(
+                url=validate_request_webhook_url(url),
+                token=token,
+            )
+        except ValueError as exc:
+            raise WebhookCallbackConfigError("invalid_url", str(exc)) from exc
+    if settings is None:
+        raise WebhookCallbackConfigError("missing_pair", _MISSING_CALLBACK_PAIR)
+    config_error = configured_webhook_config_error(settings)
+    if config_error is not None:
+        raise WebhookCallbackConfigError("configured_pair", config_error)
+    fallback_url = str(settings.jira_automation_webhook_url or "").strip()
+    fallback_token = str(settings.jira_automation_webhook_token or "").strip()
+    if not fallback_url or not fallback_token:
+        raise WebhookCallbackConfigError("missing_pair", _MISSING_CALLBACK_PAIR)
+    return WebhookCallbackCredentials(url=fallback_url, token=fallback_token)
+
+
+def configured_webhook_config_error(settings: AppSettings) -> str | None:
+    """Describe why the configured callback fallback is unusable, or None when absent or valid.
+
+    ``JIRA_AUTOMATION_WEBHOOK_URL`` and ``JIRA_AUTOMATION_WEBHOOK_TOKEN`` name one Rule B
+    webhook: they must be set together, and the URL must satisfy the same validation as a
+    per-request URL. Both unset is valid — requests may carry their own pair. The API
+    readiness probe and ``resolve_webhook_callback_credentials`` share this check so a
+    misconfigured Secret fails before a triage run is paid for. Returned messages never
+    include the URL itself because its path is a secret.
+    """
+    url = str(settings.jira_automation_webhook_url or "").strip() or None
+    token = str(settings.jira_automation_webhook_token or "").strip() or None
+    if url is None and token is None:
+        return None
+    if token is None:
+        return (
+            "JIRA_AUTOMATION_WEBHOOK_URL is set without JIRA_AUTOMATION_WEBHOOK_TOKEN: "
+            "the configured callback credentials must be set together"
+        )
+    if url is None:
+        return (
+            "JIRA_AUTOMATION_WEBHOOK_TOKEN is set without JIRA_AUTOMATION_WEBHOOK_URL: "
+            "the configured callback credentials must be set together"
+        )
+    try:
+        validate_request_webhook_url(url)
+    except ValueError as exc:
+        return f"Configured JIRA_AUTOMATION_WEBHOOK_URL is invalid: {exc}"
+    return None
+
+
 def redacted_webhook_url(url: str) -> str:
-    """Return only the callback origin because its path contains a secret."""
-    parsed = urlsplit(url)
-    if parsed.scheme and parsed.hostname:
-        return f"{parsed.scheme}://{parsed.hostname}"
-    return "<redacted-webhook-url>"
+    """Return the callback origin only when its host is an allowed callback host.
+
+    Callers redact unvalidated input (inbound debug logging runs before request validation),
+    so this must never raise and must never trust the parsed authority: percent-encoded
+    slashes survive ``urlsplit`` as part of ``hostname``, so a value like
+    ``https://host%2Fsecret`` would otherwise re-expose the secret path as its "origin".
+    Anything that is not exactly an allowed host collapses to the fixed marker.
+    """
+    try:
+        parsed = urlsplit(url)
+        hostname = parsed.hostname
+    except ValueError:
+        return REDACTED_URL_MARKER
+    if parsed.scheme and hostname in ALLOWED_WEBHOOK_HOSTS:
+        return f"{parsed.scheme}://{hostname}"
+    return REDACTED_URL_MARKER
 
 
 def delivery_attempts(exc: object) -> int:
@@ -148,9 +282,9 @@ class AutomationWebhookTriageActionExecutor:
     service no longer observes the write, so analytics rows describe what was requested of Jira
     Automation.
 
-    ``webhook_url``/``webhook_token`` let a caller name the Rule B endpoint per run (each project
-    scopes its own Automation rule); they take precedence over ``JIRA_AUTOMATION_WEBHOOK_URL`` and
-    ``JIRA_AUTOMATION_WEBHOOK_TOKEN``.
+    ``webhook_url``/``webhook_token`` are the already-resolved Rule B endpoint for this run.
+    Pairing, source precedence, and URL validation happen in
+    ``resolve_webhook_callback_credentials`` before this executor is constructed.
     """
 
     def __init__(
@@ -163,15 +297,15 @@ class AutomationWebhookTriageActionExecutor:
         auto_apply_escalation: bool | None = None,
         auto_apply_bug_to_story: bool | None = None,
         audit_store: AuditStore | None = None,
-        webhook_token: str | None = None,
-        webhook_url: str | None = None,
+        webhook_token: str,
+        webhook_url: str,
     ) -> None:
         self._settings = settings
         self._client = client
         self._post_mismatch_comments = post_mismatch_comments
         self._audit_store = audit_store
-        self._webhook_token = (webhook_token or "").strip() or None
-        self._webhook_url = (webhook_url or "").strip() or None
+        self._webhook_token = webhook_token.strip()
+        self._webhook_url = webhook_url.strip()
         self._policy = AutoApplyPolicy(
             apply_deescalation=(
                 settings.triage_auto_apply_deescalation
@@ -226,21 +360,12 @@ class AutomationWebhookTriageActionExecutor:
             applied_priority_change=decision.apply_priority is not None,
         )
 
-    def _resolve_url(self) -> str:
-        """Prefer the caller-supplied endpoint, re-validating it at the point of use."""
-        if self._webhook_url is not None:
-            try:
-                return validate_request_webhook_url(self._webhook_url)
-            except ValueError as exc:
-                raise AutomationCallbackError(str(exc)) from exc
-        url = str(self._settings.jira_automation_webhook_url or "").strip()
-        if not url:
-            msg = (
-                "Automation callback requires JIRA_AUTOMATION_WEBHOOK_URL "
-                "when applying outcomes via Jira Automation."
-            )
-            raise AutomationCallbackError(msg)
-        return url
+    def _callback_target(self) -> tuple[str, str]:
+        """Return the injected callback URL after a last-mile host/scheme check."""
+        try:
+            return validate_request_webhook_url(self._webhook_url), self._webhook_token
+        except ValueError as exc:
+            raise AutomationCallbackError(str(exc)) from exc
 
     def _deliver(
         self,
@@ -251,19 +376,35 @@ class AutomationWebhookTriageActionExecutor:
         source: str,
         run_id: str,
     ) -> None:
-        url = self._resolve_url()
-        headers = {"Content-Type": "application/json", "Accept": "application/json"}
-        token = (
-            self._webhook_token
-            or str(self._settings.jira_automation_webhook_token or "").strip()
-        )
-        if token:
-            headers[_TOKEN_HEADER] = token
+        try:
+            url, token = self._callback_target()
+        except AutomationCallbackError as exc:
+            self._record_delivery(
+                issue_key=issue_key,
+                project=project,
+                source=source,
+                run_id=run_id,
+                delivered=False,
+                http_status=None,
+                attempts=0,
+                failure=str(exc),
+            )
+            raise
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            _TOKEN_HEADER: token,
+        }
 
         try:
             response, attempts = self._post(url, payload=payload, headers=headers)
         except (TransportRetriesExhausted, httpx.RequestError) as exc:
-            failure = f"Automation callback request failed: {exc}"
+            # Exception text is untrusted here: httpx includes the request URL, and
+            # TransportRetriesExhausted wraps that cause. Persist the type only, and
+            # chain from a type-only surrogate so LOGGER.exception cannot print the
+            # webhook path.
+            cause = getattr(exc, "cause", exc)
+            failure = f"Automation callback request failed: {type(cause).__name__}"
             self._record_delivery(
                 issue_key=issue_key,
                 project=project,
@@ -274,13 +415,16 @@ class AutomationWebhookTriageActionExecutor:
                 attempts=delivery_attempts(exc),
                 failure=failure,
             )
-            raise AutomationCallbackError(failure) from exc
-
-        if response.is_error:
-            snippet = response.text[:300]
-            failure = (
-                f"Automation callback failed with HTTP {response.status_code}: {snippet}"
+            raise AutomationCallbackError(failure) from RuntimeError(
+                type(cause).__name__
             )
+
+        # Only a 2xx means Rule B accepted the body. Redirects are failures here: these
+        # clients do not follow them, so a 3xx leaves the payload undelivered.
+        # The remote body is untrusted and may echo the requested webhook URI, so
+        # logs and audit records keep the status code only.
+        if not response.is_success:
+            failure = f"Automation callback failed with HTTP {response.status_code}"
             self._record_delivery(
                 issue_key=issue_key,
                 project=project,
