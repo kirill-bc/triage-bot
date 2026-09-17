@@ -55,13 +55,14 @@ def test_external_adapter_modules_live_under_adapters_package() -> None:
     adapters_root = root / "src" / "triage_service" / "adapters"
     module_names = (
         "jira_issue_fetcher.py",
-        "jira_action_executor.py",
+        "automation_webhook_executor.py",
         "openrouter_inference_client.py",
     )
 
     for name in module_names:
         assert (adapters_root / name).is_file()
         assert not (root / name).exists()
+    assert not (adapters_root / "jira_action_executor.py").exists()
 
 
 @pytest.mark.unit

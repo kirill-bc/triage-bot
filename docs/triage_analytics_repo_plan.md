@@ -117,7 +117,7 @@ Schema this repo validates against).
   "session_id": "uuid",               // Langfuse session id (may equal run_id)
   "issue_key": "TJC-123",
   "project": "TJC",
-  "source": "bug_created",            // bug_created | priority_changed | manual_trigger
+  "source": "bug_created",            // one of the POST /triage source values
   "intake_issue_type": "Bug",         // issue type before triage
   "intake_priority": "P2",            // priority before triage; null when intake type is Story
   "recommended_issue_type": "Story",
@@ -136,7 +136,7 @@ Schema this repo validates against).
 | `run_id` | yes | Idempotency key; ingest upserts on it. |
 | `session_id` | no | Langfuse session identifier for trace replay/debug joins. |
 | `issue_key`, `project` | yes | Correlation / grouping. |
-| `source` | yes | One of `bug_created`, `priority_changed`, `manual_trigger`. |
+| `source` | yes | One of `bug_created`, `manual_trigger`, `priority_changed`, `daily_cleanup`, `jira_escalated_added`, `priority_changed_retriage`, `zendesk_ticket_added`. |
 | `intake_issue_type`, `intake_priority` | yes | The "before" state powering promoted/demoted. `intake_priority` is null when intake type is `Story`. |
 | `recommended_issue_type`, `recommended_priority` | yes | The "after" recommendation. `recommended_priority` is null when recommended type is `Story`. |
 | `applied_type_change`, `applied_priority_change` | yes | Distinguish advisory recommendations from auto-applied mutations. |

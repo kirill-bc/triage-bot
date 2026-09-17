@@ -66,6 +66,11 @@ class _BlockingRunner:
 @pytest.fixture(autouse=True)
 def _configure_triage_webhook_token(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", _TRIAGE_TOKEN)
+    monkeypatch.setenv(
+        "JIRA_AUTOMATION_WEBHOOK_URL",
+        "https://api-private.atlassian.com/automation/webhooks/jira/cloud/test",
+    )
+    monkeypatch.setenv("JIRA_AUTOMATION_WEBHOOK_TOKEN", "test-automation-token")
 
 
 def _required_settings_env(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -765,7 +765,15 @@ def _add_common_langfuse_args(
     parser.add_argument(
         "--default-source",
         default="bug_created",
-        choices=["bug_created", "priority_changed", "manual_trigger"],
+        choices=[
+            "bug_created",
+            "manual_trigger",
+            "priority_changed",
+            "daily_cleanup",
+            "jira_escalated_added",
+            "priority_changed_retriage",
+            "zendesk_ticket_added",
+        ],
         help="Fallback source for exported rows (default: bug_created).",
     )
     parser.add_argument(

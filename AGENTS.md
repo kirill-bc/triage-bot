@@ -100,8 +100,8 @@ Reference `.env.example` for the full set.
 
 Highest-priority unfinished area in `TODO.md`:
 
-- **§14 Jira Automation callback delivery:** service-side work is done (`TRIAGE_JIRA_APPLY_MODE=automation_webhook` renders the outcome payload and POSTs it to Rule B). Remaining: the Jira-side Rule B build + smoke run, then retiring the `direct` path.
-- **§15 Re-triage on priority change:** blocked on §14's Rule B (automation-actor loop suppression and entity-property last-run state).
+- **§14 Jira Automation callback delivery:** production path is the Rule B callback only (`AutomationWebhookTriageActionExecutor`). Direct Jira REST writes and `TRIAGE_JIRA_APPLY_MODE` have been removed. Remaining: §15 re-triage on priority change.
+- **§15 Re-triage on priority change:** depends on Rule B (automation-actor loop suppression and entity-property last-run state).
 - **§11 Post-MVP:** benchmark / bulk-triage stratification for issues with vs without linked Zendesk context (and Zendesk-only images); Langfuse root trace cost display; optional image-context inline placement and post-triage formatting advisory.
 - **§16:** integration tests (deferred until post-deploy stabilization).
 
@@ -111,7 +111,7 @@ Zendesk enrichment remains soft-fail-safe: fetch/summary/vision failures must no
 
 - Keep sequential logic intact: Story path skips priority inference.
 - Keep Jira mutations advisory only (labels/comments), no automatic field mutation.
-- Outcome delivery is transport-pluggable: decisions and comment copy live in `adapters/triage_outcome_rendering.py`, never in an executor. Direct Jira writes and the Automation callback must stay behaviorally identical.
+- Outcome delivery is the Automation callback: decisions and comment copy live in `adapters/triage_outcome_rendering.py`, never in an executor. Rule B is a dumb applier.
 - Preserve `run_id` propagation for API, logs, and traces.
 - Prefer narrow, high-signal tests over brittle mock-heavy coverage.
 - Avoid introducing coupling across package boundaries that breaks the architecture direction.

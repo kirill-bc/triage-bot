@@ -39,7 +39,7 @@ from triage_service.adapters.openrouter_inference_client import (
     OpenRouterInferenceError,
 )
 from triage_service.core.policy_context import PolicyContext
-from triage_service.core.settings import AppSettings, JiraApplyMode
+from triage_service.core.settings import AppSettings
 from triage_service.core.prompt_composer import (
     compose_classification_prompt,
     compose_classification_system_prompt,
@@ -1557,7 +1557,6 @@ class TriageHandler:
 def _build_action_executor(
     settings: AppSettings,
     *,
-    jira_apply_mode: JiraApplyMode,
     apply_to_jira: bool,
     post_mismatch_comments: bool,
     auto_apply_deescalation: bool | None,
@@ -1567,54 +1566,43 @@ def _build_action_executor(
     jira_automation_webhook_token: str | None = None,
     jira_automation_webhook_url: str | None = None,
 ) -> TriageActionExecutor:
-    """Pick the outcome delivery path: Automation callback, direct Jira writes, or no-op.
+    """Deliver outcomes via the Automation callback, or no-op when apply is disabled.
 
-    Webhook mode needs no Jira write credentials — the Automation rule applies the changes.
-    ``resolve_webhook_callback_credentials`` enforces pairing, source precedence, and URL
-    validation here so a bad pair fails at build time with ``ValueError`` instead of after
-    the Jira fetch and model inference have already run. The HTTP API maps the same error
-    to 422 before this function is reached.
+    The service does not write labels/comments/fields through Jira REST. Rule B applies
+    those changes as the Automation actor. ``resolve_webhook_callback_credentials``
+    enforces pairing, source precedence, and URL validation here so a bad or missing
+    pair fails at build time with ``ValueError`` instead of after the Jira fetch and
+    model inference have already run. That rejection is expected: every production
+    Rule A must send a complete URL/token pair, and the cluster does not provision a
+    service-wide fallback. The HTTP API maps the same error to 422 before this function
+    is reached.
     """
     from triage_service.adapters.automation_webhook_executor import (
         AutomationWebhookTriageActionExecutor,
         resolve_webhook_callback_credentials,
     )
-    from triage_service.adapters.jira_action_executor import JiraTriageActionExecutor
 
     if not apply_to_jira:
         return NoOpTriageActionExecutor()
-    if jira_apply_mode == "automation_webhook":
-        credentials = resolve_webhook_callback_credentials(
-            request_url=jira_automation_webhook_url,
-            request_token=jira_automation_webhook_token,
-            settings=settings,
-        )
-        return AutomationWebhookTriageActionExecutor(
-            settings,
-            post_mismatch_comments=post_mismatch_comments,
-            auto_apply_deescalation=auto_apply_deescalation,
-            auto_apply_escalation=auto_apply_escalation,
-            auto_apply_bug_to_story=auto_apply_bug_to_story,
-            audit_store=audit_store,
-            webhook_token=credentials.token,
-            webhook_url=credentials.url,
-        )
-    cloud_id_configured = bool(str(settings.jira_cloud_id or "").strip())
-    email_configured = bool(str(settings.jira_user_email or "").strip())
-    if cloud_id_configured and email_configured:
-        return JiraTriageActionExecutor(
-            settings,
-            post_mismatch_comments=post_mismatch_comments,
-            auto_apply_deescalation=auto_apply_deescalation,
-            auto_apply_escalation=auto_apply_escalation,
-            auto_apply_bug_to_story=auto_apply_bug_to_story,
-        )
-    return NoOpTriageActionExecutor()
+    credentials = resolve_webhook_callback_credentials(
+        request_url=jira_automation_webhook_url,
+        request_token=jira_automation_webhook_token,
+        settings=settings,
+    )
+    return AutomationWebhookTriageActionExecutor(
+        settings,
+        post_mismatch_comments=post_mismatch_comments,
+        auto_apply_deescalation=auto_apply_deescalation,
+        auto_apply_escalation=auto_apply_escalation,
+        auto_apply_bug_to_story=auto_apply_bug_to_story,
+        audit_store=audit_store,
+        webhook_token=credentials.token,
+        webhook_url=credentials.url,
+    )
 
 
 def build_default_triage_handler(
     *,
-    jira_apply_mode: JiraApplyMode | None = None,
     post_mismatch_comments: bool = True,
     apply_to_jira: bool = True,
     auto_apply_deescalation: bool | None = None,
@@ -1623,7 +1611,7 @@ def build_default_triage_handler(
     jira_automation_webhook_token: str | None = None,
     jira_automation_webhook_url: str | None = None,
 ) -> TriageRunner:
-    """Build handler using the request override or configured outcome delivery path."""
+    """Build handler that delivers outcomes through the Automation callback."""
     from triage_service.adapters.image_context_extractor import build_image_context_extractor
     from triage_service.core.policy_context import load_policy_context
     from triage_service.core.settings import load_settings
@@ -1649,7 +1637,6 @@ def build_default_triage_handler(
     analytics_client = build_analytics_decision_client(settings)
     executor = _build_action_executor(
         settings,
-        jira_apply_mode=jira_apply_mode or settings.triage_jira_apply_mode,
         apply_to_jira=apply_to_jira,
         post_mismatch_comments=post_mismatch_comments,
         auto_apply_deescalation=auto_apply_deescalation,

@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
 from urllib.parse import urlparse
 
 from dotenv import find_dotenv, load_dotenv
 from pydantic import Field, computed_field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing_extensions import Self
-
-JiraApplyMode = Literal["direct", "automation_webhook"]
 
 
 def _strip_matching_quotes(value: str) -> str:
@@ -416,32 +413,22 @@ class AppSettings(BaseSettings):
             "mismatches current issue type."
         ),
     )
-    triage_jira_apply_mode: JiraApplyMode = Field(
-        default="direct",
-        validation_alias="TRIAGE_JIRA_APPLY_MODE",
-        description=(
-            "How triage outcomes reach Jira: 'direct' writes labels/comments/fields via Jira "
-            "REST; 'automation_webhook' POSTs a decision payload to a Jira Automation "
-            "incoming webhook that applies labels/fields and composes the comment as the "
-            "Automation actor."
-        ),
-    )
     jira_automation_webhook_url: str | None = Field(
         default=None,
         validation_alias="JIRA_AUTOMATION_WEBHOOK_URL",
         description=(
-            "Optional Secret fallback for the Rule B incoming-webhook URL. "
-            "Prefer jira_automation_webhook_url on each request during parallel migration. "
-            "Never store this in a ConfigMap."
+            "Optional Secret fallback for the Rule B incoming-webhook URL for local/non-cluster "
+            "runs. Production Rule A always sends jira_automation_webhook_url on each request; "
+            "the cluster does not set this. Never store this in a ConfigMap."
         ),
     )
     jira_automation_webhook_token: str | None = Field(
         default=None,
         validation_alias="JIRA_AUTOMATION_WEBHOOK_TOKEN",
         description=(
-            "Optional Secret fallback for X-Automation-Webhook-Token. "
-            "Prefer X-Jira-Automation-Webhook-Token on each request during parallel migration. "
-            "Never store this in a ConfigMap."
+            "Optional Secret fallback for X-Automation-Webhook-Token for local/non-cluster "
+            "runs. Production Rule A always sends X-Jira-Automation-Webhook-Token; the "
+            "cluster does not set this. Never store this in a ConfigMap."
         ),
     )
     jira_automation_webhook_timeout_seconds: float = Field(

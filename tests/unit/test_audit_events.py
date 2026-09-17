@@ -21,6 +21,25 @@ def test_audit_failure_categories_match_triage_failure_category() -> None:
 
 
 @pytest.mark.unit
+def test_audit_source_categories_include_every_api_trigger() -> None:
+    from triage_service.api.triage_api import TriageSource
+    from triage_service.observability.audit_events import TriageSourceLiteral
+
+    expected = {
+        "bug_created",
+        "manual_trigger",
+        "priority_changed",
+        "daily_cleanup",
+        "jira_escalated_added",
+        "priority_changed_retriage",
+        "zendesk_ticket_added",
+    }
+
+    assert set(get_args(TriageSource)) == expected
+    assert set(get_args(TriageSourceLiteral)) == expected
+
+
+@pytest.mark.unit
 def test_parse_classification_completed_round_trip() -> None:
     from triage_service.observability.audit_events import (
         dump_triage_audit_event,

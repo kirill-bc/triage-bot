@@ -1,8 +1,7 @@
 """HTTP API surface for triage triggers (MVP: request/response contract only).
 
-The request body carries a ``source`` closed enum so callers identify why triage
-was invoked: ``bug_created`` (Jira automation on new bugs), ``priority_changed``
-(Jira automation on priority edits), or ``manual_trigger`` (local runner / scripts).
+The request body carries a closed ``source`` enum identifying the Jira Automation
+rule or manual entry point that started the run.
 """
 
 from __future__ import annotations
@@ -36,7 +35,7 @@ from triage_service.adapters.automation_webhook_executor import (
     resolve_webhook_callback_credentials,
     validate_request_webhook_url,
 )
-from triage_service.core.settings import AppSettings, JiraApplyMode, load_settings
+from triage_service.core.settings import AppSettings, load_settings
 from triage_service.core.triage_fallback import TriageFailure
 from triage_service.core.triage_handler import TriageRunner, build_default_triage_handler
 from triage_service.core.triage_recommendation_parser import TriageRecommendation
@@ -47,8 +46,15 @@ from triage_service.observability.runtime_logging import (
     configure_runtime_logging,
 )
 
-TriageSource = Literal["bug_created", "priority_changed", "manual_trigger"]
-ApplyModeOrigin = Literal["request", "settings"]
+TriageSource = Literal[
+    "bug_created",
+    "manual_trigger",
+    "priority_changed",
+    "daily_cleanup",
+    "jira_escalated_added",
+    "priority_changed_retriage",
+    "zendesk_ticket_added",
+]
 LOGGER = logging.getLogger(__name__)
 
 # A URL slash, whether written as `/`, JSON `\/`, or JSON `\u002f`. Each form is matched
@@ -168,24 +174,20 @@ class TriageRequest(BaseModel):
     project: str = Field(min_length=1, description="Jira project key.")
     source: TriageSource = Field(
         description=(
-            "Origin of the triage call: bug_created or priority_changed (Jira Automation) "
-            "or manual_trigger (local runner)."
-        ),
-    )
-    jira_apply_mode: JiraApplyMode | None = Field(
-        default=None,
-        description=(
-            "Optional per-request Jira outcome delivery mode. Omit to use "
-            "TRIAGE_JIRA_APPLY_MODE from the service environment."
+            "Origin of the triage call. Accepted values: bug_created, priority_changed, "
+            "daily_cleanup, jira_escalated_added, priority_changed_retriage, "
+            "zendesk_ticket_added (Jira Automation), or manual_trigger (CLI / local runner)."
         ),
     )
     jira_automation_webhook_url: str | None = Field(
         default=None,
         description=(
-            "Optional callback URL for this project's Automation rule. Must be an https URL on "
+            "This project's Rule B incoming-webhook URL. Must be https on "
             "api-private.atlassian.com and must be sent with X-Jira-Automation-Webhook-Token. "
-            "Omit both to use the JIRA_AUTOMATION_WEBHOOK_URL / JIRA_AUTOMATION_WEBHOOK_TOKEN "
-            "pair from settings (Secret only; never a ConfigMap)."
+            "A request with no complete URL/token pair is 422. Production Rule A always "
+            "sends both; there is no cluster ConfigMap/ExternalSecret fallback. Local runs "
+            "may instead set JIRA_AUTOMATION_WEBHOOK_URL / JIRA_AUTOMATION_WEBHOOK_TOKEN "
+            "together (Secret only; never a ConfigMap)."
         ),
     )
 
@@ -194,7 +196,7 @@ class TriageRequest(BaseModel):
         description=(
             "Block until triage finishes and return the recommendation. Jira Automation must "
             "leave this false: a run takes minutes and the rule's web request would time out "
-            "long before it returns. Outcomes reach Jira through the configured delivery path "
+            "long before it returns. Outcomes reach Jira through the Automation callback "
             "either way, so only callers that consume the response body (CLI, manual runs) "
             "should set it."
         ),
@@ -338,30 +340,13 @@ def _optional_app_settings() -> AppSettings | None:
         return None
 
 
-def effective_apply_mode(
-    body: TriageRequest,
-    settings: AppSettings | None,
-) -> tuple[JiraApplyMode, ApplyModeOrigin]:
-    """Return the delivery mode this request will use, and which layer decided it.
-
-    The origin matters operationally: a request that meant to use the Automation callback but
-    omitted (or predates) ``jira_apply_mode`` falls back to the service default and writes via
-    REST, which otherwise looks identical to a deliberate direct-mode run.
-    """
-    if body.jira_apply_mode is not None:
-        return body.jira_apply_mode, "request"
-    if settings is not None:
-        return settings.triage_jira_apply_mode, "settings"
-    return "direct", "settings"
-
-
 def require_webhook_callback_config(
     body: TriageRequest,
     *,
     request_webhook_token: str | None,
     settings: AppSettings | None = None,
 ) -> None:
-    """Reject webhook mode unless one complete, valid callback credential pair is available.
+    """Reject the request unless one complete, valid callback credential pair is available.
 
     Pairing, source precedence, and URL validation live in
     ``resolve_webhook_callback_credentials``; this wrapper maps that typed error to HTTP 422
@@ -369,9 +354,6 @@ def require_webhook_callback_config(
     """
     if settings is None:
         settings = _optional_app_settings()
-    effective_mode, _origin = effective_apply_mode(body, settings)
-    if effective_mode != "automation_webhook":
-        return
     try:
         resolve_webhook_callback_credentials(
             request_url=body.jira_automation_webhook_url,
@@ -398,7 +380,7 @@ def _api_callback_error_detail(exc: WebhookCallbackConfigError) -> str:
         )
     if exc.code == "missing_pair":
         return (
-            "jira_apply_mode=automation_webhook requires a callback URL and token: send "
+            "callback delivery requires a callback URL and token: send "
             "jira_automation_webhook_url with X-Jira-Automation-Webhook-Token, or configure "
             "both JIRA_AUTOMATION_WEBHOOK_URL and JIRA_AUTOMATION_WEBHOOK_TOKEN"
         )
@@ -642,28 +624,11 @@ def create_app(*, triage_handler_factory: Callable[[], TriageRunner] | None = No
             request_webhook_token=x_jira_automation_webhook_token,
             settings=settings,
         )
-        apply_mode, apply_mode_origin = effective_apply_mode(body, settings)
-        LOGGER.info(
-            "triage_apply_mode_selected issue_key=%s source=%s apply_mode=%s origin=%s",
-            body.issue_key,
-            body.source,
-            apply_mode,
-            apply_mode_origin,
-            extra={
-                "event_type": "triage_apply_mode_selected",
-                "issue_key": body.issue_key,
-                "project": body.project,
-                "source": body.source,
-                "apply_mode": apply_mode,
-                "apply_mode_origin": apply_mode_origin,
-            },
-        )
         if triage_handler_factory is not None:
             runner = triage_handler_factory()
         else:
             token = (x_jira_automation_webhook_token or "").strip() or None
             runner = build_default_triage_handler(
-                jira_apply_mode=body.jira_apply_mode,
                 jira_automation_webhook_token=token,
                 jira_automation_webhook_url=body.jira_automation_webhook_url,
             )

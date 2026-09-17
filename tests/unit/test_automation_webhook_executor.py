@@ -63,7 +63,6 @@ def _settings(monkeypatch: pytest.MonkeyPatch, **env: str) -> AppSettings:
     monkeypatch.setenv("JIRA_API_KEY", "jira-api-token")
     monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
     monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
-    monkeypatch.setenv("TRIAGE_JIRA_APPLY_MODE", "automation_webhook")
     monkeypatch.setenv("JIRA_AUTOMATION_WEBHOOK_URL", _WEBHOOK_URL)
     monkeypatch.setenv("JIRA_AUTOMATION_WEBHOOK_TOKEN", _WEBHOOK_TOKEN)
     for key in (

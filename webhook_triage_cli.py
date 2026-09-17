@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import os
 import sys
 
 import triage_manual_cli
 
-_APPLY_MODE_ENV = "TRIAGE_JIRA_APPLY_MODE"
 _AUTO_APPLY_FLAGS = (
     "--auto-apply-deescalation",
     "--auto-apply-escalation",
@@ -23,13 +21,5 @@ def _argv_with_mutations_enabled(argv: list[str] | None) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Force callback delivery and delegate inference/output to the manual CLI."""
-    previous_mode = os.environ.get(_APPLY_MODE_ENV)
-    os.environ[_APPLY_MODE_ENV] = "automation_webhook"
-    try:
-        return triage_manual_cli.main(_argv_with_mutations_enabled(argv))
-    finally:
-        if previous_mode is None:
-            os.environ.pop(_APPLY_MODE_ENV, None)
-        else:
-            os.environ[_APPLY_MODE_ENV] = previous_mode
+    """Delegate inference/output to the manual CLI with mutation directives enabled."""
+    return triage_manual_cli.main(_argv_with_mutations_enabled(argv))

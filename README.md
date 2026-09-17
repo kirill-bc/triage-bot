@@ -2,13 +2,13 @@
 
 Jira Triage is an MVP service that accepts a triage trigger, fetches Jira issue data, and runs AI-assisted recommendations on issue type and priority for **Bug** issues. Default analysis is **sequential**: classify Bug vs Story first (bug policy only); run priority suggestion only when the model says Bug. Projects listed in `TRIAGE_PRIORITY_ONLY_PROJECTS` skip classification and run the priority step only (see `specification.md` and `TODO.md`).
 
-After a successful run, outcomes reach Jira in one of two modes: **direct** REST writes (default) or **automation webhook** (the service POSTs a decision payload to a Jira Automation incoming-webhook rule, which applies labels and field edits and composes the comment as the Automation actor). Both modes can run in parallel during migration: keep `TRIAGE_JIRA_APPLY_MODE=direct` and send `jira_apply_mode`, a per-project Rule B URL, and `X-Jira-Automation-Webhook-Token` only on migrated Rule A payloads.
+After a successful run, the service POSTs a decision payload to a Jira Automation incoming-webhook rule ("Rule B"), which applies labels and field edits and composes the comment as the Automation actor. Each Rule A should send its project's Rule B URL as `jira_automation_webhook_url` plus `X-Jira-Automation-Webhook-Token`. Leftover `jira_apply_mode` / `TRIAGE_JIRA_APPLY_MODE` values are ignored.
 
 ## Project status
 
 The repository currently includes:
 
-- a working `POST /triage` API that validates the request and returns a `run_id` (per-request UUID). By default it **acknowledges with `202` / `status: accepted`** and runs triage in the background (the Jira Automation path). Callers that consume the response body send `"wait_for_result": true` and get `200` with `status: completed|failed` plus a recommendation or `TriageFailure`. The same pipeline is invocable locally via `scripts/run_triage_cli.py` with `source=manual_trigger`, which generates its own `run_id` for the CLI attempt. When `JIRA_CLOUD_ID` and `JIRA_USER_EMAIL` are configured, successful triage applies Jira labels/comments via `src/triage_service/adapters/jira_action_executor.py` (direct mode) or delivers a Rule B callback (`automation_webhook`); failures do not touch the issue.
+- a working `POST /triage` API that validates the request and returns a `run_id` (per-request UUID). By default it **acknowledges with `202` / `status: accepted`** and runs triage in the background (the Jira Automation path). Callers that consume the response body send `"wait_for_result": true` and get `200` with `status: completed|failed` plus a recommendation or `TriageFailure`. The same pipeline is invocable locally via `scripts/run_triage_cli.py` with `source=manual_trigger`, which generates its own `run_id` for the CLI attempt. Successful triage delivers a Rule B callback (`src/triage_service/adapters/automation_webhook_executor.py`); failures do not POST. `JIRA_CLOUD_ID` and `JIRA_USER_EMAIL` are still required for issue **fetch**.
 - Jira issue fetch support (`summary`, `description`, `issue type`, `priority`, `reporter`, and optional `reproduction_steps`)
 - bundled **policy text** for model context (`src/triage_service/core/policy/`) and a **`policy_context`** loader
 - **prompt composer** for separate classification vs priority model inputs (`src/triage_service/core/prompt_composer.py`)
@@ -21,10 +21,10 @@ See `TODO.md` for the active implementation backlog.
 ## Repository layout
 
 - `src/triage_service/api/triage_api.py`: FastAPI app, `GET /health` (liveness + readiness when `load_settings()` succeeds, plus safe `observability` flags including Langfuse export env readiness), `POST /triage` request/response contract, and dependency-injectable triage runner
-- `src/triage_service/core/triage_handler.py`: synchronous pipeline, `TriageRunner` / `TriageActionExecutor` protocols; `build_default_triage_handler()` uses `JiraTriageActionExecutor` when `JIRA_CLOUD_ID` and `JIRA_USER_EMAIL` are set, otherwise a no-op executor
+- `src/triage_service/core/triage_handler.py`: synchronous pipeline, `TriageRunner` / `TriageActionExecutor` protocols; `build_default_triage_handler()` uses `AutomationWebhookTriageActionExecutor` unless `apply_to_jira=False` (no-op)
 - `src/triage_service/adapters/jira_issue_fetcher.py`: Jira REST client and response normalization (includes `reporter_account_id` when Jira returns it, optional `reproduction_steps` from `TRIAGE_JIRA_REPRODUCTION_STEPS_FIELD_ID` when present, with fallback extraction from `description`)
 - `src/triage_service/adapters/jira_jql_search.py`: paginated Jira Cloud `GET /rest/api/3/search/jql` helper (`search_issues_by_jql`) returning issue keys with current type/priority for bulk runs
-- `src/triage_service/adapters/jira_action_executor.py`: on success, applies `triagebot-reviewed` plus mismatch labels and a templated **TriageBot** ADF comment when needed; on `TriageFailure`, performs no Jira writes
+- `src/triage_service/adapters/automation_webhook_executor.py`: on success, POSTs a versioned outcome payload to Rule B; on `TriageFailure`, performs no callback
 - `src/triage_service/adapters/openrouter_inference_client.py`: OpenRouter chat completions using `TRIAGE_TEXT_MODEL` (see `src/triage_service/core/settings.py`)
 - `src/triage_service/observability/runtime_logging.py`: stdout logging config (`LOG_LEVEL`), inbound `HttpAccessLogMiddleware`, and outbound HTTP log helpers used by `jira_http_retry`
 - `src/triage_service/core/settings.py`: environment-backed runtime settings, including `TRIAGE_ALLOWED_PROJECTS` allowlist parsing
@@ -53,7 +53,7 @@ See `TODO.md` for the active implementation backlog.
 
 ## Current implemented components
 
-- **API layer**: `GET /health` returns JSON including `observability` when `ready` is true: Langfuse key presence, **`langfuse_export_env_ready`** (keys plus SDK export env: not `LANGFUSE_TRACING_ENABLED=false`, not `OTEL_SDK_DISABLED=true`), and audit flags. That does not prove traces reached Langfuse (use UI + `LANGFUSE_DEBUG` for export failures). HTTP 503 with `ready:false` when validation fails (use for Kubernetes readiness), including an incomplete or invalid optional callback fallback pair (`JIRA_AUTOMATION_WEBHOOK_URL` / `JIRA_AUTOMATION_WEBHOOK_TOKEN`) — the URL itself is never logged. `POST /triage` accepts `issue_key`, `project`, `source` (`bug_created` or `priority_changed` for Jira Automation; `manual_trigger` for the local runner; closed `Literal`), optional `jira_apply_mode` (`direct` or `automation_webhook`; any other value is `422`), optional `jira_automation_webhook_url` (must be sent together with `X-Jira-Automation-Webhook-Token`), and optional `wait_for_result` (default `false`). It requires header `X-Triage-Token` matching `TRIAGE_WEBHOOK_TOKEN`. Default background requests return `202` / `status: accepted` immediately after reserving a concurrency slot; if every slot is taken they get an immediate `503` instead of acknowledging work that will be shed. Only a `wait_for_result` caller blocks up to `TRIAGE_CONCURRENCY_WAIT_SECONDS` before `503` (see [Concurrency](#concurrency)). JSON responses include a generated `run_id` for correlation with downstream observability. Waiting callers get a merged `TriageRecommendation` (issue type, optional P0–P4, confidence, reason) or `TriageFailure`. Invalid model JSON (classification parse failure, or priority parse failure after one retry) surfaces as `TriageFailure(category="invalid_model_output")`.
+- **API layer**: `GET /health` returns JSON including `observability` when `ready` is true: Langfuse key presence, **`langfuse_export_env_ready`** (keys plus SDK export env: not `LANGFUSE_TRACING_ENABLED=false`, not `OTEL_SDK_DISABLED=true`), and audit flags. That does not prove traces reached Langfuse (use UI + `LANGFUSE_DEBUG` for export failures). HTTP 503 with `ready:false` when validation fails (use for Kubernetes readiness), including an incomplete or invalid optional callback fallback pair (`JIRA_AUTOMATION_WEBHOOK_URL` / `JIRA_AUTOMATION_WEBHOOK_TOKEN`) — the URL itself is never logged. `POST /triage` accepts `issue_key`, `project`, a closed `source` value (see [Trigger sources](#trigger-sources)), optional `jira_automation_webhook_url` (must be sent together with `X-Jira-Automation-Webhook-Token`), and optional `wait_for_result` (default `false`). A leftover `jira_apply_mode` field is ignored. It requires header `X-Triage-Token` matching `TRIAGE_WEBHOOK_TOKEN`. Default background requests return `202` / `status: accepted` immediately after reserving a concurrency slot; if every slot is taken they get an immediate `503` instead of acknowledging work that will be shed. Only a `wait_for_result` caller blocks up to `TRIAGE_CONCURRENCY_WAIT_SECONDS` before `503` (see [Concurrency](#concurrency)). JSON responses include a generated `run_id` for correlation with downstream observability. Waiting callers get a merged `TriageRecommendation` (issue type, optional P0–P4, confidence, reason) or `TriageFailure`. Invalid model JSON (classification parse failure, or priority parse failure after one retry) surfaces as `TriageFailure(category="invalid_model_output")`.
 - **Validation**: rejects missing fields and unsupported `source` values; rejects projects outside `TRIAGE_ALLOWED_PROJECTS` with `TriageFailure` category `project_not_allowed`
 - **Jira adapter**: fetches and flattens selected Jira issue fields, including optional reproduction steps
 - **OpenRouter adapter**: `OpenRouterInferenceClient` posts chat completions using the configured model id
@@ -94,7 +94,7 @@ From repository root:
   - optional image attachment preprocessing (default **off**): `TRIAGE_IMAGE_CONTEXT_ENABLED` runs description-inline images first, then comment-referenced images (if slots remain) through a dedicated vision model before classification and priority. Uses `TRIAGE_VISION_MODEL` (independent from `TRIAGE_TEXT_MODEL`), `TRIAGE_IMAGE_CONTEXT_MAX_ATTACHMENTS` (default `5`), `TRIAGE_IMAGE_CONTEXT_MAX_BYTES_PER_IMAGE` (default 5 MiB), `TRIAGE_IMAGE_CONTEXT_TIMEOUT_SECONDS` (default `90`). Audit logs redact vision transcripts by default (`TRIAGE_AUDIT_REDACT_IMAGE_TRANSCRIPT=true`) because screenshots often contain PII. Each processed image is one billed OpenRouter vision call; failures degrade to placeholders and never abort triage.
   - optional issue comment context budget: `TRIAGE_COMMENTS_CHAR_BUDGET` (default `6000`) controls total Jira comment body characters included in `issue_block`; oldest comments are dropped first when over budget (`0` omits comment bodies).
   - optional Jira auto-apply controls (default **off**): `TRIAGE_AUTO_APPLY_DEESCALATION=true` applies Bug deescalation priority recommendations directly to Jira priority; `TRIAGE_AUTO_APPLY_ESCALATION=true` applies Bug escalation/prioritization recommendations directly to Jira priority; `TRIAGE_AUTO_APPLY_BUG_TO_STORY=true` applies Bug -> Story recommendations directly to Jira issue type.
-  - optional outcome delivery: `TRIAGE_JIRA_APPLY_MODE` (`direct` default, or `automation_webhook`). An authenticated `POST /triage` may override this per request with `jira_apply_mode`. Webhook mode prefers a per-request pair (`jira_automation_webhook_url` + `X-Jira-Automation-Webhook-Token`); the optional service-wide fallback pair `JIRA_AUTOMATION_WEBHOOK_URL` + `JIRA_AUTOMATION_WEBHOOK_TOKEN` must be set together or not at all (Secret only, never a ConfigMap). `JIRA_AUTOMATION_WEBHOOK_TIMEOUT_SECONDS` (default `30`) bounds the callback POST; that POST is a single attempt. See [Outcome delivery](#outcome-delivery-direct-writes-vs-automation-callback).
+  - optional outcome delivery: prefer a per-request pair (`jira_automation_webhook_url` + `X-Jira-Automation-Webhook-Token`); the optional service-wide fallback pair `JIRA_AUTOMATION_WEBHOOK_URL` + `JIRA_AUTOMATION_WEBHOOK_TOKEN` must be set together or not at all (Secret only, never a ConfigMap). `JIRA_AUTOMATION_WEBHOOK_TIMEOUT_SECONDS` (default `30`) bounds the callback POST; that POST is a single attempt. See [Outcome delivery](#outcome-delivery-automation-callback).
   - optional Zendesk enrichment (default **off**): when `TRIAGE_ZENDESK_CONTEXT_ENABLED=true` and Zendesk OAuth credentials are configured, triage discovers linked ticket IDs from Jira custom fields (`TRIAGE_JIRA_ZENDESK_TICKET_IDS_FIELD_ID`, default `customfield_10158`; `TRIAGE_JIRA_IMPORTED_ZENDESK_TICKET_IDS_FIELD_ID`, default `customfield_10162`) and issue text (`ZD-123`, `ZD #123`, or Zendesk ticket URLs), then fetches up to `TRIAGE_ZENDESK_MAX_TICKETS` (default `3`) tickets plus comments (`TRIAGE_ZENDESK_HTTP_TIMEOUT_SECONDS`, default `20`; `TRIAGE_ZENDESK_MAX_COMMENTS_PER_TICKET`, default `20`). Optional `TRIAGE_JIRA_ZENDESK_TICKET_COUNT_FIELD_ID` (default `customfield_10157`) is informational only. Duplicate IDs across fields and text are deduplicated before fetch. **Auth:** OAuth client-credentials (`POST /oauth/tokens`) via `ZENDESK_IDENTIFIER`, `ZENDESK_SECRET`, `ZENDESK_BASE_URL` or `ZENDESK_SUBDOMAIN` (optional `ZENDESK_OAUTH_SCOPE`, default `read`). Access tokens are cached in memory and refreshed before expiry. When `TRIAGE_ZENDESK_COMMENT_SUMMARY_ENABLED=true` (default **off**), one OpenRouter call per linked ticket condenses comments into resolution signals (`INITIAL_IMPACT`, `LATEST_STATUS`, `RESOLUTION_HINTS`, `OPEN_RISKS`) using `TRIAGE_ZENDESK_SUMMARY_MODEL`, `TRIAGE_ZENDESK_COMMENTS_CHAR_BUDGET` (newest comments kept first), and `TRIAGE_ZENDESK_SUMMARY_TIMEOUT_SECONDS`; sections that verbatim-echo Jira summary/description/repro are replaced with a short placeholder, and duplicate resolution hints across tickets are collapsed. Failures fall back to subject/description. Priority prompts weigh latest status over historical peak severity when recovery is confirmed. See [Issue context for inference](#issue-context-for-inference).
 3. Run quality gates:
    - `.venv/bin/pytest -m lint`
@@ -381,53 +381,37 @@ Omitting `X-Triage-Token` or sending the wrong value results in **`401 Unauthori
 
 ### Request body
 
-Configure Jira Automation to send custom JSON to `/triage`. Direct-mode Rule A (unchanged callers):
-
-```json
-{
-  "issue_key": "{{issue.key}}",
-  "project": "{{issue.project.key}}",
-  "source": "bug_created"
-}
-```
-
-Webhook-mode Rule A (per-request override; service env can stay `direct`):
+Configure Jira Automation to send custom JSON to `/triage`:
 
 ```json
 {
   "issue_key": "{{issue.key}}",
   "project": "{{issue.project.key}}",
   "source": "bug_created",
-  "jira_apply_mode": "automation_webhook",
   "jira_automation_webhook_url": "<this project's Rule B webhook URL>"
 }
 ```
 
-Use `priority_changed` for priority-change rules, and `bug_created` for creation rules — the `source` is what every audit event and analytics row is keyed by, so a rule cloned from another one must have this field updated. The endpoint expects this shape; default Jira payloads such as `{"issues":[]}` are rejected by request validation.
+The `source` is what every audit event and analytics row is keyed by, so a rule cloned from
+another one must have this field updated. See [Trigger sources](#trigger-sources) for the seven
+accepted values. The endpoint expects this shape; default Jira payloads such as `{"issues":[]}`
+are rejected by request validation.
 
-Rule A gets a `202` back within milliseconds and must not send `wait_for_result`. Triage itself runs after the response, so the rule's **Send web request** action completes immediately and any actions sequenced after it still run. `jira_apply_mode` is optional: when present it selects the outcome delivery path for this request only; when omitted, the service uses `TRIAGE_JIRA_APPLY_MODE`. For a gradual migration, keep the service env at `direct`, add `"jira_apply_mode": "automation_webhook"` plus this project's Rule B URL and `X-Jira-Automation-Webhook-Token` only to migrated Rule A payloads, and leave existing callers unchanged.
+Rule A gets a `202` back within milliseconds and must not send `wait_for_result`. Triage itself runs after the response, so the rule's **Send web request** action completes immediately and any actions sequenced after it still run. Send this project's Rule B URL as `jira_automation_webhook_url` plus header `X-Jira-Automation-Webhook-Token`. A leftover `jira_apply_mode` field is ignored.
 
-### Outcome delivery (direct writes vs Automation callback)
+### Outcome delivery (Automation callback)
 
-`TRIAGE_JIRA_APPLY_MODE` selects the default way a finished triage reaches Jira. An authenticated `POST /triage` may override it per request with `jira_apply_mode`:
+Every successful triage POSTs a decision payload to a Jira Automation incoming-webhook rule, which applies labels and field edits — and writes the comment text itself — as the Automation actor. Actor-applied edits do not re-trigger other Automation rules, which keeps re-triage on priority change safe.
 
-| Mode | Behavior |
-|------|----------|
-| `direct` (default) | The service writes labels, the comment, and any auto-apply field edits itself via Jira REST. |
-| `automation_webhook` | The service POSTs a decision payload to a Jira Automation incoming-webhook rule, which applies labels and field edits — and writes the comment text itself — as the Automation actor. Actor-applied edits do not re-trigger other Automation rules, which keeps re-triage on priority change safe. |
-
-Webhook mode resolves the Rule B URL and token as one pair: the per-request pair (`jira_automation_webhook_url` + `X-Jira-Automation-Webhook-Token`) when the request carries either value, otherwise the `AppSettings` pair (`JIRA_AUTOMATION_WEBHOOK_URL` / `JIRA_AUTOMATION_WEBHOOK_TOKEN`). The two sources are never mixed, because a per-project URL authenticates only with its own secret. A request supplying just one half, or a webhook-mode request with no complete pair from either source, is rejected with `422` before triage runs. Both the per-request URL and the settings fallback must be `https` on `api-private.atlassian.com` and on the default port (Atlassian retired `automation.atlassian.com` incoming webhooks). The settings fallback is prevalidated everywhere it could be paid for: `GET /health` reports not ready on a misconfigured pair, `POST /triage` rejects it with `422` before the Jira fetch and model inference run, `build_default_triage_handler` raises `ValueError` at construction for non-HTTP callers, and delivery itself re-checks and records a zero-attempt `outcome_delivered` failure as the last line of defense. The token stays out of the JSON body and is never echoed in responses, logs, or audit events. Callback logs and inbound debug logs redact the URL to scheme plus the allowed callback host (anything else, including percent-encoded authorities, collapses to a fixed marker), and drop it entirely when the inbound body cannot be parsed as JSON. `422` validation responses omit rejected input values entirely.
+Webhook delivery resolves the Rule B URL and token as one pair: the per-request pair (`jira_automation_webhook_url` + `X-Jira-Automation-Webhook-Token`) when the request carries either value, otherwise the `AppSettings` pair (`JIRA_AUTOMATION_WEBHOOK_URL` / `JIRA_AUTOMATION_WEBHOOK_TOKEN`). The two sources are never mixed, because a per-project URL authenticates only with its own secret. A request supplying just one half, or a request with no complete pair from either source, is rejected with `422` before triage runs. Both the per-request URL and the settings fallback must be `https` on `api-private.atlassian.com` and on the default port (Atlassian retired `automation.atlassian.com` incoming webhooks). The settings fallback is prevalidated everywhere it could be paid for: `GET /health` reports not ready on a misconfigured pair, `POST /triage` rejects it with `422` before the Jira fetch and model inference run, `build_default_triage_handler` raises `ValueError` at construction for non-HTTP callers, and delivery itself re-checks and records a zero-attempt `outcome_delivered` failure as the last line of defense. The token stays out of the JSON body and is never echoed in responses, logs, or audit events. Callback logs and inbound debug logs redact the URL to scheme plus the allowed callback host (anything else, including percent-encoded authorities, collapses to a fixed marker), and drop it entirely when the inbound body cannot be parsed as JSON. `422` validation responses omit rejected input values entirely.
 
 Only a `2xx` counts as delivered. The callback client does not follow redirects, so a `3xx` is recorded as a delivery failure (`outcome_delivered` with `delivered: false`) rather than a successful hand-off.
 
-`JIRA_AUTOMATION_WEBHOOK_TIMEOUT_SECONDS` (default `30`) bounds the callback POST. That POST is a single attempt: retrying a webhook that Rule B may already have accepted would duplicate comments. `TRIAGE_JIRA_HTTP_MAX_RETRIES` applies to Jira REST only. If you use the env fallbacks, store them in a Secret — never commit them. Parallel migration should keep `TRIAGE_JIRA_APPLY_MODE=direct` and send per-request URL/token only on migrated Rule A payloads.
+`JIRA_AUTOMATION_WEBHOOK_TIMEOUT_SECONDS` (default `30`) bounds the callback POST. That POST is a single attempt: retrying a webhook that Rule B may already have accepted would duplicate comments. `TRIAGE_JIRA_HTTP_MAX_RETRIES` applies to Jira REST fetch only. If you use the env fallbacks, store them in a Secret — never commit them.
 
 The callback payload contract is defined by `build_callback_payload` in `src/triage_service/adapters/automation_webhook_executor.py`; `CALLBACK_PAYLOAD_VERSION` is bumped when its shape changes.
 
-Two behavior differences versus direct writes:
-
-- Comment copy is owned by Rule B, not by the service — see below. Direct mode keeps rendering ADF comments in-service and is unaffected.
-- `applied_type_change` / `applied_priority_change` on analytics rows mean **apply directed**, not apply confirmed — the service no longer observes the write.
+`applied_type_change` / `applied_priority_change` on analytics rows mean **apply directed**, not apply confirmed — the service no longer observes the write.
 
 Each delivery attempt records an `outcome_delivered` audit event (mode, HTTP status, attempt count, failure). `delivered: false` means the callback never reached Rule B (triage succeeded; a configuration error, HTTP failure, or transport error stopped the POST). A complete but invalid settings URL is recorded as a zero-attempt failure. `delivered: true` with no Jira change means Rule B failed — use the Automation audit log and the logged `run_id`. Setup, smoke checklist, and caveats: [docs/ops/jira_automation_callback.md](docs/ops/jira_automation_callback.md).
 
@@ -455,16 +439,25 @@ Payload version `2` adds composition inputs so Rule B can write the comment. The
 
 `kind` and `topic` are flat scalars on purpose. Branch on them with `{{#if(equals(webhookData.comment.kind,"applied"))}}`, not on `actions.apply_priority`, whose `null` is unreliable in Automation conditionals. Rule B has the work item bound, so it should mention the reporter with `[~accountid:{{issue.reporter.accountId}}]` and use wiki-markup links (`[text|url]`) rather than the plain URLs the compatibility body carries.
 
-### Production automation (event-driven)
+### Trigger sources
 
-Production uses Jira Cloud Automation rules triggered by issue events — not a periodic JQL scan:
+`POST /triage` accepts exactly these source values:
 
 - **Bug created** — rule fires when a new Bug is created in an allowed project. After a **10 minute delay** (Jira Automation delay action), send `POST /triage` with `"source": "bug_created"`. The delay gives reporters time to finish edits, attach context, or correct fields before triage runs.
-- **Priority changed** — rule fires when priority changes on a Bug (same allowed projects). Use the same **10 minute delay**, then send `POST /triage` with `"source": "priority_changed"`.
-- **CLOSM (priority-only)** — use a **separate** Automation rule for CLOSM (requires `CLOSM` in both `TRIAGE_ALLOWED_PROJECTS` and `TRIAGE_PRIORITY_ONLY_PROJECTS`). Triggers and delay are the same; required JSON fields are unchanged (`issue_key`, `project`, `source`). Migrated rules may add `jira_apply_mode` and `jira_automation_webhook_url`.
-- **Dedupe** — on successful triage, `triagebot-reviewed` is applied (by the service in `direct` mode, or by Rule B in webhook mode). Optional Automation conditions such as `labels not in (triagebot-reviewed)` can skip issues already reviewed.
-- **Parallel webhook migration** — keep `TRIAGE_JIRA_APPLY_MODE=direct`. Unmigrated Rule A payloads keep writing via REST; migrated Rule A payloads send `"jira_apply_mode": "automation_webhook"`, `jira_automation_webhook_url`, and `X-Jira-Automation-Webhook-Token`. Do not add Rule B URLs or secrets to committed config.
-- **Manual trigger** — operators can triage immediately via CLI or direct API (`source=manual_trigger`) without waiting for the Automation delay. Add `"wait_for_result": true` to get the recommendation back in the response instead of a `202`.
+- **Manual trigger** — operators can triage immediately via CLI or direct API with `"source": "manual_trigger"`.
+- **Priority changed (first pass)** — priority changes handled by the existing rule use `"source": "priority_changed"`.
+- **Daily cleanup** — the daily cleanup rule uses `"source": "daily_cleanup"`.
+- **Jira escalated added** — the rule triggered when `jira_escalated` is added uses `"source": "jira_escalated_added"`.
+- **Priority changed re-triage** — a priority change on an already-triaged issue uses `"source": "priority_changed_retriage"`; §15 will add its material-change gate.
+- **Zendesk ticket added** — adding newly linked Zendesk context uses `"source": "zendesk_ticket_added"`.
+
+### Production automation (event-driven)
+
+Production uses Jira Cloud Automation rules triggered by issue events:
+
+- **CLOSM (priority-only)** — use a **separate** Automation rule for CLOSM (requires `CLOSM` in both `TRIAGE_ALLOWED_PROJECTS` and `TRIAGE_PRIORITY_ONLY_PROJECTS`). Triggers and delay are the same; required JSON fields are unchanged (`issue_key`, `project`, `source`). Each rule should send `jira_automation_webhook_url` for that project's Rule B.
+- **Dedupe** — on successful triage, Rule B applies `triagebot-reviewed`. Optional Automation conditions such as `labels not in (triagebot-reviewed)` can skip issues already reviewed.
+- **Manual response** — add `"wait_for_result": true` to a manual API request to get the recommendation back instead of a `202`.
 
 Example rule filters (adjust project keys to your allowlist):
 
@@ -473,7 +466,7 @@ Example rule filters (adjust project keys to your allowlist):
 
 ### Jira side effects
 
-After a successful triage, `triagebot-reviewed` is always applied. Additional labels, optional field updates, and internal comments depend on how the recommendation compares to current Jira state. In **direct** mode the service writes those itself via Jira REST. In **automation_webhook** mode it POSTs a decision payload and Rule B applies actions and writes the comment as the Automation actor. On the webhook path, mismatch labels (`triagebot-priority-mismatch` / `triagebot-likely-story`) ride the apply branches: an advisory-only run (auto-apply flags off) produces `triagebot-reviewed` plus the comment.
+After a successful triage, Rule B always applies `triagebot-reviewed`. Additional labels, optional field updates, and internal comments depend on how the recommendation compares to current Jira state. The service POSTs a decision payload and Rule B applies actions and writes the comment as the Automation actor. Mismatch labels (`triagebot-priority-mismatch` / `triagebot-likely-story`) ride the apply branches: an advisory-only run (auto-apply flags off) produces `triagebot-reviewed` plus the comment.
 
 | Condition | Label | Auto-apply (when enabled) | Comment |
 |-----------|-------|---------------------------|---------|
@@ -481,14 +474,9 @@ After a successful triage, `triagebot-reviewed` is always applied. Additional la
 | Bug path: recommended P0–P4 differs from current (prioritize or de-escalate) | `triagebot-priority-mismatch` | Priority field on de-escalate if `TRIAGE_AUTO_APPLY_DEESCALATION=true`; on prioritize if `TRIAGE_AUTO_APPLY_ESCALATION=true` | Yes |
 | Types and priorities align | — | — | No |
 
-In **direct** mode, comments use ADF templates from `src/triage_service/adapters/jira_comment_templates.json` (factual support tone; model confidence is not shown in Jira):
+Rule B composes comments from the inputs in `comment` (see [Comment composition on the Rule B side](#comment-composition-on-the-rule-b-side)). The advisory/applied distinction is `comment.kind`; wording lives in the Automation rule. The pre-rendered `comment.body` remains on the payload as v1 compatibility copy. `jira_comment_templates.json` is unused on this path.
 
-- **Advisory** — no issue-type or priority field was changed on this run. Opening copy states that no modifications were made.
-- **Applied** — `TRIAGE_AUTO_APPLY_*` updated issue type and/or priority. Opening copy states the ticket was reviewed and adjusted; action lines describe what changed.
-
-Every mismatch comment ends with a closing paragraph asking the reporter to explain if they want to keep the current / pre-edit value. Mismatch comments also include a **Helpful resources** line linking to Confluence (URLs in `jira_comment_templates.json`).
-
-In **automation_webhook** mode the service sends no comment copy at all: Rule B composes the text from the inputs in `comment` (see [Comment composition on the Rule B side](#comment-composition-on-the-rule-b-side)). The same advisory/applied distinction is carried as `comment.kind`, but the wording lives in the Automation rule. `jira_comment_templates.json` applies to direct mode only. The pre-rendered `comment.body` remains on the payload as v1 compatibility copy.
+Every mismatch comment should end with a closing paragraph asking the reporter to explain if they want to keep the current / pre-edit value, plus a **Helpful resources** Confluence link.
 
 Structured `triage_completed` audit events may include:
 
@@ -499,7 +487,7 @@ Structured `triage_completed` audit events may include:
 - `auto_apply_deescalation_enabled`, `auto_apply_escalation_enabled`, and `auto_apply_bug_to_story_enabled` reflecting runtime flags
 - `zendesk_tickets_considered`, `zendesk_tickets_fetched`, `zendesk_tickets_summarized` when Zendesk enrichment runs
 
-Webhook-mode delivery also records an `outcome_delivered` audit event (mode, HTTP status, attempt count, failure).
+Webhook-mode delivery also records an `outcome_delivered` audit event (HTTP status, attempt count, failure).
 
 ### `triagebot-reviewed` lifecycle
 
@@ -621,8 +609,6 @@ After the first real triage request, container logs should include `triage_obser
 ### Container / runtime logging
 
 The API configures process-wide stdout logging at startup from `LOG_LEVEL` (default `INFO`; invalid values fall back to `INFO`). Log lines are single-line JSON objects with `timestamp`, `level`, `logger`, `message`, and any fields passed via `extra={...}` (for example `run_id`, `url`, `status_code`, `error`) so structured detail reaches Loki. Inbound requests emit `http_request` / `http_request_failed` events with method, path, status, and latency. Outbound Jira and OpenRouter HTTP calls emit per-attempt `outbound_http` events with method, URL, status, attempt number, and request duration. A first-time priority parse failure emits `triage_priority_parse_retry` before the second attempt. The Docker image runs uvicorn with `--no-access-log` so access lines come from the structured middleware instead of uvicorn’s default format. Set `LOG_LEVEL=DEBUG` for deeper service logs; third-party HTTP client libraries (`httpx`, `httpcore`, `urllib3`) stay at `WARNING` unless you change the runtime logging helper.
-
-At `INFO` log level, every accepted `POST /triage` emits a `triage_apply_mode_selected` event before triage runs, with `issue_key`, `project`, `source`, the `apply_mode` the run will use, and `apply_mode_origin` (`request` when the body carried `jira_apply_mode`, `settings` when it fell back to `TRIAGE_JIRA_APPLY_MODE`). A migrated Rule A that still writes via REST shows up here as `apply_mode=direct` with `apply_mode_origin=settings` — meaning the field never reached the service. An absent event is only evidence of an older image after confirming the request was accepted and the service is logging at `INFO`; rejected requests and higher log levels do not emit it.
 
 When enabled, additional structured audit events are emitted for Zendesk enrichment stages:
 

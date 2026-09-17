@@ -52,6 +52,11 @@ def client() -> TestClient:
 @pytest.fixture(autouse=True)
 def _configure_triage_webhook_token(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", _TRIAGE_TOKEN)
+    monkeypatch.setenv(
+        "JIRA_AUTOMATION_WEBHOOK_URL",
+        "https://api-private.atlassian.com/automation/webhooks/jira/cloud/test",
+    )
+    monkeypatch.setenv("JIRA_AUTOMATION_WEBHOOK_TOKEN", "test-automation-token")
 
 
 def _auth_headers(*, token: str = _TRIAGE_TOKEN) -> dict[str, str]:
@@ -84,56 +89,43 @@ def test_post_triage_returns_202_when_token_valid(client: TestClient) -> None:
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize(
-    ("request_mode", "expected_mode"),
-    [
-        ("automation_webhook", "automation_webhook"),
-        ("direct", "direct"),
-        (None, None),
-    ],
-)
-def test_post_triage_passes_optional_apply_mode_to_default_handler(
+def test_post_triage_does_not_forward_legacy_apply_mode(
     monkeypatch: pytest.MonkeyPatch,
-    request_mode: str | None,
-    expected_mode: str | None,
 ) -> None:
+    """Retired jira_apply_mode must not reach handler construction."""
     monkeypatch.setenv("JIRA_API_KEY", "jira-token")
     monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-token")
-    observed: list[str | None] = []
+    observed: list[dict[str, object]] = []
 
-    def _build(
-        *,
-        jira_apply_mode: str | None = None,
-        jira_automation_webhook_token: str | None = None,
-        jira_automation_webhook_url: str | None = None,
-    ) -> _StubRunner:
-        _ = (jira_automation_webhook_token, jira_automation_webhook_url)
-        observed.append(jira_apply_mode)
+    def _build(**kwargs: object) -> _StubRunner:
+        observed.append(kwargs)
         return _StubRunner()
-
-    payload: dict[str, str] = {
-        "issue_key": "TJC-9",
-        "project": "TJC",
-        "source": "bug_created",
-    }
-    if request_mode is not None:
-        payload["jira_apply_mode"] = request_mode
-    headers = _auth_headers()
-    if request_mode == "automation_webhook":
-        payload["jira_automation_webhook_url"] = (
-            "https://api-private.atlassian.com/automation/webhooks/jira/cloud/hook"
-        )
-        headers["X-Jira-Automation-Webhook-Token"] = "per-project-token"
 
     with patch(
         "triage_service.api.triage_api.build_default_triage_handler",
         side_effect=_build,
     ):
         app_client = TestClient(create_app())
-        response = app_client.post("/triage", json=payload, headers=headers)
+        response = app_client.post(
+            "/triage",
+            json={
+                "issue_key": "TJC-9",
+                "project": "TJC",
+                "source": "bug_created",
+                "jira_apply_mode": "direct",
+                "jira_automation_webhook_url": (
+                    "https://api-private.atlassian.com/automation/webhooks/jira/cloud/hook"
+                ),
+            },
+            headers={
+                **_auth_headers(),
+                "X-Jira-Automation-Webhook-Token": "per-project-token",
+            },
+        )
 
     assert response.status_code == 202
-    assert observed == [expected_mode]
+    assert observed
+    assert "jira_apply_mode" not in observed[0]
 
 
 @pytest.mark.unit
@@ -157,7 +149,6 @@ def test_post_triage_rejects_webhook_url_outside_atlassian_hosts(
             "issue_key": "TJC-9",
             "project": "TJC",
             "source": "bug_created",
-            "jira_apply_mode": "automation_webhook",
             "jira_automation_webhook_url": bad_url,
         },
         headers=_auth_headers(),
@@ -194,7 +185,6 @@ def test_post_triage_forwards_webhook_token_from_header(
                 "issue_key": "TJC-9",
                 "project": "TJC",
                 "source": "bug_created",
-                "jira_apply_mode": "automation_webhook",
                 "jira_automation_webhook_url": (
                     "https://api-private.atlassian.com/automation/webhooks/jira/cloud/per-project"
                 ),
@@ -208,7 +198,6 @@ def test_post_triage_forwards_webhook_token_from_header(
     assert response.status_code == 202
     assert observed == [
         {
-            "jira_apply_mode": "automation_webhook",
             "jira_automation_webhook_token": "per-project-token",
             "jira_automation_webhook_url": (
                 "https://api-private.atlassian.com/automation/webhooks/jira/cloud/per-project"
@@ -243,7 +232,6 @@ def test_post_triage_ignores_webhook_token_in_json_body(
                 "issue_key": "TJC-9",
                 "project": "TJC",
                 "source": "bug_created",
-                "jira_apply_mode": "automation_webhook",
                 "jira_automation_webhook_token": "body-token-must-be-ignored",
                 "jira_automation_webhook_url": (
                     "https://api-private.atlassian.com/automation/webhooks/jira/cloud/hook"
@@ -283,7 +271,6 @@ def test_post_triage_returns_422_when_webhook_url_sent_without_token(
                 "issue_key": "TJC-9",
                 "project": "TJC",
                 "source": "bug_created",
-                "jira_apply_mode": "automation_webhook",
                 "jira_automation_webhook_url": (
                     "https://api-private.atlassian.com/automation/webhooks/jira/cloud/hook"
                 ),
@@ -319,7 +306,6 @@ def test_post_triage_returns_422_when_webhook_token_sent_without_url(
                 "issue_key": "TJC-9",
                 "project": "TJC",
                 "source": "bug_created",
-                "jira_apply_mode": "automation_webhook",
             },
             headers={
                 **_auth_headers(),
@@ -333,7 +319,7 @@ def test_post_triage_returns_422_when_webhook_token_sent_without_url(
 
 
 @pytest.mark.unit
-def test_post_triage_returns_422_when_webhook_mode_has_no_callback_pair(
+def test_post_triage_returns_422_when_callback_pair_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("JIRA_AUTOMATION_WEBHOOK_URL", raising=False)
@@ -355,7 +341,6 @@ def test_post_triage_returns_422_when_webhook_mode_has_no_callback_pair(
                 "issue_key": "TJC-9",
                 "project": "TJC",
                 "source": "bug_created",
-                "jira_apply_mode": "automation_webhook",
             },
             headers=_auth_headers(),
         )
@@ -366,7 +351,7 @@ def test_post_triage_returns_422_when_webhook_mode_has_no_callback_pair(
 
 
 @pytest.mark.unit
-def test_post_triage_rejects_unknown_apply_mode(client: TestClient) -> None:
+def test_post_triage_ignores_legacy_apply_mode_field(client: TestClient) -> None:
     response = client.post(
         "/triage",
         json={
@@ -374,11 +359,17 @@ def test_post_triage_rejects_unknown_apply_mode(client: TestClient) -> None:
             "project": "TJC",
             "source": "bug_created",
             "jira_apply_mode": "carrier_pigeon",
+            "jira_automation_webhook_url": (
+                "https://api-private.atlassian.com/automation/webhooks/jira/cloud/hook"
+            ),
         },
-        headers=_auth_headers(),
+        headers={
+            **_auth_headers(),
+            "X-Jira-Automation-Webhook-Token": "per-project-token",
+        },
     )
 
-    assert response.status_code == 422
+    assert response.status_code == 202
 
 
 @pytest.mark.unit
@@ -494,6 +485,27 @@ def test_post_triage_accepts_priority_changed_source(client: TestClient) -> None
     data = response.json()
     assert data["source"] == "priority_changed"
     assert data["status"] == "accepted"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "source",
+    [
+        "daily_cleanup",
+        "jira_escalated_added",
+        "priority_changed_retriage",
+        "zendesk_ticket_added",
+    ],
+)
+def test_post_triage_accepts_automation_source(
+    client: TestClient,
+    source: str,
+) -> None:
+    payload = {"issue_key": "TJC-42", "project": "TJC", "source": source}
+    response = client.post("/triage", json=payload, headers=_auth_headers())
+
+    assert response.status_code == 202
+    assert response.json()["source"] == source
 
 
 @pytest.mark.unit

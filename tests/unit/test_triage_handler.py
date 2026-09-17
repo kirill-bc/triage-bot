@@ -1815,7 +1815,6 @@ def test_build_default_triage_handler_selects_automation_webhook_executor(
     _base_handler_env(monkeypatch)
     monkeypatch.delenv("JIRA_CLOUD_ID", raising=False)
     monkeypatch.delenv("JIRA_USER_EMAIL", raising=False)
-    monkeypatch.setenv("TRIAGE_JIRA_APPLY_MODE", "automation_webhook")
     monkeypatch.setenv(
         "JIRA_AUTOMATION_WEBHOOK_URL",
         "https://api-private.atlassian.com/automation/webhooks/jira/cloud/abc",
@@ -1829,44 +1828,18 @@ def test_build_default_triage_handler_selects_automation_webhook_executor(
 
 
 @pytest.mark.unit
-def test_build_default_triage_handler_selects_direct_executor_by_default(
+def test_build_default_triage_handler_requires_webhook_pair_even_with_jira_write_creds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from triage_service.adapters.jira_action_executor import JiraTriageActionExecutor
-
+    """Jira Cloud write creds no longer select a REST apply path."""
     _base_handler_env(monkeypatch)
-    monkeypatch.delenv("TRIAGE_JIRA_APPLY_MODE", raising=False)
     monkeypatch.setenv("JIRA_CLOUD_ID", "cloud-id-test")
     monkeypatch.setenv("JIRA_USER_EMAIL", "bot@example.com")
+    monkeypatch.setenv("JIRA_AUTOMATION_WEBHOOK_URL", "")
+    monkeypatch.setenv("JIRA_AUTOMATION_WEBHOOK_TOKEN", "")
 
-    runner = build_default_triage_handler()
-
-    assert isinstance(runner, TriageHandler)
-    assert isinstance(runner._executor, JiraTriageActionExecutor)
-
-
-@pytest.mark.unit
-def test_build_default_triage_handler_request_mode_overrides_direct_environment(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from triage_service.adapters.automation_webhook_executor import (
-        AutomationWebhookTriageActionExecutor,
-    )
-
-    _base_handler_env(monkeypatch)
-    monkeypatch.setenv("TRIAGE_JIRA_APPLY_MODE", "direct")
-    monkeypatch.setenv("JIRA_CLOUD_ID", "cloud-id-test")
-    monkeypatch.setenv("JIRA_USER_EMAIL", "bot@example.com")
-    monkeypatch.setenv(
-        "JIRA_AUTOMATION_WEBHOOK_URL",
-        "https://api-private.atlassian.com/automation/webhooks/jira/cloud/abc",
-    )
-    monkeypatch.setenv("JIRA_AUTOMATION_WEBHOOK_TOKEN", "automation-secret")
-
-    runner = build_default_triage_handler(jira_apply_mode="automation_webhook")
-
-    assert isinstance(runner, TriageHandler)
-    assert isinstance(runner._executor, AutomationWebhookTriageActionExecutor)
+    with pytest.raises(ValueError, match="webhook URL and token together"):
+        build_default_triage_handler()
 
 
 @pytest.mark.unit
@@ -1879,7 +1852,6 @@ def test_build_default_triage_handler_accepts_request_webhook_url_without_env_ur
     )
 
     _base_handler_env(monkeypatch)
-    monkeypatch.setenv("TRIAGE_JIRA_APPLY_MODE", "automation_webhook")
     monkeypatch.setenv("JIRA_AUTOMATION_WEBHOOK_URL", "")
     monkeypatch.setenv("JIRA_AUTOMATION_WEBHOOK_TOKEN", "")
 
@@ -1908,7 +1880,6 @@ def test_build_default_triage_handler_forwards_request_webhook_pair(
     )
 
     _base_handler_env(monkeypatch)
-    monkeypatch.setenv("TRIAGE_JIRA_APPLY_MODE", "automation_webhook")
     monkeypatch.setenv(
         "JIRA_AUTOMATION_WEBHOOK_URL",
         "https://api-private.atlassian.com/automation/webhooks/jira/cloud/abc",
@@ -1936,7 +1907,6 @@ def test_build_default_triage_handler_rejects_request_token_without_url(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _base_handler_env(monkeypatch)
-    monkeypatch.setenv("TRIAGE_JIRA_APPLY_MODE", "automation_webhook")
     monkeypatch.setenv(
         "JIRA_AUTOMATION_WEBHOOK_URL",
         "https://api-private.atlassian.com/automation/webhooks/jira/cloud/abc",
@@ -1954,13 +1924,12 @@ def test_build_default_triage_handler_webhook_override_requires_url(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _base_handler_env(monkeypatch)
-    monkeypatch.setenv("TRIAGE_JIRA_APPLY_MODE", "direct")
     # Empty process value prevents load_dotenv() from reloading the developer's real URL.
     monkeypatch.setenv("JIRA_AUTOMATION_WEBHOOK_URL", "")
     monkeypatch.setenv("JIRA_AUTOMATION_WEBHOOK_TOKEN", "")
 
     with pytest.raises(ValueError, match="webhook URL and token together"):
-        build_default_triage_handler(jira_apply_mode="automation_webhook")
+        build_default_triage_handler()
 
 
 @pytest.mark.unit
@@ -1970,7 +1939,6 @@ def test_build_default_triage_handler_skips_webhook_executor_when_apply_disabled
     from triage_service.core.triage_handler import NoOpTriageActionExecutor
 
     _base_handler_env(monkeypatch)
-    monkeypatch.setenv("TRIAGE_JIRA_APPLY_MODE", "automation_webhook")
     monkeypatch.setenv(
         "JIRA_AUTOMATION_WEBHOOK_URL",
         "https://api-private.atlassian.com/automation/webhooks/jira/cloud/abc",
@@ -1992,6 +1960,11 @@ def test_build_default_triage_handler_builds_dedicated_zendesk_summarizer_client
     monkeypatch.setenv("TRIAGE_ALLOWED_PROJECTS", "TJC")
     monkeypatch.delenv("JIRA_CLOUD_ID", raising=False)
     monkeypatch.delenv("JIRA_USER_EMAIL", raising=False)
+    monkeypatch.setenv(
+        "JIRA_AUTOMATION_WEBHOOK_URL",
+        "https://api-private.atlassian.com/automation/webhooks/jira/cloud/abc",
+    )
+    monkeypatch.setenv("JIRA_AUTOMATION_WEBHOOK_TOKEN", "automation-secret")
     captured_kwargs: dict[str, object] = {}
 
     def _capture_summarizer(

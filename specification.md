@@ -66,8 +66,8 @@
   - Endpoint contract: `POST /triage`
     - Request header: `X-Triage-Token` must match configured `TRIAGE_WEBHOOK_TOKEN` (shared secret); missing or wrong token → `401 Unauthorized`. `GET /health` is unauthenticated.
     - Request body:
-      - `{ "issue_key": "BC-123", "project": "BC", "source": "bug_created" }` (scheduled bug scan), or the same shape with `"source": "priority_changed"` when an automation fires on priority edits; `"source": "manual_trigger"` for the local runner.
-      - `source` is a closed enum (Pydantic `Literal`): `bug_created`, `priority_changed`, `manual_trigger`.
+      - `{ "issue_key": "BC-123", "project": "BC", "source": "bug_created" }` (bug-created rule), with the same shape for other triggers.
+      - `source` is a closed enum (Pydantic `Literal`): `bug_created`, `manual_trigger`, `priority_changed`, `daily_cleanup`, `jira_escalated_added`, `priority_changed_retriage`, `zendesk_ticket_added`.
     - Response contract (illustrative; exact nullability is enforced in code). Example when classification is Story (no priority step):
       ```json
       {
@@ -81,7 +81,7 @@
       - When `recommended_issue_type` is `Story`, `recommended_priority` is **not** produced by a priority inference step (`null` or omitted). Mismatch handling compares **type only** on that path.
       - When `recommended_issue_type` is `Bug`, `recommended_priority` is required. Compare to Jira priority on the Bug triage path.
       - `confidence` may represent the last inference that ran, or separate fields per step — document and validate in the parser; at minimum, classification always has a score. The service does **not** model a model-supplied action enum; `triage_mismatch.compute_mismatch_flags` derives `type_mismatch` / `priority_mismatch` from Jira fields vs recommendation for labels and advisory comments (`reason` required for comment text).
-- `jira_action_executor`
+- `jira_action_executor` (historical; replaced by Automation callback delivery)
   - Apply the `triagebot-reviewed` label **after every successful triage**, mismatch or not. This is the dedupe marker the Jira scheduled rule depends on; without it the rule re-analyzes the same issue every cycle until it ages out of the JQL window.
   - When a mismatch is detected, additionally:
     - Post an internal comment using a **fixed direct template** as **TriageBot** (recommendation summary + model rationale as context). Numeric **confidence** stays in the API response and audit logs, not in the Jira comment body.

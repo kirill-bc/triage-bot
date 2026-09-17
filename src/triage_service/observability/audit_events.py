@@ -32,7 +32,15 @@ TriageAuditFailureCategory = Literal[
     "project_not_allowed",
 ]
 
-TriageSourceLiteral = Literal["bug_created", "priority_changed", "manual_trigger"]
+TriageSourceLiteral = Literal[
+    "bug_created",
+    "manual_trigger",
+    "priority_changed",
+    "daily_cleanup",
+    "jira_escalated_added",
+    "priority_changed_retriage",
+    "zendesk_ticket_added",
+]
 
 IssueTypeLiteral = Literal["Bug", "Story"]
 

@@ -3,8 +3,7 @@
 The service keeps every decision; the Automation rule maps ``{{webhookData.*}}`` onto label
 and field-edit actions, and writes the comment text itself from the inputs in ``comment``.
 Because the rule runs as the Automation actor, its edits do not re-trigger other rules —
-which is what makes re-triage on priority change safe. Direct mode still renders comment copy
-in-service (see ``jira_action_executor``).
+which is what makes re-triage on priority change safe.
 """
 
 from __future__ import annotations

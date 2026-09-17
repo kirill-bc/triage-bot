@@ -1,5 +1,21 @@
 # Project memory
 
+## 2026-09-17 (seven triage trigger sources)
+
+- `POST /triage` and `TriageSourceLiteral` accept seven correlated source values:
+  `bug_created`, `manual_trigger`, `priority_changed`, `daily_cleanup`,
+  `jira_escalated_added`, `priority_changed_retriage`, and `zendesk_ticket_added`.
+  `priority_changed_retriage` is accepted now; §15's material-change gate remains open.
+- Jira Automation's "Webhook Edit" is Rule B outcome delivery, not an eighth triage source.
+
+## 2026-09-17 (§14 retire direct Jira apply path)
+
+- Production callback path is proven. Removed `TRIAGE_JIRA_APPLY_MODE`, request-body
+  `jira_apply_mode`, and `JiraTriageActionExecutor`. Successful triage always POSTs the
+  Rule B payload unless `apply_to_jira=False`. Leftover env/body apply-mode values are
+  ignored (`extra=ignore` / unused env). Callback URL+token remain required before inference.
+- Next: §15 re-triage on priority change.
+
 ## 2026-09-09 (§14 Jira Automation callback delivery — Phase A, service side)
 
 - **Shape:** `TRIAGE_JIRA_APPLY_MODE` picks the outcome transport — `direct` (existing Jira REST

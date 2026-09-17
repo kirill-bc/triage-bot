@@ -1,9 +1,8 @@
 # Jira Automation callback delivery (Rule B)
 
-Operational runbook for `TRIAGE_JIRA_APPLY_MODE=automation_webhook`, where the triage service
-stops writing to Jira directly and instead POSTs a fully-rendered outcome payload to a Jira
-Automation incoming-webhook rule ("Rule B") that applies labels, the comment, and any field
-edits as the Automation actor.
+Operational runbook for Automation callback delivery, where the triage service POSTs a
+fully-rendered outcome payload to a Jira Automation incoming-webhook rule ("Rule B") that
+applies labels, the comment, and any field edits as the Automation actor.
 
 **Design rule: the service owns every decision and all comment copy; Rule B is a dumb applier.**
 The payload carries the final comment text and explicit action directives. The rule branches on
@@ -33,50 +32,24 @@ Trigger rule (scheduled JQL / issue created / priority changed)
 
 | Variable | Meaning |
 |----------|---------|
-| `TRIAGE_JIRA_APPLY_MODE` | `direct` (default, rollback path) or `automation_webhook` |
-| `JIRA_AUTOMATION_WEBHOOK_URL` | Fallback Rule B incoming-webhook URL. Required in webhook mode unless every caller sends `jira_automation_webhook_url`, which takes precedence. |
+| `JIRA_AUTOMATION_WEBHOOK_URL` | Fallback Rule B incoming-webhook URL. Required unless every caller sends `jira_automation_webhook_url`, which takes precedence. |
 | `JIRA_AUTOMATION_WEBHOOK_TOKEN` | Fallback secret for Rule B's incoming-webhook trigger; sent as `X-Automation-Webhook-Token`. Jira validates this header — do not re-check it in a rule condition. A per-request `X-Jira-Automation-Webhook-Token` inbound header takes precedence. |
 | `JIRA_AUTOMATION_WEBHOOK_TIMEOUT_SECONDS` | Callback POST timeout (default `30`); the webhook is not retried |
 
 The callback POST is **not retried**. `TRIAGE_JIRA_HTTP_MAX_RETRIES` applies to Jira REST
-fetch/write only. Replaying the same webhook after a timeout or 5xx can run Rule B twice
+fetch only. Replaying the same webhook after a timeout or 5xx can run Rule B twice
 and duplicate comments; a failed attempt is a delivery failure so the scheduled scan can
-retry later with a new `run_id`. Webhook mode needs no Jira write credentials;
+retry later with a new `run_id`. The callback needs no Jira write credentials;
 `JIRA_CLOUD_ID` / `JIRA_USER_EMAIL` are still required for issue **fetch**.
 `build_default_triage_handler(apply_to_jira=False)` still returns the no-op executor, so
-read-only CLI runs are unaffected by the mode.
+read-only CLI runs skip the callback POST.
 
-## Hybrid migration: choose callback delivery in Rule A
-
-Keep the service-wide default on direct writes while migrating:
-
-```bash
-TRIAGE_JIRA_APPLY_MODE=direct
-JIRA_AUTOMATION_WEBHOOK_URL=https://api-private.atlassian.com/automation/webhooks/jira/...
-JIRA_AUTOMATION_WEBHOOK_TOKEN=...
-```
-
-In each Rule A that should use Rule B, add the request-level override to its custom
-`POST /triage` body, plus a second header besides `X-Triage-Token`:
-
-- Header `X-Jira-Automation-Webhook-Token`: this project's Rule B secret.
-
-```json
-{
-  "issue_key": "{{issue.key}}",
-  "project": "{{issue.project.key}}",
-  "source": "bug_created",
-  "jira_apply_mode": "automation_webhook",
-  "jira_automation_webhook_url": "{{webhookUrl of this project's Rule B}}"
-}
-```
-
-### Per-project Rule B endpoints
+## Per-project Rule B endpoints
 
 Automation rules are project-scoped, so each project has its own Rule B with its own webhook URL
 and secret. Rather than tracking every pair in the service environment, each Rule A carries its
 own: `jira_automation_webhook_url` in the JSON body and `X-Jira-Automation-Webhook-Token` on the
-request override `JIRA_AUTOMATION_WEBHOOK_URL` and `JIRA_AUTOMATION_WEBHOOK_TOKEN` for that one
+request. Those override `JIRA_AUTOMATION_WEBHOOK_URL` and `JIRA_AUTOMATION_WEBHOOK_TOKEN` for that one
 callback, and the env values remain the fallback for callers that send neither.
 
 Guardrails and limits:
@@ -93,18 +66,16 @@ Guardrails and limits:
 - Both values live in the Rule A definition, so anyone who can edit that rule can read them. That
   is usually the same set of Jira admins who can read Rule B's trigger, so it does not widen access
   much — but it is not a vault.
-- Because the URL can now arrive per request, webhook mode no longer requires
-  `JIRA_AUTOMATION_WEBHOOK_URL` at startup. A request that selects webhook mode with no URL from
-  either source fails that request before any model spend.
+- Because the URL can now arrive per request, the service no longer requires
+  `JIRA_AUTOMATION_WEBHOOK_URL` at startup. A request with no URL from either source fails
+  that request before any model spend.
 
-That request gets a callback executor; concurrent and later requests are unaffected. Existing
-Rule A payloads that omit `jira_apply_mode` continue using the env default (`direct`). The only
-accepted values are `direct` and `automation_webhook`; any other value returns HTTP `422`.
+That request gets a callback executor; concurrent and later requests are unaffected.
 
 This is safe under concurrency because the service builds a separate handler/executor for each
-request. It does not change `os.environ`. If a request selects `automation_webhook` with no
-callback URL from either the payload or `JIRA_AUTOMATION_WEBHOOK_URL`, handler construction fails
-before Jira fetch or model inference.
+request. It does not change `os.environ`. If a request has no callback URL from either the
+payload or `JIRA_AUTOMATION_WEBHOOK_URL`, handler construction fails before Jira fetch or
+model inference.
 
 ## Run one callback from the CLI
 
@@ -121,11 +92,10 @@ Then run:
 .venv/bin/python scripts/run_webhook_triage_cli.py TJC-123
 ```
 
-The command forces `TRIAGE_JIRA_APPLY_MODE=automation_webhook` for that invocation, runs the
-normal fetch and sequential inference pipeline with `source=manual_trigger`, builds the
-versioned payload below, POSTs it to Rule B, and prints the triage result as JSON. It never
-accepts the webhook token as a command-line argument, avoiding exposure in shell history and
-the process list.
+The command runs the normal fetch and sequential inference pipeline with
+`source=manual_trigger`, builds the versioned payload below, POSTs it to Rule B, and prints
+the triage result as JSON. It never accepts the webhook token as a command-line argument,
+avoiding exposure in shell history and the process list.
 
 This CLI always enables mutation directives (`--auto-apply-deescalation`,
 `--auto-apply-escalation`, `--auto-apply-bug-to-story`). Only the directive that matches the
@@ -154,14 +124,13 @@ Field notes:
 - `issues` is Jira Automation's work-item binding for the trigger option **Issues provided in
   the webhook HTTP POST body**. Always a one-element list of the issue key. `issue_key` is
   duplicated so Rule B can still log/compare `{{webhookData.issue_key}}`.
-- `labels` is informational (audit/debug and the direct path's source of truth). Rule B does
+- `labels` is informational (audit/debug). Rule B does
   **not** consume it — labels are static values in the rule's branches, so the rule stays
   readable in the Automation UI.
 - `comment.post` is `false` (and `comment.body` `null`) when the recommendation matches Jira
   state or `post_mismatch_comments` is disabled.
 - `comment.body` is plain text, not ADF: the reporter mention is rendered as
-  `[~accountid:...]`, which Jira Automation's comment action expands. The direct path uses a
-  structured ADF `mention` node instead — same copy, different mention encoding.
+  `[~accountid:...]`, which Jira Automation's comment action expands.
 - `actions.apply_priority` is `null` unless the matching `TRIAGE_AUTO_APPLY_*` flag is on;
   `from` is the intake priority (useful for a rule-side sanity check that Jira has not moved
   since triage started).
@@ -228,20 +197,17 @@ Trigger-rule counterpart (Rule A): add `triagebot-scheduled` in the same rule ex
 sends the `POST /triage` web request, and extend the scan JQL to
 `labels not in (triagebot-reviewed, triagebot-scheduled)`.
 
-Note the label-decision trade-off: the service still adds `triagebot-priority-mismatch` /
-`triagebot-likely-story` on **advisory-only** runs in `direct` mode, but on this path the
-mismatch labels ride the apply branches — a run with the `TRIAGE_AUTO_APPLY_*` flags off
-produces only `triagebot-reviewed` plus the comment. Accepted deliberately to keep Rule B free
-of smart-value label plumbing.
+Note the label-decision trade-off: mismatch labels ride the apply branches — a run with the
+`TRIAGE_AUTO_APPLY_*` flags off produces only `triagebot-reviewed` plus the comment. Accepted
+deliberately to keep Rule B free of smart-value label plumbing.
 
 Export the finished rule (Automation → rule → *Export*) and commit the JSON next to this file
 once Rule B exists, so rule drift is reviewable.
 
 ## Smoke checklist
 
-1. Point the service at Rule B (`TRIAGE_JIRA_APPLY_MODE=automation_webhook`,
-   `JIRA_AUTOMATION_WEBHOOK_URL`, `JIRA_AUTOMATION_WEBHOOK_TOKEN`) and restart — or send the URL
-   and token per request instead.
+1. Point the service at Rule B (`JIRA_AUTOMATION_WEBHOOK_URL`,
+   `JIRA_AUTOMATION_WEBHOOK_TOKEN`) and restart — or send the URL and token per request instead.
 2. Trigger one manual triage (`POST /triage` with `"source": "manual_trigger"`, or
    `scripts/run_triage_cli.py PROJ-123`).
 3. Service side: confirm one `outcome_delivered` audit event with `delivered: true`,
@@ -253,8 +219,6 @@ once Rule B exists, so rule drift is reviewable.
 5. Confirm the priority-change trigger rule did **not** re-fire from Rule B's own edit (check
    its audit log for the same timestamp). If it did, exclude the Automation actor in that
    rule's condition.
-6. Rollback check: set `TRIAGE_JIRA_APPLY_MODE=direct`, restart, and re-run — the direct
-   executor path must still work.
 
 ## Diagnosing apply failures
 

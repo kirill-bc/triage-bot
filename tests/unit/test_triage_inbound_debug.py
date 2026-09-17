@@ -88,6 +88,11 @@ class _StubRunner:
 @pytest.fixture(autouse=True)
 def _configure_triage_webhook_token(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
+    monkeypatch.setenv(
+        "JIRA_AUTOMATION_WEBHOOK_URL",
+        "https://api-private.atlassian.com/automation/webhooks/jira/cloud/test",
+    )
+    monkeypatch.setenv("JIRA_AUTOMATION_WEBHOOK_TOKEN", "test-automation-token")
 
 
 def _auth_headers() -> dict[str, str]:
