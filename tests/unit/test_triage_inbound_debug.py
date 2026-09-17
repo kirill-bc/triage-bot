@@ -132,7 +132,7 @@ def test_debug_inbound_valid_request_still_succeeds(
         json={"issue_key": "TJC-1", "project": "TJC", "source": "bug_created"},
         headers=_auth_headers(),
     )
-    assert response.status_code == 200
+    assert response.status_code == 202
     err = capsys.readouterr().err
     assert "[TRIAGE_DEBUG_INBOUND]" in err
     assert "TJC-1" in err

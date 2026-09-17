@@ -197,6 +197,7 @@ def _app_settings(monkeypatch: pytest.MonkeyPatch) -> Any:
 
     monkeypatch.setenv("JIRA_API_KEY", "jira-key")
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+    monkeypatch.setenv("TRIAGE_WEBHOOK_TOKEN", "triage-token")
     monkeypatch.setenv("JIRA_BASE_URL", "https://example.atlassian.net")
     monkeypatch.setenv("JIRA_USER_EMAIL", "bot@example.com")
     return load_settings()

@@ -51,13 +51,24 @@ obs = data.get("observability")
 print(json.dumps(obs or {}, indent=2, sort_keys=True))
 PY
 
-echo "Posting fixture payload to /triage..."
+echo "Posting fixture payload to /triage (wait_for_result so smoke can assert the recommendation)..."
+waiting_payload="${TMPDIR:-/tmp}/triage-smoke-payload.$$.json"
+python - "$PAYLOAD_PATH" "$waiting_payload" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+payload["wait_for_result"] = True
+Path(sys.argv[2]).write_text(json.dumps(payload), encoding="utf-8")
+PY
 response_json="$(
     curl -fsS -X POST "http://127.0.0.1:${HOST_PORT}/triage" \
       -H "Content-Type: application/json" \
       -H "X-Triage-Token: local-smoke" \
-      --data-binary "@${PAYLOAD_PATH}"
+      --data-binary "@${waiting_payload}"
 )"
+rm -f "${waiting_payload}"
 
 python - "$response_json" <<'PY'
 import json

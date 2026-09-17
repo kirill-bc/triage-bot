@@ -24,6 +24,7 @@ def test_repo_has_local_container_smoke_command_script() -> None:
     assert "TRIAGE_LOCAL_MOCK_MODE=1" in content
     assert "POST /triage" in content or "/triage" in content
     assert "X-Triage-Token" in content
+    assert "wait_for_result" in content
 
 
 @pytest.mark.integration

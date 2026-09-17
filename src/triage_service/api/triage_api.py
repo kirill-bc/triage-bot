@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from hmac import compare_digest
 from typing import Any, Literal, NoReturn
 
-from fastapi import Depends, FastAPI, Header, HTTPException, status
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, status
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field, field_validator, model_validator
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -48,6 +48,7 @@ from triage_service.observability.runtime_logging import (
 )
 
 TriageSource = Literal["bug_created", "priority_changed", "manual_trigger"]
+ApplyModeOrigin = Literal["request", "settings"]
 LOGGER = logging.getLogger(__name__)
 
 # A URL slash, whether written as `/`, JSON `\/`, or JSON `\u002f`. Each form is matched
@@ -188,6 +189,17 @@ class TriageRequest(BaseModel):
         ),
     )
 
+    wait_for_result: bool = Field(
+        default=False,
+        description=(
+            "Block until triage finishes and return the recommendation. Jira Automation must "
+            "leave this false: a run takes minutes and the rule's web request would time out "
+            "long before it returns. Outcomes reach Jira through the configured delivery path "
+            "either way, so only callers that consume the response body (CLI, manual runs) "
+            "should set it."
+        ),
+    )
+
     @field_validator("jira_automation_webhook_url")
     @classmethod
     def _check_automation_webhook_url(cls, value: str | None) -> str | None:
@@ -232,7 +244,11 @@ class HealthResponse(BaseModel):
 
 
 class TriagePostResponse(BaseModel):
-    """Synchronous triage outcome: merged recommendation or structured failure."""
+    """Triage acknowledgement, or — for a waiting caller — the outcome of the run.
+
+    ``accepted`` is the default: the run was queued and ``run_id`` correlates it with the
+    audit events it will emit. ``completed``/``failed`` only occur for ``wait_for_result``.
+    """
 
     run_id: str = Field(
         min_length=1,
@@ -241,12 +257,17 @@ class TriagePostResponse(BaseModel):
     issue_key: str
     project: str
     source: TriageSource
-    status: Literal["completed", "failed"]
+    status: Literal["accepted", "completed", "failed"]
     recommendation: TriageRecommendation | None = None
     failure: TriageFailure | None = None
 
     @model_validator(mode="after")
     def _outcome_matches_status(self) -> Self:
+        if self.status == "accepted":
+            if self.recommendation is not None or self.failure is not None:
+                msg = "accepted status must not include an outcome"
+                raise ValueError(msg)
+            return self
         if self.status == "completed":
             if self.recommendation is None:
                 msg = "completed status requires recommendation"
@@ -277,6 +298,22 @@ def _resolve_log_level() -> str:
     return token if token in allowed else "INFO"
 
 
+def _require_triage_token(
+    x_triage_token: str | None = Header(default=None, alias="X-Triage-Token"),
+) -> None:
+    """Authenticate an inbound triage trigger with the configured shared secret."""
+    expected_token = os.environ.get("TRIAGE_WEBHOOK_TOKEN", "")
+    if (
+        not expected_token
+        or x_triage_token is None
+        or not compare_digest(x_triage_token, expected_token)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized",
+        )
+
+
 def _concurrency_limits_from_settings() -> tuple[int, float]:
     """Return semaphore size and wait timeout from ``AppSettings``.
 
@@ -301,6 +338,23 @@ def _optional_app_settings() -> AppSettings | None:
         return None
 
 
+def effective_apply_mode(
+    body: TriageRequest,
+    settings: AppSettings | None,
+) -> tuple[JiraApplyMode, ApplyModeOrigin]:
+    """Return the delivery mode this request will use, and which layer decided it.
+
+    The origin matters operationally: a request that meant to use the Automation callback but
+    omitted (or predates) ``jira_apply_mode`` falls back to the service default and writes via
+    REST, which otherwise looks identical to a deliberate direct-mode run.
+    """
+    if body.jira_apply_mode is not None:
+        return body.jira_apply_mode, "request"
+    if settings is not None:
+        return settings.triage_jira_apply_mode, "settings"
+    return "direct", "settings"
+
+
 def require_webhook_callback_config(
     body: TriageRequest,
     *,
@@ -315,9 +369,7 @@ def require_webhook_callback_config(
     """
     if settings is None:
         settings = _optional_app_settings()
-    effective_mode: JiraApplyMode = body.jira_apply_mode or (
-        settings.triage_jira_apply_mode if settings is not None else "direct"
-    )
+    effective_mode, _origin = effective_apply_mode(body, settings)
     if effective_mode != "automation_webhook":
         return
     try:
@@ -372,31 +424,59 @@ def sanitized_validation_errors(exc: RequestValidationError) -> list[dict[str, A
     ]
 
 
-def _run_triage_within_capacity(
+@dataclass(frozen=True, slots=True)
+class _TriageCapacity:
+    """Concurrency budget shared by every ``POST /triage`` on this process."""
+
+    slots: threading.Semaphore
+    wait_seconds: float
+    max_concurrent_runs: int
+
+
+def _acquire_run_slot(capacity: _TriageCapacity, *, wait: bool) -> bool:
+    """Reserve a triage slot.
+
+    Waiting callers may block up to ``wait_seconds``. Detached work must not: each
+    background task occupies a sync worker, and a blocking acquire under burst would
+    fill the thread pool so later ``POST /triage`` handlers cannot even send the 202.
+    """
+    if wait:
+        return capacity.slots.acquire(timeout=capacity.wait_seconds)
+    return capacity.slots.acquire(blocking=False)
+
+
+def _reserve_run_slot_or_raise(
     body: TriageRequest,
-    runner: TriageRunner,
     *,
-    triage_slots: threading.Semaphore,
-    concurrency_wait_seconds: float,
-    max_concurrent_runs: int,
-) -> TriagePostResponse:
-    """Acquire a concurrency slot, run triage, and shape the response (or 503 if full)."""
-    if not triage_slots.acquire(timeout=concurrency_wait_seconds):
+    capacity: _TriageCapacity,
+    wait: bool,
+) -> None:
+    """Reserve capacity or reject the request before it can be acknowledged."""
+    if not _acquire_run_slot(capacity, wait=wait):
         LOGGER.warning(
             "triage_api_busy issue_key=%s project=%s source=%s "
             "max_concurrent_runs=%d wait_seconds=%s",
             body.issue_key,
             body.project,
             body.source,
-            max_concurrent_runs,
-            concurrency_wait_seconds,
+            capacity.max_concurrent_runs,
+            capacity.wait_seconds,
         )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Triage service is at capacity; retry later.",
         )
+
+
+def _run_triage_with_reserved_slot(
+    body: TriageRequest,
+    runner: TriageRunner,
+    *,
+    run_id: str,
+    capacity: _TriageCapacity,
+) -> TriagePostResponse:
+    """Run triage using a previously reserved slot and release it afterward."""
     try:
-        run_id = str(uuid.uuid4())
         outcome = runner.run_sync(
             body.issue_key,
             body.project,
@@ -405,7 +485,7 @@ def _run_triage_within_capacity(
         ).outcome
         _flush_inference_telemetry_if_supported(runner)
     finally:
-        triage_slots.release()
+        capacity.slots.release()
     if isinstance(outcome, TriageFailure):
         LOGGER.warning(
             "triage_api_failed run_id=%s issue_key=%s project=%s source=%s "
@@ -435,10 +515,112 @@ def _run_triage_within_capacity(
     )
 
 
+def _run_triage_within_capacity(
+    body: TriageRequest,
+    runner: TriageRunner,
+    *,
+    run_id: str,
+    capacity: _TriageCapacity,
+) -> TriagePostResponse:
+    """Wait for a concurrency slot, run triage, and shape a waiting response."""
+    _reserve_run_slot_or_raise(body, capacity=capacity, wait=True)
+    return _run_triage_with_reserved_slot(
+        body,
+        runner,
+        run_id=run_id,
+        capacity=capacity,
+    )
+
+
+def _run_triage_detached(
+    body: TriageRequest,
+    runner: TriageRunner,
+    *,
+    run_id: str,
+    capacity: _TriageCapacity,
+) -> None:
+    """Run triage after the 202 was sent, where nothing is left to raise an error to.
+
+    An escaping exception here would be handled by the ASGI server as a failed response that
+    the caller already received, so every outcome is turned into a log line keyed by
+    ``run_id`` instead.
+    """
+    try:
+        _run_triage_with_reserved_slot(
+            body,
+            runner,
+            run_id=run_id,
+            capacity=capacity,
+        )
+    except Exception:
+        LOGGER.exception(
+            "triage_background_failed run_id=%s issue_key=%s project=%s source=%s",
+            run_id,
+            body.issue_key,
+            body.project,
+            body.source,
+        )
+
+
+def _handle_triage_request(
+    trigger: _TriageTrigger,
+    *,
+    response: Response,
+    background_tasks: BackgroundTasks,
+    capacity: _TriageCapacity,
+) -> TriagePostResponse:
+    """Acknowledge the trigger, waiting for the run only when the caller asked to."""
+    body = trigger.body
+    run_id = str(uuid.uuid4())
+    if body.wait_for_result:
+        # The route declares 202 for the common path; a waiting caller carries an outcome.
+        response.status_code = status.HTTP_200_OK
+        return _run_triage_within_capacity(
+            body,
+            trigger.runner,
+            run_id=run_id,
+            capacity=capacity,
+        )
+    _reserve_run_slot_or_raise(body, capacity=capacity, wait=False)
+    background_tasks.add_task(
+        _run_triage_detached,
+        body,
+        trigger.runner,
+        run_id=run_id,
+        capacity=capacity,
+    )
+    LOGGER.info(
+        "triage_accepted run_id=%s issue_key=%s project=%s source=%s",
+        run_id,
+        body.issue_key,
+        body.project,
+        body.source,
+        extra={
+            "event_type": "triage_accepted",
+            "run_id": run_id,
+            "issue_key": body.issue_key,
+            "project": body.project,
+            "source": body.source,
+        },
+    )
+    response.status_code = status.HTTP_202_ACCEPTED
+    return TriagePostResponse(
+        run_id=run_id,
+        issue_key=body.issue_key,
+        project=body.project,
+        source=body.source,
+        status="accepted",
+    )
+
+
 def create_app(*, triage_handler_factory: Callable[[], TriageRunner] | None = None) -> FastAPI:
     """Build the FastAPI app. Override ``triage_handler_factory`` in tests."""
     max_concurrent_runs, concurrency_wait_seconds = _concurrency_limits_from_settings()
-    triage_slots = threading.Semaphore(max_concurrent_runs)
+    capacity = _TriageCapacity(
+        slots=threading.Semaphore(max_concurrent_runs),
+        wait_seconds=concurrency_wait_seconds,
+        max_concurrent_runs=max_concurrent_runs,
+    )
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -448,14 +630,33 @@ def create_app(*, triage_handler_factory: Callable[[], TriageRunner] | None = No
 
     def get_triage_trigger(
         body: TriageRequest,
+        _: None = Depends(_require_triage_token),
         x_jira_automation_webhook_token: str | None = Header(
             default=None,
             alias="X-Jira-Automation-Webhook-Token",
         ),
     ) -> _TriageTrigger:
+        settings = _optional_app_settings()
         require_webhook_callback_config(
             body,
             request_webhook_token=x_jira_automation_webhook_token,
+            settings=settings,
+        )
+        apply_mode, apply_mode_origin = effective_apply_mode(body, settings)
+        LOGGER.info(
+            "triage_apply_mode_selected issue_key=%s source=%s apply_mode=%s origin=%s",
+            body.issue_key,
+            body.source,
+            apply_mode,
+            apply_mode_origin,
+            extra={
+                "event_type": "triage_apply_mode_selected",
+                "issue_key": body.issue_key,
+                "project": body.project,
+                "source": body.source,
+                "apply_mode": apply_mode,
+                "apply_mode_origin": apply_mode_origin,
+            },
         )
         if triage_handler_factory is not None:
             runner = triage_handler_factory()
@@ -467,20 +668,6 @@ def create_app(*, triage_handler_factory: Callable[[], TriageRunner] | None = No
                 jira_automation_webhook_url=body.jira_automation_webhook_url,
             )
         return _TriageTrigger(body=body, runner=runner)
-
-    def require_triage_token(
-        x_triage_token: str | None = Header(default=None, alias="X-Triage-Token"),
-    ) -> None:
-        expected_token = os.environ.get("TRIAGE_WEBHOOK_TOKEN", "")
-        if (
-            not expected_token
-            or x_triage_token is None
-            or not compare_digest(x_triage_token, expected_token)
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Unauthorized",
-            )
 
     app = FastAPI(title="Jira Triage", version="0.1.0", lifespan=lifespan)
 
@@ -526,17 +713,28 @@ def create_app(*, triage_handler_factory: Callable[[], TriageRunner] | None = No
         obs = ObservabilityHealth(**observability_status_summary(settings))
         return HealthResponse(ready=True, observability=obs)
 
-    @app.post("/triage", response_model=TriagePostResponse)
+    @app.post(
+        "/triage",
+        response_model=TriagePostResponse,
+        status_code=status.HTTP_202_ACCEPTED,
+        responses={
+            status.HTTP_200_OK: {"model": TriagePostResponse},
+            status.HTTP_503_SERVICE_UNAVAILABLE: {
+                "description": "Triage service is at capacity; retry later.",
+            },
+        },
+    )
     def accept_triage_trigger(
+        response: Response,
+        background_tasks: BackgroundTasks,
+        _: None = Depends(_require_triage_token),
         trigger: _TriageTrigger = Depends(get_triage_trigger),
-        _: None = Depends(require_triage_token),
     ) -> TriagePostResponse:
-        return _run_triage_within_capacity(
-            trigger.body,
-            trigger.runner,
-            triage_slots=triage_slots,
-            concurrency_wait_seconds=concurrency_wait_seconds,
-            max_concurrent_runs=max_concurrent_runs,
+        return _handle_triage_request(
+            trigger,
+            response=response,
+            background_tasks=background_tasks,
+            capacity=capacity,
         )
 
     app.add_middleware(HttpAccessLogMiddleware)

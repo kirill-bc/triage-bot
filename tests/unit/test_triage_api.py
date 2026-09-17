@@ -1,4 +1,8 @@
-"""Concurrency bounds for POST /triage: semaphore cap, 503 shed, health responsiveness."""
+"""Concurrency bounds for POST /triage: semaphore cap, 503 shed, health responsiveness.
+
+Background requests admit without waiting (``202`` or immediate ``503``). Only
+``wait_for_result`` callers block up to ``TRIAGE_CONCURRENCY_WAIT_SECONDS``.
+"""
 
 from __future__ import annotations
 
@@ -113,19 +117,71 @@ def test_post_triage_limits_concurrent_executions_to_configured_max(
     with ThreadPoolExecutor(max_workers=6) as pool:
         statuses = list(pool.map(lambda _: _call(), range(6)))
 
+    assert sorted(statuses) == [202, 202, 503, 503, 503, 503]
+    assert runner.peak == 2
+
+
+@pytest.mark.unit
+def test_post_triage_wait_for_result_limits_concurrent_executions_to_configured_max(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TRIAGE_MAX_CONCURRENT_RUNS", "2")
+    monkeypatch.setenv("TRIAGE_CONCURRENCY_WAIT_SECONDS", "5")
+    runner = _BlockingRunner(hold_seconds=0.3)
+    client = TestClient(create_app(triage_handler_factory=lambda: runner))
+    payload = {
+        "issue_key": "TJC-1",
+        "project": "TJC",
+        "source": "manual_trigger",
+        "wait_for_result": True,
+    }
+
+    def _call() -> int:
+        return client.post("/triage", json=payload, headers=_auth_headers()).status_code
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        statuses = list(pool.map(lambda _: _call(), range(6)))
+
     assert statuses == [200] * 6
     assert runner.peak == 2
 
 
 @pytest.mark.unit
-def test_post_triage_returns_503_when_concurrency_wait_exceeded(
+def test_post_triage_returns_503_immediately_when_background_slots_full(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TRIAGE_MAX_CONCURRENT_RUNS", "1")
+    monkeypatch.setenv("TRIAGE_CONCURRENCY_WAIT_SECONDS", "5")
+    runner = _BlockingRunner(hold_seconds=1.2)
+    client = TestClient(create_app(triage_handler_factory=lambda: runner))
+    payload = {"issue_key": "TJC-1", "project": "TJC", "source": "manual_trigger"}
+
+    def _call(delay: float) -> int:
+        time.sleep(delay)
+        return client.post("/triage", json=payload, headers=_auth_headers()).status_code
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(_call, 0.0)
+        second = pool.submit(_call, 0.05)
+        statuses = sorted([first.result(timeout=5), second.result(timeout=5)])
+
+    assert statuses == [202, 503]
+
+
+@pytest.mark.unit
+def test_post_triage_returns_503_when_wait_for_result_concurrency_wait_exceeded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("TRIAGE_MAX_CONCURRENT_RUNS", "1")
     monkeypatch.setenv("TRIAGE_CONCURRENCY_WAIT_SECONDS", "0.3")
     runner = _BlockingRunner(hold_seconds=1.2)
     client = TestClient(create_app(triage_handler_factory=lambda: runner))
-    payload = {"issue_key": "TJC-1", "project": "TJC", "source": "manual_trigger"}
+    payload = {
+        "issue_key": "TJC-1",
+        "project": "TJC",
+        "source": "manual_trigger",
+        "wait_for_result": True,
+    }
 
     def _call(delay: float) -> int:
         time.sleep(delay)

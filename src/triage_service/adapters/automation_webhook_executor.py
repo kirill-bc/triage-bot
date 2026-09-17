@@ -1,9 +1,10 @@
 """Deliver triage outcomes to a Jira Automation incoming webhook.
 
-The service keeps every decision and all comment copy; the Automation rule is a dumb applier
-that maps ``{{webhookData.*}}`` onto label, comment, and field-edit actions. Because the rule
-runs as the Automation actor, its edits do not re-trigger other rules — which is what makes
-re-triage on priority change safe.
+The service keeps every decision; the Automation rule maps ``{{webhookData.*}}`` onto label
+and field-edit actions, and writes the comment text itself from the inputs in ``comment``.
+Because the rule runs as the Automation actor, its edits do not re-trigger other rules —
+which is what makes re-triage on priority change safe. Direct mode still renders comment copy
+in-service (see ``jira_action_executor``).
 """
 
 from __future__ import annotations
@@ -39,7 +40,7 @@ from triage_service.observability.audit_store import AuditStore
 LOGGER = logging.getLogger(__name__)
 
 # Bump when the payload contract changes shape; Rule B reads this to stay compatible.
-CALLBACK_PAYLOAD_VERSION = 1
+CALLBACK_PAYLOAD_VERSION = 2
 
 _TOKEN_HEADER = "X-Automation-Webhook-Token"
 
@@ -139,7 +140,10 @@ def resolve_webhook_callback_credentials(
         raise WebhookCallbackConfigError("request_token_without_url", _REQUEST_TOKEN_WITHOUT_URL)
     if url is not None:
         if token is None:
-            raise WebhookCallbackConfigError("request_url_without_token", _REQUEST_URL_WITHOUT_TOKEN)
+            raise WebhookCallbackConfigError(
+                "request_url_without_token",
+                _REQUEST_URL_WITHOUT_TOKEN,
+            )
         try:
             return WebhookCallbackCredentials(
                 url=validate_request_webhook_url(url),
@@ -218,6 +222,13 @@ class AutomationCallbackError(RuntimeError):
     """Raised when the outcome callback to Jira Automation cannot be delivered."""
 
 
+def _issue_priority(issue: FetchedIssue) -> str | None:
+    """Current Jira priority as a bare value; Rule B supplies the copy for the unset case."""
+    if issue.priority is None:
+        return None
+    return str(issue.priority).strip() or None
+
+
 def build_callback_payload(
     *,
     issue: FetchedIssue,
@@ -233,10 +244,27 @@ def build_callback_payload(
 
     ``issues`` is Jira Automation's work-item binding for the incoming-webhook trigger option
     "Issues provided in the webhook HTTP POST body". Extra fields become ``{{webhookData.*}}``.
-    ``comment.body`` uses the "applied" copy whenever the payload directs a field change, since
-    Rule B performs those edits in the same run.
+
+    ``comment`` carries composition inputs so an updated Rule B can write the text, mention
+    the reporter natively, and render wiki-markup links. ``kind`` selects the advisory or
+    applied wording — "applied" whenever the payload directs a field change, since Rule B
+    performs those edits in the same run — and ``topic`` selects the issue-type or priority
+    wording. Both are flat scalars because Automation's ``{{#if}}`` is unreliable against
+    nested nulls such as ``actions.apply_priority``.
+
+    ``comment.body`` is the pre-rendered v1 copy. It stays on v2 so a Rule B that still
+    posts ``{{webhookData.comment.body}}`` cannot accept the callback and write an empty
+    comment; drop it only after every consumer has switched to the composition fields.
     """
     mutations_directed = decision.apply_bug_to_story or decision.apply_priority is not None
+    apply_priority = (
+        {
+            "from": decision.apply_priority.from_priority,
+            "to": decision.apply_priority.to_priority,
+        }
+        if decision.apply_priority is not None
+        else None
+    )
     body = (
         render_plain_text_comment(
             issue,
@@ -244,14 +272,6 @@ def build_callback_payload(
             mutations_applied=mutations_directed,
         )
         if post_comment
-        else None
-    )
-    apply_priority = (
-        {
-            "from": decision.apply_priority.from_priority,
-            "to": decision.apply_priority.to_priority,
-        }
-        if decision.apply_priority is not None
         else None
     )
     return {
@@ -267,7 +287,18 @@ def build_callback_payload(
             "confidence": recommendation.confidence,
         },
         "labels": list(decision.labels),
-        "comment": {"post": post_comment, "body": body},
+        "comment": {
+            "post": post_comment,
+            "body": body,
+            "kind": "applied" if mutations_directed else "advisory",
+            "topic": (
+                "issue_type"
+                if recommendation.recommended_issue_type == "Story"
+                else "priority"
+            ),
+            "reason": recommendation.reason,
+            "current_priority": _issue_priority(issue),
+        },
         "actions": {
             "apply_bug_to_story": decision.apply_bug_to_story,
             "apply_priority": apply_priority,
@@ -276,7 +307,7 @@ def build_callback_payload(
 
 
 class AutomationWebhookTriageActionExecutor:
-    """POST the rendered outcome payload to the Jira Automation applier rule.
+    """POST the outcome decision payload to the Jira Automation applier rule.
 
     ``TriageActionAppliedFlags`` returned here mean **apply directed**, not apply confirmed: the
     service no longer observes the write, so analytics rows describe what was requested of Jira

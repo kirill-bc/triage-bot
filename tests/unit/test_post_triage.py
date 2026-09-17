@@ -2,7 +2,8 @@
 
 The request body carries a ``source`` annotation: ``bug_created`` or
 ``priority_changed`` for Jira Automation triggers, or ``manual_trigger`` for the
-local runner.
+local runner. Default requests acknowledge with ``202`` / ``accepted``; send
+``wait_for_result=true`` to block for ``200`` with the recommendation.
 """
 
 from __future__ import annotations
@@ -72,10 +73,14 @@ def test_post_triage_returns_401_when_token_invalid(client: TestClient) -> None:
 
 
 @pytest.mark.unit
-def test_post_triage_returns_200_when_token_valid(client: TestClient) -> None:
+def test_post_triage_returns_202_when_token_valid(client: TestClient) -> None:
     payload = {"issue_key": "TJC-9", "project": "TJC", "source": "manual_trigger"}
     response = client.post("/triage", json=payload, headers=_auth_headers())
-    assert response.status_code == 200
+    assert response.status_code == 202
+    data = response.json()
+    assert data["status"] == "accepted"
+    assert data["recommendation"] is None
+    assert data["failure"] is None
 
 
 @pytest.mark.unit
@@ -127,7 +132,7 @@ def test_post_triage_passes_optional_apply_mode_to_default_handler(
         app_client = TestClient(create_app())
         response = app_client.post("/triage", json=payload, headers=headers)
 
-    assert response.status_code == 200
+    assert response.status_code == 202
     assert observed == [expected_mode]
 
 
@@ -200,7 +205,7 @@ def test_post_triage_forwards_webhook_token_from_header(
             },
         )
 
-    assert response.status_code == 200
+    assert response.status_code == 202
     assert observed == [
         {
             "jira_apply_mode": "automation_webhook",
@@ -250,7 +255,7 @@ def test_post_triage_ignores_webhook_token_in_json_body(
             },
         )
 
-    assert response.status_code == 200
+    assert response.status_code == 202
     assert observed[0]["jira_automation_webhook_token"] == "header-token"
     assert "body-token-must-be-ignored" not in response.text
 
@@ -380,8 +385,9 @@ def test_post_triage_rejects_unknown_apply_mode(client: TestClient) -> None:
 def test_post_triage_response_includes_parseable_uuid_run_id(client: TestClient) -> None:
     payload = {"issue_key": "TJC-9", "project": "TJC", "source": "manual_trigger"}
     response = client.post("/triage", json=payload, headers=_auth_headers())
-    assert response.status_code == 200
+    assert response.status_code == 202
     data = response.json()
+    assert data["status"] == "accepted"
     assert "run_id" in data
     uuid.UUID(data["run_id"])
 
@@ -413,8 +419,9 @@ def test_post_triage_run_id_propagated_to_runner_matches_response(client: TestCl
     app_client = TestClient(create_app(triage_handler_factory=lambda: _CapturingRunner()))
     payload = {"issue_key": "TJC-9", "project": "TJC", "source": "bug_created"}
     response = app_client.post("/triage", json=payload, headers=_auth_headers())
-    assert response.status_code == 200
+    assert response.status_code == 202
     data = response.json()
+    assert data["status"] == "accepted"
     assert len(seen) == 1
     assert data["run_id"] == seen[0]
 
@@ -449,7 +456,7 @@ def test_post_triage_calls_flush_inference_telemetry_when_runner_exposes_it() ->
     app_client = TestClient(create_app(triage_handler_factory=lambda: _RunnerWithFlush()))
     payload = {"issue_key": "TJC-9", "project": "TJC", "source": "bug_created"}
     response = app_client.post("/triage", json=payload, headers=_auth_headers())
-    assert response.status_code == 200
+    assert response.status_code == 202
     assert flush_calls == 1
 
 
@@ -457,35 +464,55 @@ def test_post_triage_calls_flush_inference_telemetry_when_runner_exposes_it() ->
 def test_post_triage_accepts_manual_cli_source(client: TestClient) -> None:
     payload = {"issue_key": "TJC-9", "project": "TJC", "source": "manual_trigger"}
     response = client.post("/triage", json=payload, headers=_auth_headers())
-    assert response.status_code == 200
+    assert response.status_code == 202
     data = response.json()
     assert data["source"] == "manual_trigger"
-    assert data["status"] == "completed"
+    assert data["status"] == "accepted"
+    assert data["recommendation"] is None
+    assert data["failure"] is None
 
 
 @pytest.mark.unit
 def test_post_triage_accepts_bug_created_source(client: TestClient) -> None:
     payload = {"issue_key": "TJC-42", "project": "TJC", "source": "bug_created"}
     response = client.post("/triage", json=payload, headers=_auth_headers())
-    assert response.status_code == 200
+    assert response.status_code == 202
     data = response.json()
     assert data["issue_key"] == "TJC-42"
     assert data["project"] == "TJC"
     assert data["source"] == "bug_created"
-    assert data["status"] == "completed"
+    assert data["status"] == "accepted"
     assert data["failure"] is None
-    assert data["recommendation"]["recommended_issue_type"] == "Story"
-    assert data["recommendation"]["recommended_priority"] is None
+    assert data["recommendation"] is None
 
 
 @pytest.mark.unit
 def test_post_triage_accepts_priority_changed_source(client: TestClient) -> None:
     payload = {"issue_key": "TJC-42", "project": "TJC", "source": "priority_changed"}
     response = client.post("/triage", json=payload, headers=_auth_headers())
-    assert response.status_code == 200
+    assert response.status_code == 202
     data = response.json()
     assert data["source"] == "priority_changed"
+    assert data["status"] == "accepted"
+
+
+@pytest.mark.unit
+def test_post_triage_wait_for_result_returns_completed_recommendation(
+    client: TestClient,
+) -> None:
+    payload = {
+        "issue_key": "TJC-42",
+        "project": "TJC",
+        "source": "bug_created",
+        "wait_for_result": True,
+    }
+    response = client.post("/triage", json=payload, headers=_auth_headers())
+    assert response.status_code == 200
+    data = response.json()
     assert data["status"] == "completed"
+    assert data["failure"] is None
+    assert data["recommendation"]["recommended_issue_type"] == "Story"
+    assert data["recommendation"]["recommended_priority"] is None
 
 
 @pytest.mark.unit
@@ -586,7 +613,12 @@ def test_post_triage_returns_failed_status_when_runner_returns_triage_failure() 
     app_client = TestClient(create_app(triage_handler_factory=lambda: _FailingRunner()))
     response = app_client.post(
         "/triage",
-        json={"issue_key": "TJC-1", "project": "TJC", "source": "bug_created"},
+        json={
+            "issue_key": "TJC-1",
+            "project": "TJC",
+            "source": "bug_created",
+            "wait_for_result": True,
+        },
         headers=_auth_headers(),
     )
     assert response.status_code == 200
@@ -595,6 +627,34 @@ def test_post_triage_returns_failed_status_when_runner_returns_triage_failure() 
     assert data["recommendation"] is None
     assert data["failure"]["category"] == "internal_error"
     assert "boom" in data["failure"]["message"]
+    uuid.UUID(data["run_id"])
+
+
+@pytest.mark.unit
+def test_post_triage_background_ack_does_not_include_failure_when_runner_fails() -> None:
+    class _FailingRunner:
+        def run_sync(
+            self,
+            issue_key: str,
+            project: str,
+            source: str,
+            *,
+            run_id: str,
+        ) -> TriageSyncResult:
+            _ = (issue_key, project, source, run_id)
+            return TriageSyncResult(outcome=fallback_for_exception(RuntimeError("boom")))
+
+    app_client = TestClient(create_app(triage_handler_factory=lambda: _FailingRunner()))
+    response = app_client.post(
+        "/triage",
+        json={"issue_key": "TJC-1", "project": "TJC", "source": "bug_created"},
+        headers=_auth_headers(),
+    )
+    assert response.status_code == 202
+    data = response.json()
+    assert data["status"] == "accepted"
+    assert data["recommendation"] is None
+    assert data["failure"] is None
     uuid.UUID(data["run_id"])
 
 

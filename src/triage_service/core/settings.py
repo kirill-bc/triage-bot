@@ -255,8 +255,9 @@ class AppSettings(BaseSettings):
         le=3600.0,
         validation_alias="TRIAGE_CONCURRENCY_WAIT_SECONDS",
         description=(
-            "Max seconds a POST /triage request waits for a concurrency slot before "
-            "returning 503. Jira Automation's scheduled JQL sweep retries later."
+            "Max seconds a wait_for_result POST /triage waits for a concurrency slot "
+            "before returning 503. Detached (202) work admits without waiting so "
+            "background tasks cannot fill the sync thread pool."
         ),
     )
 
@@ -420,8 +421,9 @@ class AppSettings(BaseSettings):
         validation_alias="TRIAGE_JIRA_APPLY_MODE",
         description=(
             "How triage outcomes reach Jira: 'direct' writes labels/comments/fields via Jira "
-            "REST; 'automation_webhook' POSTs a rendered outcome payload to a Jira Automation "
-            "incoming webhook that applies them as the Automation actor."
+            "REST; 'automation_webhook' POSTs a decision payload to a Jira Automation "
+            "incoming webhook that applies labels/fields and composes the comment as the "
+            "Automation actor."
         ),
     )
     jira_automation_webhook_url: str | None = Field(

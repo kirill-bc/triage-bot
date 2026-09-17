@@ -131,7 +131,7 @@ def test_executor_posts_versioned_payload_with_token_header(
     assert requests[0].headers["X-Automation-Webhook-Token"] == "automation-secret"
 
     payload = json.loads(requests[0].content.decode())
-    assert payload["payload_version"] == 1
+    assert payload["payload_version"] == 2
     assert payload["issues"] == ["TJC-1"]
     assert payload["run_id"] == "run-1"
     assert payload["issue_key"] == "TJC-1"
@@ -146,6 +146,10 @@ def test_executor_posts_versioned_payload_with_token_header(
     assert payload["comment"]["post"] is True
     assert payload["comment"]["body"].startswith("[~accountid:account-123]")
     assert "Change ticket Priority from P1 to P3." in payload["comment"]["body"]
+    assert payload["comment"]["kind"] == "advisory"
+    assert payload["comment"]["topic"] == "priority"
+    assert payload["comment"]["reason"] == "Workaround exists."
+    assert payload["comment"]["current_priority"] == "P1"
     assert payload["actions"] == {"apply_bug_to_story": False, "apply_priority": None}
 
 
@@ -201,7 +205,14 @@ def test_executor_marks_comment_not_posted_when_no_mismatch(
 
     assert len(posted) == 1
     assert posted[0]["labels"] == ["triagebot-reviewed"]
-    assert posted[0]["comment"] == {"post": False, "body": None}
+    assert posted[0]["comment"] == {
+        "post": False,
+        "body": None,
+        "kind": "advisory",
+        "topic": "priority",
+        "reason": "Matches policy.",
+        "current_priority": "P2",
+    }
 
 
 @pytest.mark.unit
@@ -232,7 +243,14 @@ def test_executor_marks_comment_not_posted_when_comments_disabled(
         )
 
     assert posted[0]["labels"] == ["triagebot-reviewed", "triagebot-priority-mismatch"]
-    assert posted[0]["comment"] == {"post": False, "body": None}
+    assert posted[0]["comment"] == {
+        "post": False,
+        "body": None,
+        "kind": "advisory",
+        "topic": "priority",
+        "reason": "Matches policy.",
+        "current_priority": "P1",
+    }
 
 
 @pytest.mark.unit
@@ -301,6 +319,9 @@ def test_executor_directs_priority_change_when_escalation_enabled(
     }
     assert applied.applied_priority_change is True
     assert applied.applied_type_change is False
+    assert posted[0]["comment"]["kind"] == "applied"
+    assert posted[0]["comment"]["topic"] == "priority"
+    assert posted[0]["comment"]["current_priority"] == "P3"
     assert "The ticket Priority was changed from P3 to P1." in posted[0]["comment"]["body"]
 
 
@@ -339,6 +360,8 @@ def test_executor_directs_bug_to_story_when_flag_enabled(
     assert posted[0]["actions"] == {"apply_bug_to_story": True, "apply_priority": None}
     assert applied.applied_type_change is True
     assert applied.applied_priority_change is False
+    assert posted[0]["comment"]["kind"] == "applied"
+    assert posted[0]["comment"]["topic"] == "issue_type"
     assert "The issue type was changed from Bug to Story." in posted[0]["comment"]["body"]
 
 

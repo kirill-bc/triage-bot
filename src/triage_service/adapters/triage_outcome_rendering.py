@@ -266,7 +266,12 @@ def render_plain_text_comment(
     *,
     mutations_applied: bool,
 ) -> str:
-    """Render Jira Automation comment text using account-id mention syntax."""
+    """Render Jira Automation comment text using account-id mention syntax.
+
+    Kept on the callback payload as ``comment.body`` so a Rule B that still posts
+    ``{{webhookData.comment.body}}`` does not write an empty comment during the
+    migration to Rule-B-owned composition.
+    """
     mention = (
         f"[~accountid:{issue.reporter_account_id}]"
         if issue.reporter_account_id
