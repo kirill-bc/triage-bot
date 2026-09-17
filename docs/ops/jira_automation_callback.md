@@ -1,11 +1,12 @@
 # Jira Automation callback delivery (Rule B)
 
-Operational runbook for Automation callback delivery, where the triage service POSTs a
-fully-rendered outcome payload to a Jira Automation incoming-webhook rule ("Rule B") that
-applies labels, the comment, and any field edits as the Automation actor.
+Operational runbook for Automation callback delivery, where the triage service POSTs an
+outcome payload to a Jira Automation incoming-webhook rule ("Rule B") that applies labels,
+writes the comment, and applies any field edits as the Automation actor.
 
-**Design rule: the service owns every decision and all comment copy; Rule B is a dumb applier.**
-The payload carries the final comment text and explicit action directives. The rule branches on
+**Design rule: the service owns every decision; Rule B is a dumb applier that also owns comment copy.**
+The payload carries composition inputs (`comment.post` / `kind` / `topic` / `reason` /
+`current_priority`) and explicit action directives. The rule branches on
 `{{webhookData.actions.*}}` / `{{webhookData.comment.post}}` and applies **static** label values
 inside those branches — it never sets labels from smart values and never re-derives a decision.
 
@@ -114,7 +115,13 @@ the callback POST entirely. The regular `scripts/run_triage_cli.py` path stays a
   "source": "bug_created",
   "recommendation": {"issue_type": "Bug", "priority": "P1", "confidence": 0.82},
   "labels": ["triagebot-reviewed", "triagebot-priority-mismatch"],
-  "comment": {"post": true, "body": "[~accountid:5f3…] - This is an informational message…"},
+  "comment": {
+    "post": true,
+    "kind": "advisory",
+    "topic": "priority",
+    "reason": "Workaround exists.",
+    "current_priority": "P3"
+  },
   "actions": {"apply_bug_to_story": false, "apply_priority": {"from": "P3", "to": "P1"}}
 }
 ```
@@ -127,15 +134,17 @@ Field notes:
 - `labels` is informational (audit/debug). Rule B does
   **not** consume it — labels are static values in the rule's branches, so the rule stays
   readable in the Automation UI.
-- `comment.post` is `false` (and `comment.body` `null`) when the recommendation matches Jira
-  state or `post_mismatch_comments` is disabled.
-- `comment.body` is plain text, not ADF: the reporter mention is rendered as
-  `[~accountid:...]`, which Jira Automation's comment action expands.
+- `comment.post` is `false` when the recommendation matches Jira state or
+  `post_mismatch_comments` is disabled. There is no `comment.body`: Rule B composes the text.
+- `comment.kind` is `applied` when any field-edit action is present (Rule B performs those
+  edits in the same run), otherwise `advisory`. `comment.topic` is `issue_type` for Story
+  recommendations and `priority` otherwise.
+- `comment.reason` is the model rationale. `comment.current_priority` is the intake priority
+  (or `null` when unset) — do not read `{{issue.priority.name}}` after an applied priority
+  edit.
 - `actions.apply_priority` is `null` unless the matching `TRIAGE_AUTO_APPLY_*` flag is on;
   `from` is the intake priority (useful for a rule-side sanity check that Jira has not moved
   since triage started).
-- The comment body already reflects the directives: when any action is present, the body uses
-  the "applied" copy, because Rule B performs those edits in the same run.
 - Bump `payload_version` on any shape change and update Rule B before rolling out.
 
 ## Building Rule B
@@ -184,7 +193,9 @@ Field notes:
    `{{webhookData.actions.apply_bug_to_story}}` **equals** `true` → *Edit issue* → Issue
    type = `Story`, and *Edit issue* → Labels → Add → `triagebot-likely-story` (static).
 7. **Comment:** *If* — `{{smart values}} condition`: `{{webhookData.comment.post}}` **equals**
-   `true` → *Add internal comment* with body `{{webhookData.comment.body}}`.
+   `true` → *Add internal comment* composed in the rule from `comment.kind`, `comment.topic`,
+   `comment.reason`, and `comment.current_priority`. Mention the reporter with
+   `[~accountid:{{issue.reporter.accountId}}]`; do not expect `comment.body` on the payload.
 8. **Clear in-flight marker:** *Edit issue* → Labels → Remove → `triagebot-scheduled` (static,
    unconditional, last step). The trigger rule adds this label when it POSTs to `/triage`, so
    in-flight issues drop out of the scheduled-scan JQL immediately instead of waiting for the
@@ -250,16 +261,16 @@ observes the write.
   for that `run_id`. A scheduled-scan retry starts a new `run_id` and is a new apply.
 - **A failed edit does not stop the rule.** Automation logs the failed *Edit work item* and
   continues, so a rejected priority write still adds `triagebot-priority-mismatch` and still
-  posts the comment — and that comment uses the "applied" copy ("The ticket Priority was changed
-  from … to …") because the service rendered it from the directive, not from the result. When
+  posts the comment. `comment.kind` is `applied` whenever the payload directed an edit, even if
+  that edit later failed — Rule B still composes the "was changed" wording from `kind`. When
   triaging a complaint about a wrong comment, check the rule audit log for an edit error before
-  assuming the service rendered the wrong copy.
+  assuming the composition inputs were wrong.
 - **Priority vocabulary is hardcoded in Rule B.** The per-priority branches enumerate `P0`–`P4`.
   If the service's priority vocabulary or a project's priority scheme ever changes, Rule B must
   be updated or the unmatched priority silently writes nothing (the mismatch label and comment
   still land).
 - **Automation execution quotas.** Rule B runs once per triaged issue on top of the trigger
   rules, against the site's monthly automation limits. Multi-project rollouts multiply this.
-- **Comment format drift.** The plain-text renderer and the ADF renderer share
-  `jira_comment_templates.json` copy but differ in mention encoding and rich-text structure;
-  the Confluence "Helpful resources" links render as plain URLs on the Automation path.
+- **Comment copy lives in Rule B.** Wording, reporter mention encoding, and Confluence links
+  are composed on the Jira side. Changing them does not require a service deploy; changing the
+  composition fields (`kind` / `topic` / `reason` / `current_priority`) does.

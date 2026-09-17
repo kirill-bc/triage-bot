@@ -1,4 +1,4 @@
-"""Unit tests for transport-independent triage outcome decisions and comments."""
+"""Unit tests for transport-independent triage outcome decisions."""
 
 from __future__ import annotations
 
@@ -10,8 +10,6 @@ from triage_service.adapters.jira_issue_fetcher import FetchedIssue
 from triage_service.adapters.triage_outcome_rendering import (
     AutoApplyPolicy,
     build_outcome_decision,
-    render_adf_comment,
-    render_plain_text_comment,
 )
 from triage_service.core.triage_recommendation_parser import TriageRecommendation
 
@@ -127,67 +125,3 @@ def test_build_outcome_decision_selects_bug_to_story_only_for_bug_intake() -> No
 
     assert bug_decision.apply_bug_to_story is True
     assert task_decision.apply_bug_to_story is False
-
-
-@pytest.mark.unit
-def test_render_adf_comment_preserves_structured_reporter_mention() -> None:
-    issue = _issue(
-        priority="P1",
-        reporter="Juan Estrada",
-        reporter_account_id="account-123",
-    )
-    recommendation = _recommendation(
-        recommended_priority="P3",
-        reason="A workaround exists.",
-    )
-
-    body = render_adf_comment(
-        issue,
-        recommendation,
-        mutations_applied=False,
-    )
-
-    mention = body["content"][0]["content"][0]
-    assert mention["type"] == "mention"
-    assert mention["attrs"]["id"] == "account-123"
-    assert body["content"][2]["content"][0]["text"] == (
-        "TriageBot rationale: A workaround exists."
-    )
-
-
-@pytest.mark.unit
-def test_render_plain_text_comment_uses_automation_reporter_mention() -> None:
-    issue = _issue(
-        priority="P1",
-        reporter="Juan Estrada",
-        reporter_account_id="account-123",
-    )
-    recommendation = _recommendation(
-        recommended_priority="P3",
-        reason="A workaround exists.",
-    )
-
-    body = render_plain_text_comment(
-        issue,
-        recommendation,
-        mutations_applied=False,
-    )
-
-    assert body.startswith(
-        "[~accountid:account-123] - This is an informational message from TriageBot."
-    )
-    assert "Change ticket Priority from P1 to P3." in body
-    assert "TriageBot rationale: A workaround exists." in body
-    assert "Confidence" not in body
-
-
-@pytest.mark.unit
-def test_render_plain_text_comment_without_account_id_has_no_mention() -> None:
-    body = render_plain_text_comment(
-        _issue(reporter_account_id=None),
-        _recommendation(recommended_priority="P3"),
-        mutations_applied=False,
-    )
-
-    assert body.startswith("This is an informational message from TriageBot.")
-    assert "[~accountid:" not in body

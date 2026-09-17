@@ -84,7 +84,7 @@
 - `jira_action_executor` (historical; replaced by Automation callback delivery)
   - Apply the `triagebot-reviewed` label **after every successful triage**, mismatch or not. This is the dedupe marker the Jira scheduled rule depends on; without it the rule re-analyzes the same issue every cycle until it ages out of the JQL window.
   - When a mismatch is detected, additionally:
-    - Post an internal comment using a **fixed direct template** as **TriageBot** (recommendation summary + model rationale as context). Numeric **confidence** stays in the API response and audit logs, not in the Jira comment body.
+    - Post an internal comment (Rule B composes the text from callback `comment` inputs: `kind`, `topic`, `reason`, `current_priority`). Numeric **confidence** stays in the API response and audit logs, not in the Jira comment.
     - Apply mismatch-specific labels
       - `triagebot-likely-story` when the issue type differs from `recommended_issue_type` and the recommendation is Story (reclassify away from Bug). There is no label for “recommend Bug” on a non-Bug issue type because triage is scoped to Bug issues only.
       - `triagebot-priority-mismatch` when the Bug path predicted a priority that differs from the current Jira priority. N/A on the Story path (priority inference does not run).
@@ -116,7 +116,7 @@
 - Use AI-generated `confidence` (0.0-1.0) directly in the triage response for Phase 1.
 - Jira comment behavior in Phase 1:
   - Post comment when mismatch exists, regardless of confidence value.
-  - Use direct templated copy plus short rationale from the model (`reason`); do **not** surface numeric confidence in the Jira comment.
+  - Use Rule B composition from callback `comment` inputs plus the model `reason`; do **not** surface numeric confidence in the Jira comment.
 - Reliability guidance for Phase 1:
   - Treat confidence as a ranking signal, not a calibrated probability.
   - Expect score drift across model changes and prompt revisions.

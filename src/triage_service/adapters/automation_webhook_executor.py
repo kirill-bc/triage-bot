@@ -24,7 +24,6 @@ from triage_service.adapters.triage_outcome_rendering import (
     AutoApplyPolicy,
     OutcomeDecision,
     build_outcome_decision,
-    render_plain_text_comment,
 )
 from triage_service.core.settings import AppSettings
 from triage_service.core.triage_action_applied import TriageActionAppliedFlags
@@ -39,7 +38,7 @@ from triage_service.observability.audit_store import AuditStore
 LOGGER = logging.getLogger(__name__)
 
 # Bump when the payload contract changes shape; Rule B reads this to stay compatible.
-CALLBACK_PAYLOAD_VERSION = 2
+CALLBACK_PAYLOAD_VERSION = 1
 
 _TOKEN_HEADER = "X-Automation-Webhook-Token"
 
@@ -244,16 +243,12 @@ def build_callback_payload(
     ``issues`` is Jira Automation's work-item binding for the incoming-webhook trigger option
     "Issues provided in the webhook HTTP POST body". Extra fields become ``{{webhookData.*}}``.
 
-    ``comment`` carries composition inputs so an updated Rule B can write the text, mention
-    the reporter natively, and render wiki-markup links. ``kind`` selects the advisory or
-    applied wording — "applied" whenever the payload directs a field change, since Rule B
-    performs those edits in the same run — and ``topic`` selects the issue-type or priority
-    wording. Both are flat scalars because Automation's ``{{#if}}`` is unreliable against
-    nested nulls such as ``actions.apply_priority``.
-
-    ``comment.body`` is the pre-rendered v1 copy. It stays on v2 so a Rule B that still
-    posts ``{{webhookData.comment.body}}`` cannot accept the callback and write an empty
-    comment; drop it only after every consumer has switched to the composition fields.
+    ``comment`` carries composition inputs so Rule B writes the text, mentions the reporter
+    natively, and renders wiki-markup links. ``kind`` selects the advisory or applied
+    wording — "applied" whenever the payload directs a field change, since Rule B performs
+    those edits in the same run — and ``topic`` selects the issue-type or priority wording.
+    Both are flat scalars because Automation's ``{{#if}}`` is unreliable against nested
+    nulls such as ``actions.apply_priority``.
     """
     mutations_directed = decision.apply_bug_to_story or decision.apply_priority is not None
     apply_priority = (
@@ -262,15 +257,6 @@ def build_callback_payload(
             "to": decision.apply_priority.to_priority,
         }
         if decision.apply_priority is not None
-        else None
-    )
-    body = (
-        render_plain_text_comment(
-            issue,
-            recommendation,
-            mutations_applied=mutations_directed,
-        )
-        if post_comment
         else None
     )
     return {
@@ -288,7 +274,6 @@ def build_callback_payload(
         "labels": list(decision.labels),
         "comment": {
             "post": post_comment,
-            "body": body,
             "kind": "applied" if mutations_directed else "advisory",
             "topic": (
                 "issue_type"

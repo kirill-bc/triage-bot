@@ -1,19 +1,19 @@
-"""Transport-independent triage outcome decisions and comment rendering."""
+"""Transport-independent triage outcome decisions.
+
+Comment text is composed by Rule B from the ``comment`` inputs on the callback payload, so
+nothing here renders copy.
+"""
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 from triage_service.adapters.jira_issue_fetcher import FetchedIssue
 from triage_service.core.triage_mismatch import compute_mismatch_flags
 from triage_service.core.triage_recommendation_parser import TriageRecommendation
 
 PrioritySignal = Literal["prioritize", "deescalate"]
-
-_COMMENT_TEMPLATES_PATH = Path(__file__).resolve().parent / "jira_comment_templates.json"
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,167 +124,4 @@ def _priority_action(
     return PriorityAction(
         from_priority=current,
         to_priority=str(recommendation.recommended_priority).strip(),
-    )
-
-
-def _load_comment_templates() -> dict[str, dict[str, str]]:
-    raw = json.loads(_COMMENT_TEMPLATES_PATH.read_text(encoding="utf-8"))
-    return {
-        group: {key: str(value) for key, value in raw[group].items()}
-        for group in ("advisory", "applied", "confluence")
-    }
-
-
-_COMMENT_TEMPLATES = _load_comment_templates()
-
-
-def _template_group(*, mutations_applied: bool) -> dict[str, str]:
-    return _COMMENT_TEMPLATES["applied" if mutations_applied else "advisory"]
-
-
-def _opening_text(issue: FetchedIssue, *, mutations_applied: bool) -> str:
-    templates = _template_group(mutations_applied=mutations_applied)
-    key = "mention_intro" if issue.reporter_account_id else "no_mention_intro"
-    return templates[key]
-
-
-def _suggestion_text(
-    issue: FetchedIssue,
-    recommendation: TriageRecommendation,
-    *,
-    mutations_applied: bool,
-) -> str:
-    templates = _template_group(mutations_applied=mutations_applied)
-    if recommendation.recommended_issue_type == "Story":
-        body = templates["story_action"]
-    else:
-        recommended = recommendation.recommended_priority
-        assert recommended is not None
-        current = _current_priority(issue)
-        body = templates["priority_action"].format(
-            from_priority=current,
-            to_priority=str(recommended).strip(),
-        )
-    return f"- {body}" if mutations_applied else body
-
-
-def _current_priority(issue: FetchedIssue) -> str:
-    if issue.priority is None or not str(issue.priority).strip():
-        return "(not set)"
-    return str(issue.priority).strip()
-
-
-def _rationale_text(
-    recommendation: TriageRecommendation,
-    *,
-    mutations_applied: bool,
-) -> str:
-    templates = _template_group(mutations_applied=mutations_applied)
-    return templates["rationale"].format(reason=recommendation.reason)
-
-
-def _closing_text(
-    issue: FetchedIssue,
-    recommendation: TriageRecommendation,
-    *,
-    mutations_applied: bool,
-) -> str:
-    templates = _template_group(mutations_applied=mutations_applied)
-    if recommendation.recommended_issue_type == "Story":
-        return templates["closing_bug"]
-    return templates["closing_priority"].format(current_priority=_current_priority(issue))
-
-
-def _resource_parts(recommendation: TriageRecommendation) -> tuple[str, str, str]:
-    confluence = _COMMENT_TEMPLATES["confluence"]
-    if recommendation.recommended_issue_type == "Story":
-        return (
-            confluence["helpful_resources_heading"],
-            confluence["bug_requirements_link_text"],
-            confluence["bug_requirements_url"],
-        )
-    return (
-        confluence["helpful_resources_heading"],
-        confluence["priority_definitions_link_text"],
-        confluence["priority_definitions_url"],
-    )
-
-
-def render_adf_comment(
-    issue: FetchedIssue,
-    recommendation: TriageRecommendation,
-    *,
-    mutations_applied: bool,
-) -> dict[str, Any]:
-    """Render the Jira REST v3 ADF comment with a structured mention."""
-    opening_nodes: list[dict[str, Any]] = []
-    if issue.reporter_account_id:
-        display = issue.reporter.strip() or issue.reporter_account_id
-        opening_nodes.append(
-            {
-                "type": "mention",
-                "attrs": {
-                    "id": issue.reporter_account_id,
-                    "text": f"@{display}",
-                    "accessLevel": "",
-                },
-            }
-        )
-    opening_nodes.append(
-        {"type": "text", "text": _opening_text(issue, mutations_applied=mutations_applied)}
-    )
-    heading, link_text, link_url = _resource_parts(recommendation)
-    paragraph_texts = (
-        _suggestion_text(issue, recommendation, mutations_applied=mutations_applied),
-        _rationale_text(recommendation, mutations_applied=mutations_applied),
-        _closing_text(issue, recommendation, mutations_applied=mutations_applied),
-    )
-    content = [{"type": "paragraph", "content": opening_nodes}]
-    content.extend(
-        {"type": "paragraph", "content": [{"type": "text", "text": text}]}
-        for text in paragraph_texts
-    )
-    content.append(
-        {
-            "type": "paragraph",
-            "content": [
-                {"type": "text", "text": heading},
-                {
-                    "type": "text",
-                    "text": link_text,
-                    "marks": [{"type": "link", "attrs": {"href": link_url}}],
-                },
-            ],
-        }
-    )
-    return {"version": 1, "type": "doc", "content": content}
-
-
-def render_plain_text_comment(
-    issue: FetchedIssue,
-    recommendation: TriageRecommendation,
-    *,
-    mutations_applied: bool,
-) -> str:
-    """Render Jira Automation comment text using account-id mention syntax.
-
-    Kept on the callback payload as ``comment.body`` so a Rule B that still posts
-    ``{{webhookData.comment.body}}`` does not write an empty comment during the
-    migration to Rule-B-owned composition.
-    """
-    mention = (
-        f"[~accountid:{issue.reporter_account_id}]"
-        if issue.reporter_account_id
-        else ""
-    )
-    opening = f"{mention}{_opening_text(issue, mutations_applied=mutations_applied)}"
-    heading, link_text, link_url = _resource_parts(recommendation)
-    return "\n\n".join(
-        (
-            opening,
-            _suggestion_text(issue, recommendation, mutations_applied=mutations_applied),
-            _rationale_text(recommendation, mutations_applied=mutations_applied),
-            _closing_text(issue, recommendation, mutations_applied=mutations_applied),
-            f"{heading}{link_text}: {link_url}",
-        )
     )

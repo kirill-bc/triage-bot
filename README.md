@@ -417,12 +417,11 @@ Each delivery attempt records an `outcome_delivered` audit event (mode, HTTP sta
 
 ### Comment composition on the Rule B side
 
-Payload version `2` adds composition inputs so Rule B can write the comment. The pre-rendered `comment.body` stays on the payload until every Rule B has switched; a rule still posting `{{webhookData.comment.body}}` would otherwise accept the callback and write an empty comment.
+Payload version `1` carries composition inputs so Rule B writes the comment. The service does not send pre-rendered `comment.body`.
 
 ```json
 "comment": {
   "post": true,
-  "body": "<pre-rendered v1 copy>",
   "kind": "advisory",
   "topic": "priority",
   "reason": "<model rationale>",
@@ -430,14 +429,13 @@ Payload version `2` adds composition inputs so Rule B can write the comment. The
 }
 ```
 
-- `post` — unchanged gate. Keep the rule's existing `{{webhookData.comment.post}} equals true` condition; when it is `false` there is no mismatch to comment on.
-- `body` — compatibility copy for unmigrated Rule B. Migrated rules should ignore it and compose from the fields below.
+- `post` — gate. Keep the rule's `{{webhookData.comment.post}} equals true` condition; when it is `false` there is no mismatch to comment on.
 - `kind` — `applied` when this payload also directs a field edit (Rule B performs it in the same run), otherwise `advisory`. Choose "was changed" vs "we recommend" wording from this.
 - `topic` — `issue_type` when the recommendation is Story, otherwise `priority`. Selects the action line, the closing line, and which Confluence link to use.
 - `reason` — the model's rationale, the only free text in the composition contract.
 - `current_priority` — the priority as it stood **before** any Rule B edit, or `null` when unset. Do not read `{{issue.priority.name}}` for this in an applied run: the edit action may have already changed it.
 
-`kind` and `topic` are flat scalars on purpose. Branch on them with `{{#if(equals(webhookData.comment.kind,"applied"))}}`, not on `actions.apply_priority`, whose `null` is unreliable in Automation conditionals. Rule B has the work item bound, so it should mention the reporter with `[~accountid:{{issue.reporter.accountId}}]` and use wiki-markup links (`[text|url]`) rather than the plain URLs the compatibility body carries.
+`kind` and `topic` are flat scalars on purpose. Branch on them with `{{#if(equals(webhookData.comment.kind,"applied"))}}`, not on `actions.apply_priority`, whose `null` is unreliable in Automation conditionals. Rule B has the work item bound, so it should mention the reporter with `[~accountid:{{issue.reporter.accountId}}]` and use wiki-markup links (`[text|url]`).
 
 ### Trigger sources
 
@@ -474,7 +472,7 @@ After a successful triage, Rule B always applies `triagebot-reviewed`. Additiona
 | Bug path: recommended P0–P4 differs from current (prioritize or de-escalate) | `triagebot-priority-mismatch` | Priority field on de-escalate if `TRIAGE_AUTO_APPLY_DEESCALATION=true`; on prioritize if `TRIAGE_AUTO_APPLY_ESCALATION=true` | Yes |
 | Types and priorities align | — | — | No |
 
-Rule B composes comments from the inputs in `comment` (see [Comment composition on the Rule B side](#comment-composition-on-the-rule-b-side)). The advisory/applied distinction is `comment.kind`; wording lives in the Automation rule. The pre-rendered `comment.body` remains on the payload as v1 compatibility copy. `jira_comment_templates.json` is unused on this path.
+Rule B composes comments from the inputs in `comment` (see [Comment composition on the Rule B side](#comment-composition-on-the-rule-b-side)). The advisory/applied distinction is `comment.kind`; wording lives in the Automation rule.
 
 Every mismatch comment should end with a closing paragraph asking the reporter to explain if they want to keep the current / pre-edit value, plus a **Helpful resources** Confluence link.
 

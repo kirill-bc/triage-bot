@@ -111,7 +111,7 @@ Zendesk enrichment remains soft-fail-safe: fetch/summary/vision failures must no
 
 - Keep sequential logic intact: Story path skips priority inference.
 - Keep Jira mutations advisory only (labels/comments), no automatic field mutation.
-- Outcome delivery is the Automation callback: decisions and comment copy live in `adapters/triage_outcome_rendering.py`, never in an executor. Rule B is a dumb applier.
+- Outcome delivery is the Automation callback: decisions live in `adapters/triage_outcome_rendering.py`; Rule B composes comment copy from payload inputs. The executor never writes Jira comments.
 - Preserve `run_id` propagation for API, logs, and traces.
 - Prefer narrow, high-signal tests over brittle mock-heavy coverage.
 - Avoid introducing coupling across package boundaries that breaks the architecture direction.

@@ -1,5 +1,13 @@
 # Project memory
 
+## 2026-09-17 (callback payload v1, Rule B owns comments)
+
+- `CALLBACK_PAYLOAD_VERSION` is `1`. The callback `comment` object is composition inputs only
+  (`post`, `kind`, `topic`, `reason`, `current_priority`); there is no `comment.body`.
+- Deleted `jira_comment_templates.json` and the ADF/plain-text renderers in
+  `triage_outcome_rendering.py`. Direct comment posting from this service is gone; Rule B
+  writes the comment text.
+
 ## 2026-09-17 (seven triage trigger sources)
 
 - `POST /triage` and `TriageSourceLiteral` accept seven correlated source values:
